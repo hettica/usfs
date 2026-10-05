@@ -1,0 +1,94 @@
+* Copyright (c) 2026 Raman Dzehtsiar
+* SPDX-License-Identifier: MIT
+
+*!usfs.cat
+
++ USFS_TIMEOUT:
+        Comment=        "USFS request timeout"
+        Class=          S
+        Log=            True
+        Report=         True
+        Alert=          False
+        Err_Type=       PERM
+        Err_Desc=       {2,1,"USFS daemon request timed out"}
+        Prob_Causes=    {3,1,"User-space filesystem service failure"}
+        User_Causes=    {3,1,"User-space filesystem service failure"}
+        User_Actions=   {4,1,"Inspect usfsctl and restart the affected daemon and mount"}
+        Detail_Data=    4,{5,1,"USFS fault code"},DEC
+        Detail_Data=    4,{5,2,"Error number"},DEC
+        Detail_Data=    4,{5,3,"Daemon channel"},DEC
+        Detail_Data=    4,{5,4,"Protocol opcode"},HEX
+        Detail_Data=    8,{5,5,"Request unique identifier"},LDEC
+        Detail_Data=    4,{5,6,"Affected mount count"},DEC
+
++ USFS_PROTOCOL:
+        Comment=        "USFS protocol violation"
+        Class=          S
+        Log=            True
+        Report=         True
+        Alert=          False
+        Err_Type=       PERM
+        Err_Desc=       {2,2,"USFS daemon protocol violation"}
+        Prob_Causes=    {3,1,"User-space filesystem service failure"}
+        User_Causes=    {3,1,"User-space filesystem service failure"}
+        User_Actions=   {4,1,"Inspect usfsctl and restart the affected daemon and mount"}
+        Detail_Data=    4,{5,1,"USFS fault code"},DEC
+        Detail_Data=    4,{5,2,"Error number"},DEC
+        Detail_Data=    4,{5,3,"Daemon channel"},DEC
+        Detail_Data=    4,{5,4,"Protocol opcode"},HEX
+        Detail_Data=    8,{5,5,"Request unique identifier"},LDEC
+        Detail_Data=    4,{5,6,"Affected mount count"},DEC
+
++ USFS_DAEMON_LOST:
+        Comment=        "USFS daemon lost"
+        Class=          S
+        Log=            True
+        Report=         True
+        Alert=          False
+        Err_Type=       PERM
+        Err_Desc=       {2,3,"USFS daemon exited with active mounts"}
+        Prob_Causes=    {3,1,"User-space filesystem service failure"}
+        User_Causes=    {3,1,"User-space filesystem service failure"}
+        User_Actions=   {4,1,"Inspect usfsctl and restart the affected daemon and mount"}
+        Detail_Data=    4,{5,1,"USFS fault code"},DEC
+        Detail_Data=    4,{5,2,"Error number"},DEC
+        Detail_Data=    4,{5,3,"Daemon channel"},DEC
+        Detail_Data=    4,{5,4,"Protocol opcode"},HEX
+        Detail_Data=    8,{5,5,"Request unique identifier"},LDEC
+        Detail_Data=    4,{5,6,"Affected mount count"},DEC
+
++ USFS_FORCE_RECOVERY:
+        Comment=        "USFS forced recovery"
+        Class=          S
+        Log=            True
+        Report=         True
+        Alert=          False
+        Err_Type=       INFO
+        Err_Desc=       {2,4,"USFS forced recovery retained resources"}
+        Prob_Causes=    {3,1,"User-space filesystem service failure"}
+        User_Causes=    {3,1,"User-space filesystem service failure"}
+        User_Actions=   {4,1,"Inspect usfsctl and restart the affected daemon and mount"}
+        Detail_Data=    4,{5,1,"USFS fault code"},DEC
+        Detail_Data=    4,{5,2,"Error number"},DEC
+        Detail_Data=    4,{5,3,"Daemon channel"},DEC
+        Detail_Data=    4,{5,4,"Protocol opcode"},HEX
+        Detail_Data=    8,{5,5,"Request unique identifier"},LDEC
+        Detail_Data=    4,{5,6,"Affected mount count"},DEC
+
++ USFS_CLEANUP_REQ:
+        Comment=        "USFS cleanup required"
+        Class=          S
+        Log=            True
+        Report=         True
+        Alert=          False
+        Err_Type=       PERM
+        Err_Desc=       {2,5,"USFS kernel extension cleanup required"}
+        Prob_Causes=    {3,1,"User-space filesystem service failure"}
+        Fail_Causes=    {3,1,"User-space filesystem service failure"}
+        Fail_Actions=   {4,2,"Inspect errpt and complete USFS device recovery"}
+        Detail_Data=    4,{5,1,"USFS fault code"},DEC
+        Detail_Data=    4,{5,2,"Error number"},DEC
+        Detail_Data=    4,{5,3,"Daemon channel"},DEC
+        Detail_Data=    4,{5,4,"Protocol opcode"},HEX
+        Detail_Data=    8,{5,5,"Request unique identifier"},LDEC
+        Detail_Data=    4,{5,6,"Affected mount count"},DEC
