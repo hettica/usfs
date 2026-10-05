@@ -1,0 +1,81 @@
+* /etc/trcfmt
+# Copyright (c) 2026 Raman Dzehtsiar
+# SPDX-License-Identifier: MIT
+
++ F5F1 1.0 L=KERN "USFS CONTROL" \
+{{ usfs_action(value) \
+    $value, \
+    1 "ADD", 2 "REMOVE", 3 "ALLOCATE", 4 "ADMIT", 5 "READY", \
+    6 "CLOSE", 7 "DEALLOCATE", 8 "RESERVE", 9 "PUBLISH", \
+    10 "UNMOUNT", 11 "FORCE", 12 "DEFERRED_RELEASE", \
+    \* { "UNKNOWN_ACTION(" $value%UW ")" } \
+}} \
+{{ usfs_kext_state(value) \
+    $value, 0 "DOWN", 1 "STARTING", 2 "ACTIVE", 3 "STOPPING", \
+    4 "CLEANUP_REQUIRED", \* { "UNKNOWN_KEXT_STATE(" $value%UW ")" } \
+}} \
+{{ usfs_conn_state(value) \
+    $value, 1 "ACTIVE", 2 "UNHEALTHY", 3 "DEAD", \
+    \* { "UNKNOWN_CONN_STATE(" $value%UW ")" } \
+}} \
+{{ usfs_mount_state(value) \
+    $value, 1 "ACTIVE", 2 "STALE", \
+    \* { "UNKNOWN_MOUNT_STATE(" $value%UW ")" } \
+}} \
+{{ usfs_component(value) \
+    $value, 1 "PAGER", 2 "GFS", 3 "DEVSW", \
+    \* { "UNKNOWN_COMPONENT(" $value%UW ")" } \
+}} \
+{{ usfs_class(value) \
+    $value, 0 "NORMAL", 1 "PAGER", \
+    \* { "UNKNOWN_CLASS(" $value%UW ")" } \
+}} \
+{{ usfs_outcome(value) \
+    $value, 1 "SUCCESS", 2 "DAEMON_ERROR", 3 "TRANSPORT_FAILURE", \
+    4 "TIMEOUT", 5 "INTERRUPTED", \
+    \* { "UNKNOWN_OUTCOME(" $value%UW ")" } \
+}} \
+{{ usfs_fault(value) \
+    $value, 0 "NONE", 1 "TIMEOUT", 2 "PROTOCOL", 3 "DAEMON_LOST", \
+    4 "FORCED_RECOVERY", 5 "CLEANUP_REQUIRED", \
+    \* { "UNKNOWN_FAULT(" $value%UW ")" } \
+}} \
+{{ usfs_opcode(value) \
+    $value, \
+    1 "LOOKUP", 2 "GETATTR", 3 "OPEN", 4 "READ", 5 "RELEASE", \
+    6 "READDIR", 7 "READLINK", 8 "STATFS", 9 "CREATE", 10 "MKDIR", \
+    11 "UNLINK", 12 "RMDIR", 13 "RENAME", 14 "SYMLINK", 15 "LINK", \
+    16 "SETATTR", 17 "WRITE", 18 "FLUSH", 19 "FSYNC", 20 "SYNCFS", \
+    \* { "UNKNOWN_OPCODE(" $value%UW ")" } \
+}} \
+{{ usfs_vfs_op(value) \
+    $value, 1 "MOUNT", 2 "UNMOUNT", 3 "ROOT", 4 "STATFS", 5 "SYNC", \
+    6 "SYNCVFS", 7 "VGET", \* { "UNKNOWN_VFS_OP(" $value%UW ")" } \
+}} \
+    $HD, \
+    0x0001 { "schema trace_abi=" $D1%UW "protocol=" $D2%UW "word_bits=" $D3%UW "gfs=" $D4%DW "device=" $D5%XW }, \
+    0x0002 { "kext state old=" usfs_kext_state($D1) " new=" usfs_kext_state($D2) " reason=" $D3%DW " rc=" $D4%E4 " device=" $D5%XW }, \
+    0x0003 { "registration component=" usfs_component($D1) " action=" usfs_action($D2) " rc=" $D3%E4 " state=" usfs_kext_state($D4) " object=" $D5%XW }, \
+    0x0004 { "connection action=" usfs_action($D1) " channel=" $D2%DW " state=" usfs_conn_state($D3) " outstanding=" $D4%UW " rc=" $D5%E4 }, \
+    0x0005 { "mount action=" usfs_action($D1) " channel=" $D2%DW " state=" usfs_mount_state($D3) " mounts=" $D4%UW " rc=" $D5%E4 }, \
+    0x0006 { "runtime request_ms=" $D1%UW "pager_ms=" $D2%UW "max_outstanding=" $D3%UW "mask=" $D4%XW "rc=" $D5%E4 }, \
+    0x0007 { "fault type=" usfs_fault($D1) " errno=" $D2%E4 " channel=" $D3%DW " opcode=" usfs_opcode($D4) " unique=" $D5%UW }, \
+    \* { "UNKNOWN CONTROL SUBHOOK=" $HD "d1=" $D1%XW "d2=" $D2%XW "d3=" $D3%XW "d4=" $D4%XW "d5=" $D5%XW }
++ F5F2 1.0 L=KERN "USFS REQUEST" \
+    $HD, \
+    0x0001 { "rejected opcode=" usfs_opcode($D1) " node=" $D2%UW " class=" usfs_class($D3) " errno=" $D4%E4 " outstanding=" $D5%UW }, \
+    0x0002 { "queued unique=" $D1%UW " opcode=" usfs_opcode($D2) " node=" $D3%UW " class=" usfs_class($D4) " outstanding=" $D5%UW }, \
+    0x0003 { "delivered unique=" $D1%UW " opcode=" usfs_opcode($D2) " channel=" $D3%DW " length=" $D4%UW " rc=" $D5%E4 }, \
+    0x0004 { "reply unique=" $D1%UW " opcode=" usfs_opcode($D2) " channel=" $D3%DW " daemon_errno=" $D4%E4 " length=" $D5%UW }, \
+    0x0005 { "completed unique=" $D1%UW " opcode=" usfs_opcode($D2) " outcome=" usfs_outcome($D3) " rc=" $D4%E4 " reply_length=" $D5%UW }, \
+    0x0006 { "abort channel=" $D1%DW " old_state=" usfs_conn_state($D2) " new_state=" usfs_conn_state($D3) " pending=" $D4%UW " delivered=" $D5%UW }, \
+    \* { "UNKNOWN REQUEST SUBHOOK=" $HD "d1=" $D1%XW "d2=" $D2%XW "d3=" $D3%XW "d4=" $D4%XW "d5=" $D5%XW }
++ F5F3 1.0 L=KERN "USFS FILESYSTEM" \
+    $HD, \
+    0x0001 { "vfs entry operation=" usfs_vfs_op($D1) " channel=" $D2%DW " vfs=" $D3%UW " flags=" $D4%XW " argument=" $D5%XW }, \
+    0x0002 { "vfs result operation=" usfs_vfs_op($D1) " channel=" $D2%DW " vfs=" $D3%UW " rc=" $D4%E4 " result=" $D5%UW }, \
+    0x0003 { "vnode entry opcode=" usfs_opcode($D1) " channel=" $D2%DW " node=" $D3%UW " unique=" $D4%UW " class=" usfs_class($D5) }, \
+    0x0004 { "vnode result opcode=" usfs_opcode($D1) " channel=" $D2%DW " node=" $D3%UW " unique=" $D4%UW " rc=" $D5%E4 }, \
+    0x0005 { "pager entry direction_channel=" $D1%XW "node=" $D2%UW "offset=" $D3%UW "count=" $D4%UW "reserved=" $D5%UW }, \
+    0x0006 { "pager result direction_channel=" $D1%XW "node=" $D2%UW "offset=" $D3%UW "count=" $D4%UW "rc=" $D5%E4 }, \
+    \* { "UNKNOWN FILESYSTEM SUBHOOK=" $HD "d1=" $D1%XW "d2=" $D2%XW "d3=" $D3%XW "d4=" $D4%XW "d5=" $D5%XW }

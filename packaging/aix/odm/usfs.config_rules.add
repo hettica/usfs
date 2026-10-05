@@ -1,0 +1,14 @@
+# Copyright (c) 2026 Raman Dzehtsiar
+# SPDX-License-Identifier: MIT
+
+Config_Rules:
+	phase = 2
+	seq = 21
+	boot_mask = 0
+	rule = "/usr/lib/methods/usfs/boot_rule"
+
+Config_Rules:
+	phase = 3
+	seq = 21
+	boot_mask = 0
+	rule = "/usr/lib/methods/usfs/boot_rule"
