@@ -1,3 +1,7 @@
-/build/
+.idea/
+.vscode/
+/build*/
 /cmake-build-*/
-/.idea/
+/out/
+/compile_commands.json
+.env

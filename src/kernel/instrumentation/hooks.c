@@ -1,7 +1,9 @@
-// Copyright (c) 2026 Raman Dzehtsiar
-// SPDX-License-Identifier: MIT
-
-/* Diagnostic compatibility hooks required by instrumented kernel code. */
+/*
+ * Copyright (c) 2026 Raman Dzehtsiar
+ * SPDX-License-Identifier: MIT
+ *
+ * Diagnostic compatibility hooks required by instrumented kernel code.
+ */
 
 int __fd_getdtablesize ()
 {

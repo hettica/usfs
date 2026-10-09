@@ -7,7 +7,6 @@ set(CMAKE_SYSTEM_PROCESSOR powerpc64)
 
 set(AIX_CROSS_PREFIX /usr/local/aix CACHE PATH "Installation prefix of the AIX cross-compiler")
 set(AIX_CROSS_TARGET powerpc-ibm-aix7.2 CACHE STRING "AIX cross-compiler target triplet")
-
 set(CMAKE_SYSROOT "${AIX_CROSS_PREFIX}/sysroot")
 
 set(CMAKE_C_COMPILER "${AIX_CROSS_PREFIX}/bin/${AIX_CROSS_TARGET}-gcc")

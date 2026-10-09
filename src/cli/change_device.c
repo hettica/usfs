@@ -1,15 +1,15 @@
 /*
-    Copyright (c) 2026 Raman Dzehtsiar
-    SPDX-License-Identifier: MIT
-
-    chusfs executable - USFS device Change method.
-
-    Invoked by the ODM configuration framework when an administrator changes
-    settings for a configured USFS device, typically through `chdev`. It can
-    also be run directly to inspect the current configuration or adjust
-    supported filesystem settings while the device remains online.
-
-    The method holds the ODM configuration lock across the complete operation.
+ * Copyright (c) 2026 Raman Dzehtsiar
+ * SPDX-License-Identifier: MIT
+ *
+ * chusfs executable - USFS device Change method.
+ *
+ * Invoked by the ODM configuration framework when an administrator changes
+ * settings for a configured USFS device, typically through `chdev`. It can
+ * also be run directly to inspect the current configuration or adjust
+ * supported filesystem settings while the device remains online.
+ *
+ * The method holds the ODM configuration lock across the complete operation.
  */
 
 #include "usfs_common.h"

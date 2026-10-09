@@ -4,6 +4,8 @@
 #ifndef USFS_NAMESPACE_SECURITY_H
 #define USFS_NAMESPACE_SECURITY_H
 
+/* The caller holds the mount namespace lock through the following mutation.
+ * Resolve the name again: the vnode supplied by LFS may predate a rename. */
 static int usfs_check_sticky_entry (struct vnode * directory_vnode, const char * entry_name, struct ucred * credentials, const int may_be_absent)
 {
     if (credentials == NULL)

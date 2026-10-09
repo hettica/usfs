@@ -1,16 +1,16 @@
 /*
-    Copyright (c) 2026 Raman Dzehtsiar
-    SPDX-License-Identifier: MIT
-
-    cfgusfs executable - USFS device Configure method.
-
-    Invoked by the ODM configuration framework when a USFS device is brought
-    online, e.g. `mkdev -l usfs0` runs `cfgusfs -l usfs0`. The optional -1/-2
-    boot-time flags of a generic Configure method are not used by this
-    pseudo-device.
-
-    The shared implementation holds the ODM configuration lock across the
-    complete transaction.
+ * Copyright (c) 2026 Raman Dzehtsiar
+ * SPDX-License-Identifier: MIT
+ *
+ * cfgusfs executable - USFS device Configure method.
+ *
+ * Invoked by the ODM configuration framework when a USFS device is brought
+ * online, e.g. `mkdev -l usfs0` runs `cfgusfs -l usfs0`. The optional -1/-2
+ * boot-time flags of a generic Configure method are not used by this
+ * pseudo-device.
+ *
+ * The shared implementation holds the ODM configuration lock across the
+ * complete transaction.
  */
 
 #include "usfs_common.h"

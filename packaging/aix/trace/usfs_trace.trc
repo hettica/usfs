@@ -1,7 +1,7 @@
 * /etc/trcfmt
 # Copyright (c) 2026 Raman Dzehtsiar
 # SPDX-License-Identifier: MIT
-
+* /etc/trcfmt
 + F5F1 1.0 L=KERN "USFS CONTROL" \
 {{ usfs_action(value) \
     $value, \

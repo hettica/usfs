@@ -1,7 +1,7 @@
-// Copyright (c) 2026 Raman Dzehtsiar
-// SPDX-License-Identifier: MIT
-
-/**
+/*
+ * Copyright (c) 2026 Raman Dzehtsiar
+ * SPDX-License-Identifier: MIT
+ *
  * USFS wire protocol.
  *
  * Shared between the kernel extension (src/kernel/) and the userspace library

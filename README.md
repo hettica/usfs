@@ -1,14 +1,14 @@
 # USFS: userspace file systems for IBM AIX
 
-USFS is a 64-bit AIX filesystem kernel extension with a FUSE-compatible
-userspace client library. It brings FUSE-like functionality to AIX through an
-AIX-specific implementation. Compatibility is limited to the client library
-interface, with the aim of making projects such as sshfs and s3fs easier to port.
+USFS is a 64-bit AIX filesystem kernel extension and a userspace client library. 
+It provides FUSE-like functionality on AIX using an AIX-specific implementation.
+A [FUSE adapter](https://github.com/hettica/aix-fuse) can make the client library compatible with the Linux FUSE API, making 
+it easier to port projects that depend on FUSE.
 
 ## Current project state
 
 Today it's a technical preview. The core functionality works, with known issues.
-You can run the provided examples or conduct your own experiments. 
+You can run the provided examples or conduct your own experiments.
 Do not use this preview in production. Kernel extension failures can crash the system.
 Upgrade from this version will not be supported.
 
@@ -18,13 +18,10 @@ Build natively on AIX with GCC, CMake 3.20+, GNU Make, Bash, RPM build tools,
 and the native AIX development tools:
 
 ```sh
-cmake -S . -B out -G "Unix Makefiles" -DCMAKE_C_COMPILER=gcc
-cmake --build out --target package
+cmake -S . -B build -G "Unix Makefiles" -DCMAKE_C_COMPILER=gcc
+cd build
+make package
 ```
-
-The unsigned RPM is written to `out/packages/`, with the build host's AIX
-release in its filename. Installation requires the same `AIX-rpm` version
-and release as the build host; compatibility with other system levels is not claimed.
 
 ## Install and use
 
@@ -32,7 +29,7 @@ Run as root on an isolated, recoverable AIX host:
 
 ```sh
 # Install and check status
-rpm -ivh "out/packages/usfs-0.1.0-1.aix$(uname -v).$(uname -r).ppc.rpm"
+rpm -ivh "build/packages/usfs-0.1.0-1.aix$(uname -v).$(uname -r).ppc.rpm"
 usfsctl
 
 ### Run memfs example
@@ -55,6 +52,9 @@ ls /mnt/usfs-mirror
 umount /mnt/usfs-mirror
 
 ```
+The package installs `/usr/lib/libusfs.a`, `/usr/include/usfs/usfs.h`, and
+`usfs.pc`. The public header documents requests, callbacks, options and
+lifecycle contracts; the examples demonstrate their use.
 
 In-place upgrades and replacement installs are rejected. To reinstall, unmount
 all USFS filesystems, stop the daemons, and prevent new device opens. Then run

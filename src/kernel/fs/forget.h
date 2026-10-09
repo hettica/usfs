@@ -4,6 +4,10 @@
 #ifndef USFS_FS_FORGET_H
 #define USFS_FS_FORGET_H
 
+/* The caller owns a connection reference and holds no kernel lock. Cleanup
+ * bookkeeping is a fixed-size record, reserved before ownership transfer.
+ * Failure must terminate the channel: an ACTIVE daemon may not accumulate
+ * references which no surviving vnode can release. */
 static int usfs_forget (struct usfs_connection * connection, const uint64_t node_id, const uint64_t lookup_count)
 {
     if (connection == NULL)
