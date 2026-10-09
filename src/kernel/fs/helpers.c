@@ -28,17 +28,17 @@ int usfs_vmt_text_field (const struct vmount * mount_record, const int field_ind
         return EINVAL;
 
     const struct vmt_data * descriptor = &mount_record->vmt_data[field_index];
-
-    if (!usfs_bounded_region_valid (mount_record->vmt_length, descriptor->vmt_off, descriptor->vmt_size, sizeof (*mount_record)))
+    if (!usfs_bounded_region_valid (
+            mount_record->vmt_length,
+            (int32_t)descriptor->vmt_off,
+            (int32_t)descriptor->vmt_size,
+            (uint32_t)sizeof (*mount_record)
+        ))
         return EINVAL;
 
     *field_text = (const char *)mount_record + (uint32_t)descriptor->vmt_off;
-    const uint32_t text_length = calculate_bounded_opcode_specific_argument_length (
-        *field_text,
-        (uint32_t)descriptor->vmt_size,
-        (uint32_t)descriptor->vmt_size
-    );
-
+    const uint32_t text_length =
+        calculate_bounded_opcode_specific_argument_length (*field_text, (uint32_t)descriptor->vmt_size, (uint32_t)descriptor->vmt_size);
     if (descriptor->vmt_size == 0)
         return EINVAL;
 

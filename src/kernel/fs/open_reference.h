@@ -4,6 +4,8 @@
 #ifndef USFS_FS_OPEN_REFERENCE_H
 #define USFS_FS_OPEN_REFERENCE_H
 
+/* Caller owns a vnode reference until after any terminal backend RELEASE.
+ * State selection and reference changes use global_lock; RPCs never do. */
 static void usfs_put_open_reference (
     struct vnode * file_vnode,
     struct usfs_open_state * open_state,

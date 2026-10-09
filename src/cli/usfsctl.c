@@ -1,13 +1,13 @@
 /*
-    Copyright (c) 2026 Raman Dzehtsiar
-    SPDX-License-Identifier: MIT
-
-    usfsctl executable - USFS administration and diagnostics utility.
-
-    Invoked directly by administrators or scripts to inspect the running
-    filesystem and collect diagnostic information during normal operation
-    or troubleshooting. It provides device status reporting and manages
-    native AIX trace sessions, with readable reports for later analysis.
+ * Copyright (c) 2026 Raman Dzehtsiar
+ * SPDX-License-Identifier: MIT
+ *
+ * usfsctl executable - USFS administration and diagnostics utility.
+ *
+ * Invoked directly by administrators or scripts to inspect the running
+ * filesystem and collect diagnostic information during normal operation
+ * or troubleshooting. It provides device status reporting and manages
+ * native AIX trace sessions, with readable reports for later analysis.
  */
 
 #include <dirent.h>

@@ -1,7 +1,7 @@
 #!/usr/bin/ksh
 # Copyright (c) 2026 Raman Dzehtsiar
 # SPDX-License-Identifier: MIT
-
+#
 # Transaction boundary used by the USFS RPM scriptlets.
 
 set -u

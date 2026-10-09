@@ -1,16 +1,16 @@
 /*
-    Copyright (c) 2026 Raman Dzehtsiar
-    SPDX-License-Identifier: MIT
-
-    ucfgusfs executable - USFS device Unconfigure method.
-
-    Invoked by the ODM configuration framework when a USFS device is taken
-    offline, e.g. `rmdev -l usfs0` runs `ucfgusfs -l usfs0`. It reverses the
-    work done by cfgusfs: CFG_TERM, device-number release, ODM status update,
-    /dev node removal and kernel extension unload.
-
-    The shared implementation holds the ODM configuration lock across the
-    complete transaction.
+ * Copyright (c) 2026 Raman Dzehtsiar
+ * SPDX-License-Identifier: MIT
+ *
+ * ucfgusfs executable - USFS device Unconfigure method.
+ *
+ * Invoked by the ODM configuration framework when a USFS device is taken
+ * offline, e.g. `rmdev -l usfs0` runs `ucfgusfs -l usfs0`. It reverses the
+ * work done by cfgusfs: CFG_TERM, device-number release, ODM status update,
+ * /dev node removal and kernel extension unload.
+ *
+ * The shared implementation holds the ODM configuration lock across the
+ * complete transaction.
  */
 
 #include "usfs_common.h"
