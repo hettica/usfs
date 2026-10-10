@@ -876,6 +876,14 @@ static void test_read_reply_bounds (struct tap_state * tap)
     client->fd = 73;
     context.client = client;
     context.header = &request_header;
+    request_header.nodeid = USFS_ROOT_ID;
+
+    struct client_handle * handle = calloc (1, sizeof (*handle));
+    struct open_handle_state opened = { 0 };
+    opened.nodeid = USFS_ROOT_ID;
+    opened.file_info.value = 123;
+    publish_client_handle (client, handle, &opened);
+    read_request.fh = opened.wire_fh;
     read_request.size = sizeof (data);
 
     backend_read_result = 0;
@@ -1451,7 +1459,7 @@ static void * append_dispatch (void * argument)
     {
         struct usfs_setattr_in change = { 0 };
         change.valid = USFS_SET_SIZE;
-        change.fh = 900 + job->actor;
+        change.fh = 0;
         in.opcode = USFS_OP_SETATTR;
         memcpy (message + size, &change, sizeof (change));
         size += sizeof (change);
@@ -1503,6 +1511,20 @@ static void test_append_transactions (struct tap_state * tap)
         other = find_or_create_node (f, USFS_ROOT_ID, "independent", &st);
         if (a == NULL || alias != a || other == NULL)
             abort ();
+
+        for (int actor = 1; actor <= 3; ++actor)
+        {
+            struct client_handle * handle = calloc (1, sizeof (*handle));
+            struct open_handle_state opened = { 0 };
+
+            if (handle == NULL)
+                abort ();
+
+            opened.nodeid = actor == 3 ? other->id : a->id;
+            opened.file_info.value = (uint64_t)(900 + actor);
+            publish_client_handle (f, handle, &opened);
+        }
+
         memset (&append_test, 0, sizeof (append_test));
         append_test.active = 1;
         first = (struct append_job){ f, a->id, 1, 0 };
@@ -1596,7 +1618,20 @@ static int metadata_chmod (const struct usfs_client_request * callback_request, 
 {
     (void)callback_request;
     ++metadata_calls;
-    return path == NULL && mode == 0600 && fi != NULL && fi->value == 902 ? 0 : -EIO;
+    return path == NULL && mode == 0600 && fi == NULL ? -ESTALE : -EIO;
+}
+
+static int metadata_getattr (
+    const struct usfs_client_request * callback_request,
+    const char * path,
+    struct stat * attributes,
+    struct usfs_open_file * file_info
+)
+{
+    (void)callback_request;
+    (void)attributes;
+
+    return path == NULL && file_info == NULL ? -ESTALE : -EIO;
 }
 
 static void test_detached_metadata (struct tap_state * tap)
@@ -1613,6 +1648,7 @@ static void test_detached_metadata (struct tap_state * tap)
     struct client_node * old;
     ops.unlink = identity_remove;
     ops.chmod = metadata_chmod;
+    ops.getattr = metadata_getattr;
     f = new_test_client (&ops, sizeof (ops), NULL);
     if (f == NULL)
         abort ();
@@ -1631,10 +1667,10 @@ static void test_detached_metadata (struct tap_state * tap)
     change.mode = 0600;
     metadata_calls = 0;
     handle_setattr_request (&context, (char *)&change, sizeof (change));
-    tap_ok (tap, captured_reply.error == ESTALE && metadata_calls == 0, "detached setattr without a handle cannot mutate a replacement pathname");
+    tap_ok (tap, captured_reply.error == ESTALE && metadata_calls == 1, "detached object callback rejects an unresolved identity without touching a replacement pathname");
     change.fh = 902;
     handle_setattr_request (&context, (char *)&change, sizeof (change));
-    tap_ok (tap, captured_reply.error == 0 && metadata_calls == 1, "detached setattr supplies the retained handle and no former pathname");
+    tap_ok (tap, captured_reply.error == ESTALE && metadata_calls == 1, "stale nonzero handle is rejected before a backend callback");
     change.valid |= USFS_SET_CTIME;
     handle_setattr_request (&context, (char *)&change, sizeof (change));
     tap_ok (tap, captured_reply.error == EOPNOTSUPP && metadata_calls == 1, "unsupported ctime rejects a mixed request before chmod");
@@ -1642,7 +1678,7 @@ static void test_detached_metadata (struct tap_state * tap)
     handle_setattr_request (&context, (char *)&change, sizeof (change));
     tap_ok (tap, captured_reply.error == EOPNOTSUPP && metadata_calls == 1, "ctime-only request cannot silently succeed");
     handle_getattr_request (&context, (char *)&attributes, sizeof (attributes));
-    tap_ok (tap, captured_reply.error == ESTALE, "detached metadata authorization without a handle fails closed");
+    tap_ok (tap, captured_reply.error == ESTALE, "detached metadata without an object anchor fails closed");
     (last_native_result = usfs_client_destroy (&f));
 }
 
@@ -2392,14 +2428,14 @@ static int directory_cached (struct usfs_client * f, uint64_t nodeid)
 static int directory_listing (
     const struct usfs_client_request * callback_request,
     const char * path,
-    struct usfs_open_file * fi,
+    const struct usfs_object_identity * identity,
     struct usfs_directory_sink * sink
 )
 {
     (void)callback_request;
     unsigned i;
     (void)path;
-    (void)fi;
+    (void)identity;
     ++directory_callbacks;
     for (i = 0; i < 600; ++i)
     {
@@ -2416,13 +2452,13 @@ static unsigned partial_directory_calls;
 static int one_entry_then_error (
     const struct usfs_client_request * callback_request,
     const char * path,
-    struct usfs_open_file * file_info,
+    const struct usfs_object_identity * identity,
     struct usfs_directory_sink * sink
 )
 {
     (void)callback_request;
     (void)path;
-    (void)file_info;
+    (void)identity;
     partial_directory_calls++;
     if (usfs_directory_add (sink, "entry", NULL) != 0)
         return -EIO;
@@ -2464,17 +2500,42 @@ static void test_partial_readdir_error (struct tap_state * tap)
     (last_native_result = usfs_client_destroy (&client));
 }
 
+static void test_readdir_rejects_wire_handle (struct tap_state * tap)
+{
+    enum { INVALID_READDIR_WIRE_HANDLE = 123 };
+
+    struct usfs_operations operations = { 0 };
+    operations.readdir = one_entry_then_error;
+
+    struct usfs_client * client = new_test_client (&operations, sizeof (operations), NULL);
+    if (client == NULL)
+        abort ();
+
+    client->fd = 73;
+    struct usfs_in_hdr header = { .nodeid = USFS_ROOT_ID };
+    struct request_context context = { .client = client, .header = &header };
+    struct usfs_readdir_in request = { .fh = INVALID_READDIR_WIRE_HANDLE, .size = USFS_MAX_DATA };
+    partial_directory_calls = 0;
+
+    handle_readdir_request (&context, (const char *)&request, sizeof (request));
+    tap_ok (tap, captured_reply.error == EINVAL && partial_directory_calls == 0,
+            "readdir rejects a nonzero wire handle before entering the backend");
+
+    (last_native_result = usfs_client_destroy (&client));
+}
+
 static struct usfs_client * listing_client;
 static int listing_release;
+static uint64_t other_listing_nodeid;
 static int isolated_listing (
     const struct usfs_client_request * callback_request,
     const char * path,
-    struct usfs_open_file * fi,
+    const struct usfs_object_identity * identity,
     struct usfs_directory_sink * sink
 )
 {
     (void)callback_request;
-    const char * order = fi->value == 202 ? "cdab" : "abcd";
+    const char * order = identity != NULL && identity->nodeid == other_listing_nodeid ? "cdab" : "abcd";
     (void)path;
     ++directory_callbacks;
     for (unsigned i = 0; i < 4; ++i)
@@ -2495,7 +2556,7 @@ static int isolated_listing (
     return 0;
 }
 
-static int listing_window (struct usfs_client * f, uint64_t fh, unsigned uid, uint64_t cookie, const char * expected, uint64_t * snapshot_id)
+static int listing_window (struct usfs_client * f, uint64_t nodeid, unsigned uid, uint64_t cookie, const char * expected, uint64_t * snapshot_id)
 {
     struct usfs_in_hdr in = { 0 };
     struct request_context context = { 0 };
@@ -2506,14 +2567,15 @@ static int listing_window (struct usfs_client * f, uint64_t fh, unsigned uid, ui
     struct usfs_readdir_in din = { 0 };
     struct usfs_readdir_out out;
     size_t pos = sizeof (struct usfs_reply_header) + sizeof (out);
-    in.nodeid = USFS_ROOT_ID;
+    in.nodeid = nodeid;
     in.uid = uid;
     in.gid = uid + 10;
     in.pid = uid + 100;
-    din.fh = fh;
+    din.fh = 0;
     din.cookie = cookie;
     din.size = 2 * USFS_DIRENT_SIZE (1);
     set_request_context (f, &in);
+    set_request_object_identity (USFS_OP_READDIR, nodeid, find_node_by_id (f, nodeid));
     handle_readdir_request (&context, (char *)&din, sizeof (din));
     memcpy (&out, get_reply_buffer (f) + sizeof (struct usfs_reply_header), sizeof (out));
     if (snapshot_id != NULL)
@@ -2549,57 +2611,59 @@ static void test_directory_isolation (struct tap_state * tap)
 
     f->fd = 73;
     directory_callbacks = 0;
-    directory_test_handle (f, 1, 101);
-    directory_test_handle (f, 1, 202);
+    directory_test_handle (f, USFS_ROOT_ID, 101);
+    directory_test_handle (f, USFS_ROOT_ID, 202);
 
-    int valid = listing_window (f, 101, 1, 0, "ab", &first_id) && listing_window (f, 202, 1, 0, "cd", &second_id) && first_id != second_id &&
-                listing_window (f, 101, 1, listing_cursor (first_id, 2), "cd", NULL) &&
-                listing_window (f, 202, 1, listing_cursor (second_id, 2), "ab", NULL);
-    tap_ok (tap, valid && directory_callbacks == 2, "independent directory opens retain their own cursor and continuation order");
+    int valid = listing_window (f, USFS_ROOT_ID, 1, 0, "ab", &first_id) &&
+                listing_window (f, USFS_ROOT_ID, 1, 0, "ab", &second_id) && first_id != second_id &&
+                listing_window (f, USFS_ROOT_ID, 1, listing_cursor (first_id, 2), "cd", NULL) &&
+                listing_window (f, USFS_ROOT_ID, 1, listing_cursor (second_id, 2), "cd", NULL);
+    tap_ok (tap, valid && directory_callbacks == 2, "alternating opens on one directory continue their own snapshots");
 
-    valid = listing_window (f, 101, 2, 0, "AB", &other_user_id) && other_user_id != first_id &&
-            listing_window (f, 101, 1, listing_cursor (first_id, 2), "cd", NULL) &&
-            listing_window (f, 101, 2, listing_cursor (other_user_id, 2), "CD", NULL);
-    tap_ok (tap, valid && directory_callbacks == 3, "directory cursors cannot cross request credential contexts");
+    struct client_handle * closed = f->handles;
+    f->handles = closed->next;
+    dispose_client_handle (f, closed);
+    valid = listing_window (f, USFS_ROOT_ID, 1, listing_cursor (first_id, 2), "cd", NULL);
+    tap_ok (tap, valid, "closing another open does not invalidate a directory snapshot");
 
-    valid = !listing_window (f, 101, 2, listing_cursor (first_id, 2), "CD", NULL) && captured_reply.error == ESTALE;
-    tap_ok (tap, valid, "cursor identity rejects a different credential context");
+    struct client_node * other = find_or_create_node (f, USFS_ROOT_ID, "other", NULL);
+    other_listing_nodeid = other->id;
+    valid = listing_window (f, other->id, 1, 0, "cd", &second_id) &&
+            listing_window (f, other->id, 1, listing_cursor (second_id, 2), "ab", NULL) &&
+            !listing_window (f, USFS_ROOT_ID, 1, listing_cursor (second_id, 2), "ab", NULL) && captured_reply.error == ESTALE;
+    tap_ok (tap, valid, "a snapshot cursor cannot cross directory node identities");
 
-    uint64_t handleless_id = 0;
-    valid = listing_window (f, 0, 1, 0, "ab", &handleless_id) && listing_window (f, 0, 1, listing_cursor (handleless_id, 2), "cd", NULL);
-    tap_ok (tap, valid, "handleless directory walk retains its own snapshot");
+    valid = listing_window (f, USFS_ROOT_ID, 2, 0, "AB", &other_user_id) &&
+            listing_window (f, USFS_ROOT_ID, 2, listing_cursor (other_user_id, 2), "CD", NULL) &&
+            !listing_window (f, USFS_ROOT_ID, 2, listing_cursor (first_id, 2), "CD", NULL) && captured_reply.error == ESTALE;
+    tap_ok (tap, valid, "directory snapshots are isolated by credentials");
 
-    valid = listing_window (f, 0, 1, listing_cursor (handleless_id, 4), "", NULL) &&
-            listing_window (f, 0, 1, listing_cursor (handleless_id, 4), "", NULL) &&
-            !listing_window (f, 0, 1, listing_cursor (handleless_id, 2), "cd", NULL) && captured_reply.error == ESTALE;
-    tap_ok (tap, valid, "completed handleless walk repeats EOF and rejects backward seeks");
+    valid = listing_window (f, USFS_ROOT_ID, 1, listing_cursor (first_id, 4), "", NULL) &&
+            listing_window (f, USFS_ROOT_ID, 1, listing_cursor (first_id, 2), "cd", NULL);
+    tap_ok (tap, valid, "backward seek remains available after EOF");
 
     uint64_t evicted_id = 0;
-    valid = listing_window (f, 101, 1, 0, "ab", &evicted_id);
-    for (unsigned i = 0; i < CLIENT_DIRCACHE_SLOTS + 1; ++i)
-    {
-        directory_test_handle (f, 1, 300 + i);
-        valid &= listing_window (f, 300 + i, 1, 0, "ab", NULL);
-    }
-    valid &= !listing_window (f, 101, 1, listing_cursor (evicted_id, 2), "cd", NULL) && captured_reply.error == ESTALE;
-    valid &= listing_window (f, 101, 1, 0, "ab", NULL);
-    tap_ok (tap, valid, "evicted cursor fails explicitly and rewind rebuilds the listing");
+    valid = listing_window (f, USFS_ROOT_ID, 1, 0, "ab", &evicted_id);
+    for (unsigned snapshot_index = 0; snapshot_index < CLIENT_DIRCACHE_SLOTS + 1; ++snapshot_index)
+        valid &= listing_window (f, USFS_ROOT_ID, 1, 0, "ab", NULL);
 
-    directory_test_handle (f, 1, 505);
+    valid &= !listing_window (f, USFS_ROOT_ID, 1, listing_cursor (evicted_id, 2), "cd", NULL) && captured_reply.error == ESTALE;
+    tap_ok (tap, valid, "bounded eviction explicitly expires old cursors");
+
     listing_client = f;
     listing_release = 1;
-    valid = !listing_window (f, 505, 1, 0, "ab", NULL) && captured_reply.error == ESTALE;
-    directory_test_handle (f, 1, 505);
-    valid &= listing_window (f, 505, 1, 0, "ab", NULL);
-    tap_ok (tap, valid, "release during construction prevents publishing a stale handle snapshot");
+    valid = listing_window (f, USFS_ROOT_ID, 1, 0, "ab", &first_id) &&
+            listing_window (f, USFS_ROOT_ID, 1, listing_cursor (first_id, 2), "cd", NULL);
+    tap_ok (tap, valid, "closing an open during enumeration does not invalidate an object snapshot");
 
-    valid = listing_window (f, 0, 1, 0, "ab", &handleless_id);
-    invalidate_node_directory_cache (f, 1);
-    valid &= !directory_cached (f, 1) && !listing_window (f, 0, 1, listing_cursor (handleless_id, 2), "cd", NULL) && captured_reply.error == ESTALE;
-    tap_ok (tap, valid, "namespace invalidation expires handleless and open-handle cursors");
+    valid = listing_window (f, USFS_ROOT_ID, 1, 0, "ab", &first_id);
+    invalidate_node_directory_cache (f, USFS_ROOT_ID);
+    valid &= !directory_cached (f, USFS_ROOT_ID) &&
+             !listing_window (f, USFS_ROOT_ID, 1, listing_cursor (first_id, 2), "cd", NULL) && captured_reply.error == ESTALE;
+    tap_ok (tap, valid, "directory content mutation invalidates its snapshots");
 
     uint64_t pressure_id = 0;
-    valid = listing_window (f, 0, 1, 0, "ab", &pressure_id);
+    valid = listing_window (f, USFS_ROOT_ID, 1, 0, "ab", &pressure_id);
     struct client_dircache * pressure_snapshot = NULL;
     for (unsigned slot_index = 0; slot_index < CLIENT_DIRCACHE_SLOTS; ++slot_index)
         if (f->dircache[slot_index].snapshot_id == pressure_id)
@@ -2612,10 +2676,10 @@ static void test_directory_isolation (struct tap_state * tap)
     struct usfs_directory_sink pressure_buffer = { 0 };
     pressure_buffer.client = f;
     valid &= pressure_snapshot != NULL && reserve_directory_spool (&pressure_buffer, 1) == 0 &&
-             !listing_window (f, 0, 1, listing_cursor (pressure_id, 2), "cd", NULL) && captured_reply.error == ESTALE;
+             !listing_window (f, USFS_ROOT_ID, 1, listing_cursor (pressure_id, 2), "cd", NULL) && captured_reply.error == ESTALE;
     release_directory_buffer (&pressure_buffer);
     valid &= f->dircache_spool_bytes == 0;
-    tap_ok (tap, valid, "storage pressure reclaims a handleless snapshot and expires its cursor");
+    tap_ok (tap, valid, "storage pressure evicts the oldest snapshot and expires its cursor");
 
     (last_native_result = usfs_client_destroy (&f));
     listing_client = NULL;
@@ -2642,8 +2706,7 @@ static void test_directory_failures (struct tap_state * tap)
         f->fd = 73;
         context.client = f;
         in.nodeid = USFS_ROOT_ID;
-        din.fh = 101;
-        directory_test_handle (f, in.nodeid, din.fh);
+        din.fh = 0;
         din.size = 128;
         directory_fail_growth = directory_callback_error = 0;
         handle_readdir_request (&context, (char *)&din, sizeof (din));
@@ -2682,8 +2745,7 @@ static void test_directory_failures (struct tap_state * tap)
         f->fd = 73;
         context.client = f;
         in.nodeid = USFS_ROOT_ID;
-        din.fh = 101;
-        directory_test_handle (f, in.nodeid, din.fh);
+        din.fh = 0;
         din.size = 128;
         directory_callbacks = directory_growths = 0;
         if (failure == 5)
@@ -2760,13 +2822,13 @@ enum
 static int large_directory_listing (
     const struct usfs_client_request * callback_request,
     const char * path,
-    struct usfs_open_file * file_info,
+    const struct usfs_object_identity * identity,
     struct usfs_directory_sink * sink
 )
 {
     (void)callback_request;
     (void)path;
-    (void)file_info;
+    (void)identity;
     ++directory_callbacks;
 
     for (unsigned entry_index = 0; entry_index < LARGE_DIRECTORY_ENTRIES; ++entry_index)
@@ -2802,9 +2864,8 @@ static void test_large_directory_spool (struct tap_state * tap)
     header.uid = 501;
     context.client = client;
     context.header = &header;
-    request.fh = 101;
+    request.fh = 0;
     request.size = USFS_MAX_DATA;
-    directory_test_handle (client, USFS_ROOT_ID, request.fh);
     directory_callbacks = directory_spool_opens = directory_spool_closes = 0;
 
     do
@@ -2879,7 +2940,6 @@ static void test_large_directory_spool (struct tap_state * tap)
         client->fd = 73;
         context.client = client;
         request.cookie = 0;
-        directory_test_handle (client, USFS_ROOT_ID, request.fh);
         directory_spool_create_error = failure == 0;
         directory_spool_write_error = failure == 1;
         if (failure == 2)
@@ -3100,8 +3160,7 @@ static void test_identity_reclamation (struct tap_state * tap)
         node = find_or_create_node (f, 1, name, NULL);
         id = node->id;
         directory_test_handle (f, id, id);
-        key.nodeid = key.fh = id;
-        key.generation = f->handles->generation;
+        key.nodeid = id;
         db.client = f;
         db.data = malloc (8);
         db.len = 8;
@@ -3115,9 +3174,12 @@ static void test_identity_reclamation (struct tap_state * tap)
         f->handles = closed->next;
         dispose_client_handle (f, closed);
         collect_unreferenced_nodes (f);
+        valid &= find_node_by_id (f, id) != NULL && directory_cached (f, id);
+        invalidate_node_directory_cache (f, id);
+        collect_unreferenced_nodes (f);
         valid &= identity_nodes (f) == 0 && !directory_cached (f, id);
     }
-    tap_ok (tap, valid, "directory release drops cached ownership and reclaims unused identities");
+    tap_ok (tap, valid, "directory snapshot survives close and relinquishes identity after invalidation");
     (last_native_result = usfs_client_destroy (&f));
 
     ops.open = flags_open;
@@ -4064,7 +4126,7 @@ static void test_native_api_contract (struct tap_state * tap)
 int main (void)
 {
     struct tap_state tap;
-    tap_plan (&tap, 267);
+    tap_plan (&tap, 268);
     test_native_api_contract (&tap);
     tap_ok (&tap, get_callback_request () == NULL, "no callback context leaks outside callback scope");
     test_lifecycle_context (&tap);
@@ -4094,6 +4156,7 @@ int main (void)
     test_memfs_buffer_capacity (&tap);
     test_directory_failures (&tap);
     test_partial_readdir_error (&tap);
+    test_readdir_rejects_wire_handle (&tap);
     test_directory_isolation (&tap);
     test_large_directory_spool (&tap);
     test_directory_ram_bound (&tap);

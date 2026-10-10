@@ -23,7 +23,7 @@
 # Environment knobs:
 #   MIRROR_PHASES  comma-separated phases to run, or "all"   (default all)
 #                  structure content dotdot mutations bigdir concurrent
-#                  exec real shutdown
+#                  identity exec real shutdown
 #   MIRROR_SRC     real subtree used by the "real" phase     (default /usr/include)
 #   N_ENTRIES      max paths compared in the "real" phase    (default 400)
 #   N_DAEMONS      concurrent mirrors in the shutdown phase  (default 2)
@@ -324,6 +324,30 @@ phase_bigdir()
     fi
 }
 
+phase_identity()
+{
+    say "STEP identity: alternating directory readers, close, seek, dup, and fork"
+
+    if /usr/sbin/usfs_io_probe serial-two-open "$1/many" >>"$LOGFILE" 2>&1; then
+        say "OK   serial two-open reproducer returns every entry"
+    else
+        fail "serial two-open reproducer lost directory entries"
+    fi
+
+    if /usr/sbin/usfs_io_probe directory-readers "$1/many" >>"$LOGFILE" 2>&1; then
+        say "OK   directory readers retain their own cursor state"
+    else
+        fail "directory reader identity or continuation failed"
+    fi
+
+    say "STEP identity: reading objects after source rename, removal, and replacement"
+    if /usr/sbin/usfs_io_probe mirror-detached-objects "$FIXTURE" "$1" >>"$LOGFILE" 2>&1; then
+        say "OK   held mirror objects survive source name changes"
+    else
+        fail "mirror selected a replacement or lost a detached object"
+    fi
+}
+
 phase_concurrent()
 {
     say "STEP concurrent: $N_READERS readers against one mount"
@@ -579,7 +603,7 @@ snapshot "before start"
 # Phases that share one long-lived mirror of the fixture.
 if phase_enabled structure || phase_enabled content || phase_enabled dotdot ||
    phase_enabled mutations || phase_enabled bigdir || phase_enabled statfs ||
-   phase_enabled concurrent || phase_enabled exec; then
+   phase_enabled concurrent || phase_enabled identity || phase_enabled exec; then
 
     say "STEP starting mirror of the fixture"
     info=$(start_mirror "$FIXTURE")
@@ -598,6 +622,7 @@ if phase_enabled structure || phase_enabled content || phase_enabled dotdot ||
         phase_enabled bigdir     && phase_bigdir     "$fmnt"
         phase_enabled statfs     && phase_statfs     "$fmnt"
         phase_enabled concurrent && phase_concurrent "$fmnt"
+        phase_enabled identity   && phase_identity   "$fmnt"
         phase_enabled exec       && phase_exec       "$fmnt"
 
         say "STEP stopping the fixture mirror"

@@ -15,7 +15,7 @@
  *
  * Compile with:
  *
- *     gcc -maix64 -Isrc/client/include memfs.c libusfs.a -o usfs_memfs
+ *     gcc -maix64 -pthread -Isrc/client/include memfs.c libusfs.a -lpthreads -o usfs_memfs
  *
  * Usage:
  *
@@ -428,7 +428,13 @@ static void handle_close (const uint64_t handle_id)
 
 /* Resolves the inode an operation should act on, preferring an open handle so
    that a file unlinked while open is still reachable. */
-static struct mem_inode * find_operation_inode (const char * path, struct usfs_open_file * file_info)
+static struct mem_inode * find_live_inode_by_id (uint64_t token);
+
+static struct mem_inode * find_operation_inode (
+    const struct usfs_client_request * request,
+    const char * path,
+    struct usfs_open_file * file_info
+)
 {
     if (file_info != NULL)
     {
@@ -437,7 +443,24 @@ static struct mem_inode * find_operation_inode (const char * path, struct usfs_o
         return file_handle != NULL ? file_handle->inode : NULL;
     }
 
-    return resolve (path, NULL, NULL);
+    const struct usfs_object_identity * identity = usfs_request_object_identity (request);
+
+    if (identity != NULL && identity->has_backend_identity)
+    {
+        struct mem_inode * inode = find_live_inode_by_id (identity->backend_ino);
+
+        if (inode != NULL && (inode->mode & S_IFMT) == identity->backend_type)
+            return inode;
+
+        return NULL;
+    }
+
+    return path != NULL ? resolve (path, NULL, NULL) : NULL;
+}
+
+static int missing_operation_inode_error (const struct usfs_client_request * request)
+{
+    return usfs_request_object_identity (request) != NULL ? -ESTALE : -ENOENT;
 }
 
 static void fill_file_attributes (const struct mem_inode * inode, struct stat * file_attributes)
@@ -573,12 +596,17 @@ static void destroy_filesystem (const struct usfs_client_request * request)
     /* The process is exiting; the whole file system goes with it. */
 }
 
-static int get_file_attributes_locked (const char * path, struct stat * file_attributes, struct usfs_open_file * file_info)
+static int get_file_attributes_locked (
+    const struct usfs_client_request * request,
+    const char * path,
+    struct stat * file_attributes,
+    struct usfs_open_file * file_info
+)
 {
-    struct mem_inode * inode = find_operation_inode (path, file_info);
+    struct mem_inode * inode = find_operation_inode (request, path, file_info);
 
     if (inode == NULL)
-        return -ENOENT;
+        return missing_operation_inode_error (request);
 
     fill_file_attributes (inode, file_attributes);
 
@@ -748,15 +776,27 @@ static int read_symbolic_link_locked (const char * path, char * buffer, size_t b
     return 0;
 }
 
-static int read_directory_locked (const char * path, struct usfs_open_file * file_info, struct usfs_directory_sink * sink)
+static int read_directory_locked (
+    const char * path,
+    const struct usfs_object_identity * identity,
+    struct usfs_directory_sink * sink
+)
 {
-    struct mem_inode * inode = find_operation_inode (path, file_info);
+    struct mem_inode * inode = NULL;
+
+    if (identity != NULL && identity->has_backend_identity)
+        inode = find_live_inode_by_id (identity->backend_ino);
+    else if (path != NULL)
+        inode = resolve (path, NULL, NULL);
     struct mem_dirent * directory_entry;
     struct stat file_attributes;
 
 
     if (inode == NULL)
-        return -ENOENT;
+        return -ESTALE;
+
+    if (identity != NULL && identity->has_backend_identity && (inode->mode & S_IFMT) != identity->backend_type)
+        return -ESTALE;
 
     if (!S_ISDIR (inode->mode))
         return -ENOTDIR;
@@ -1082,7 +1122,7 @@ static int open_directory_locked (const char * path, struct usfs_open_file * fil
 
 static int read_file_locked (const char * path, char * buffer, size_t requested_bytes, const off_t offset, struct usfs_open_file * file_info)
 {
-    struct mem_inode * inode = find_operation_inode (path, file_info);
+    struct mem_inode * inode = find_operation_inode (NULL, path, file_info);
     struct mem_handle * file_handle = (file_info != NULL) ? find_file_handle (file_info->value - 1) : NULL;
     size_t available_bytes;
 
@@ -1359,7 +1399,7 @@ static int rename_entry_locked (const char * source_path, const char * destinati
  */
 static int write_file_locked (const char * path, const char * buffer, size_t requested_bytes, const off_t offset, struct usfs_open_file * file_info)
 {
-    struct mem_inode * inode = find_operation_inode (path, file_info);
+    struct mem_inode * inode = find_operation_inode (NULL, path, file_info);
     struct mem_handle * file_handle = (file_info != NULL) ? find_file_handle (file_info->value - 1) : NULL;
     size_t write_end, maximum_file_capacity;
     int operation_result;
@@ -1420,12 +1460,17 @@ static int write_file_locked (const char * path, const char * buffer, size_t req
  * system does not enforce them: it has no business second-guessing the access
  * checks the kernel already made on the caller's behalf.
  */
-static int change_file_permissions_locked (const char * path, const mode_t mode, struct usfs_open_file * file_info)
+static int change_file_permissions_locked (
+    const struct usfs_client_request * request,
+    const char * path,
+    const mode_t mode,
+    struct usfs_open_file * file_info
+)
 {
-    struct mem_inode * inode = find_operation_inode (path, file_info);
+    struct mem_inode * inode = find_operation_inode (request, path, file_info);
 
     if (inode == NULL)
-        return -ENOENT;
+        return missing_operation_inode_error (request);
 
     /* Keep the type bits; only the permission bits are being set. */
     inode->mode = (inode->mode & S_IFMT) | (mode & 07777);
@@ -1434,12 +1479,18 @@ static int change_file_permissions_locked (const char * path, const mode_t mode,
     return 0;
 }
 
-static int change_file_owner_locked (const char * path, const uid_t uid, const gid_t gid, struct usfs_open_file * file_info)
+static int change_file_owner_locked (
+    const struct usfs_client_request * request,
+    const char * path,
+    const uid_t uid,
+    const gid_t gid,
+    struct usfs_open_file * file_info
+)
 {
-    struct mem_inode * inode = find_operation_inode (path, file_info);
+    struct mem_inode * inode = find_operation_inode (request, path, file_info);
 
     if (inode == NULL)
-        return -ENOENT;
+        return missing_operation_inode_error (request);
 
     /* -1 means "leave this one alone". */
     if (uid != (uid_t)-1)
@@ -1452,13 +1503,18 @@ static int change_file_owner_locked (const char * path, const uid_t uid, const g
     return 0;
 }
 
-static int truncate_file_locked (const char * path, off_t new_file_size, struct usfs_open_file * file_info)
+static int truncate_file_locked (
+    const struct usfs_client_request * request,
+    const char * path,
+    off_t new_file_size,
+    struct usfs_open_file * file_info
+)
 {
-    struct mem_inode * inode = find_operation_inode (path, file_info);
+    struct mem_inode * inode = find_operation_inode (request, path, file_info);
     int operation_result;
 
     if (inode == NULL)
-        return -ENOENT;
+        return missing_operation_inode_error (request);
 
     if (S_ISDIR (inode->mode))
         return -EISDIR;
@@ -1483,13 +1539,18 @@ static int truncate_file_locked (const char * path, off_t new_file_size, struct 
     return 0;
 }
 
-static int set_file_times_locked (const char * path, const struct timespec requested_times[2], struct usfs_open_file * file_info)
+static int set_file_times_locked (
+    const struct usfs_client_request * request,
+    const char * path,
+    const struct timespec requested_times[2],
+    struct usfs_open_file * file_info
+)
 {
-    struct mem_inode * inode = find_operation_inode (path, file_info);
+    struct mem_inode * inode = find_operation_inode (request, path, file_info);
     struct timespec current_time;
 
     if (inode == NULL)
-        return -ENOENT;
+        return missing_operation_inode_error (request);
 
     read_current_time (&current_time);
 
@@ -1610,7 +1671,7 @@ static int get_file_attributes (
 )
 {
     (void)request;
-    MEMFS_LOCKED_CALL (get_file_attributes_locked (path, file_attributes, file_info));
+    MEMFS_LOCKED_CALL (get_file_attributes_locked (request, path, file_attributes, file_info));
 }
 
 static int export_object_id (
@@ -1641,12 +1702,12 @@ static int read_symbolic_link (const struct usfs_client_request * request, const
 static int read_directory (
     const struct usfs_client_request * request,
     const char * path,
-    struct usfs_open_file * file_info,
+    const struct usfs_object_identity * identity,
     struct usfs_directory_sink * sink
 )
 {
     (void)request;
-    MEMFS_LOCKED_CALL (read_directory_locked (path, file_info, sink));
+    MEMFS_LOCKED_CALL (read_directory_locked (path, identity, sink));
 }
 
 static int memfs_mkdir (const struct usfs_client_request * request, const char * path, const mode_t mode)
@@ -1752,7 +1813,7 @@ static int change_file_permissions (
 )
 {
     (void)request;
-    MEMFS_LOCKED_CALL (change_file_permissions_locked (path, mode, file_info));
+    MEMFS_LOCKED_CALL (change_file_permissions_locked (request, path, mode, file_info));
 }
 
 static int change_file_owner (
@@ -1764,13 +1825,13 @@ static int change_file_owner (
 )
 {
     (void)request;
-    MEMFS_LOCKED_CALL (change_file_owner_locked (path, uid, gid, file_info));
+    MEMFS_LOCKED_CALL (change_file_owner_locked (request, path, uid, gid, file_info));
 }
 
 static int memfs_truncate (const struct usfs_client_request * request, const char * path, off_t new_file_size, struct usfs_open_file * file_info)
 {
     (void)request;
-    MEMFS_LOCKED_CALL (truncate_file_locked (path, new_file_size, file_info));
+    MEMFS_LOCKED_CALL (truncate_file_locked (request, path, new_file_size, file_info));
 }
 
 static int set_file_times (
@@ -1781,7 +1842,7 @@ static int set_file_times (
 )
 {
     (void)request;
-    MEMFS_LOCKED_CALL (set_file_times_locked (path, requested_times, file_info));
+    MEMFS_LOCKED_CALL (set_file_times_locked (request, path, requested_times, file_info));
 }
 
 static int memfs_release (const struct usfs_client_request * request, const char * path, struct usfs_open_file * file_info)

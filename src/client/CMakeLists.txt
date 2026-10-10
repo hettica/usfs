@@ -34,7 +34,7 @@ add_library(_usfs_client_objects OBJECT
 add_library(USFS::client_objects ALIAS _usfs_client_objects)
 set_target_properties(_usfs_client_objects PROPERTIES
     C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
-target_compile_options(_usfs_client_objects PUBLIC -maix64 PRIVATE
+target_compile_options(_usfs_client_objects PUBLIC -maix64 -pthread PRIVATE
     -Wall -Wextra -Werror -Wshadow -Wformat=2 -Wno-format-nonliteral
     -Wundef -Wpointer-arith -Wwrite-strings)
 target_link_options(_usfs_client_objects INTERFACE -maix64)
@@ -51,6 +51,6 @@ set_target_properties(_usfs_client PROPERTIES
     OUTPUT_NAME usfs PREFIX "lib" SUFFIX ".a")
 target_include_directories(_usfs_client INTERFACE
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>")
-target_compile_options(_usfs_client INTERFACE -maix64)
+target_compile_options(_usfs_client INTERFACE -maix64 -pthread)
 target_link_options(_usfs_client INTERFACE -maix64)
 target_link_libraries(_usfs_client INTERFACE pthreads)

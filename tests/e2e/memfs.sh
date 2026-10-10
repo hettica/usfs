@@ -674,6 +674,13 @@ phase_attrs()
 
 phase_openunlink()
 {
+    say "STEP openunlink: object-scoped directory and file operations after name changes"
+    if /usr/sbin/usfs_io_probe detached-objects "$1" >>"$LOGFILE" 2>&1; then
+        say "OK   renamed, removed, and replaced objects retain their own identity"
+    else
+        fail "detached directory or file operation selected a replacement object"
+    fi
+
     /usr/sbin/usfs_io_probe identity-churn "$1" >>"$LOGFILE" 2>&1 ||
         fail "unique-name and hard-link churn lost a held unlinked identity"
     say "STEP openunlink: recreated names have independent objects and mappings"

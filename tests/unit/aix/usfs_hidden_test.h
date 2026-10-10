@@ -463,19 +463,6 @@ static int null_handle_utimens (
     return check_hidden_handle_callback (path, file_info);
 }
 
-static int null_handle_readdir (
-    const struct usfs_client_request * callback_request,
-    const char * path,
-    struct usfs_open_file * file_info,
-    struct usfs_directory_sink * sink
-)
-{
-    (void)callback_request;
-    (void)sink;
-
-    return check_hidden_handle_callback (path, file_info);
-}
-
 static void exercise_null_handle_callbacks (struct usfs_client * client, const uint64_t nodeid)
 {
     struct usfs_in_hdr request = { .nodeid = nodeid };
@@ -488,7 +475,6 @@ static void exercise_null_handle_callbacks (struct usfs_client * client, const u
     struct usfs_fsync_in sync = { .fh = handle };
     const struct usfs_setattr_in changes = { .fh = handle,
                                              .valid = USFS_SET_MODE | USFS_SET_UID | USFS_SET_GID | USFS_SET_SIZE | USFS_SET_ATIME | USFS_SET_MTIME };
-    const struct usfs_readdir_in directory = { .fh = handle, .size = USFS_MAX_DATA };
 
     client->ops.write = null_handle_write;
     client->ops.flush = null_handle_flush;
@@ -498,7 +484,6 @@ static void exercise_null_handle_callbacks (struct usfs_client * client, const u
     client->ops.chown = null_handle_chown;
     client->ops.truncate = null_handle_truncate;
     client->ops.utimens = null_handle_utimens;
-    client->ops.readdir = null_handle_readdir;
 
     handle_getattr_request (&context, (const char *)&attributes, sizeof (attributes));
     handle_read_request (&context, (const char *)&read, sizeof (read));
@@ -508,7 +493,6 @@ static void exercise_null_handle_callbacks (struct usfs_client * client, const u
     sync.flags = USFS_FSYNC_DIRECTORY;
     handle_fsync_request (&context, (const char *)&sync, sizeof (sync));
     handle_setattr_request (&context, (const char *)&changes, sizeof (changes));
-    handle_readdir_request (&context, (const char *)&directory, sizeof (directory));
     release_hidden_fixture (client, nodeid);
 }
 
@@ -545,9 +529,9 @@ static void test_null_handle_paths (struct tap_state * tap)
         exercise_null_handle_callbacks (client, node->id);
         tap_ok (
             tap,
-            hidden_fixture.callback_errors == 0 && hidden_fixture.handle_callbacks == 12 && captured_reply.error == 0,
+            hidden_fixture.callback_errors == 0 && hidden_fixture.handle_callbacks == 11 && captured_reply.error == 0,
             path_case == DETACHED_HANDLE    ? "detached zero backend handles receive NULL paths and valid file-info in every supported callback"
-            : path_case == DIRECTORY_HANDLE ? "directory zero backend handles receive NULL paths in readdir, fsyncdir and releasedir"
+            : path_case == DIRECTORY_HANDLE ? "directory zero backend handles receive NULL paths in fsyncdir and releasedir"
             : path_case == HARD_REMOVE_DEFAULT_PATH ? "hard_remove preserves valid zero-handle callbacks even with nullpath_ok disabled"
                                                     : "named zero backend handles receive NULL paths and valid file-info in every supported callback"
         );
@@ -826,7 +810,7 @@ static void test_hidden_concurrency (struct tap_state * tap)
         if (pthread_create (&second_thread, NULL, dispatch_hidden_job, &second) != 0)
             abort ();
 
-        ns_wait_for (&ns_test.reader_events, 1);
+        ns_wait_for (scenario == RENAME_VERSUS_READ ? &ns_test.reader_events : &ns_test.writer_events, 1);
         ns_test.release_rename = 1;
         ns_test.release_read = 1;
         pthread_cond_broadcast (&ns_test_changed);

@@ -127,29 +127,6 @@ static int test_description_handle(struct usfs_node *node, caddr_t vinfo,
     return rc;
 }
 
-static int test_node_handle(struct usfs_node *node, int32long64_t flags,
-                             uint64_t *fh)
-{
-    struct usfs_open_state *state = NULL;
-    int rc = usfs_borrow_node_handle(node, flags, &state);
-    if (rc == 0) {
-        *fh = state->fh;
-        usfs_put_open_reference(node->vn, state, 1, NULL);
-    }
-    return rc;
-}
-
-static int test_mapping_handle(struct usfs_node *node, int write, uint64_t *fh)
-{
-    struct usfs_open_state *state = NULL;
-    int rc = usfs_borrow_node_handle(node, write ? FWRITE : FREAD, &state);
-    if (rc == 0) {
-        *fh = state->fh;
-        usfs_put_open_reference(node->vn, state, 1, NULL);
-    }
-    return rc;
-}
-
 static void test_close_flush(struct tap_state *tap)
 {
     struct usfs_node node;
@@ -212,11 +189,9 @@ static void test_borrowed_lifetime(struct tap_state *tap)
         attach_open_state(&node, old);
         if (variant == 2)
             (void)usfs_retain_mapping_state(&vnode, SHM_RDONLY, NULL);
-        tap_ok(tap, (variant == 2 ?
-                         usfs_borrow_node_handle(&node, FREAD, &borrowed) :
-                         usfs_borrow_node_handle(&node, FREAD, &borrowed)) == 0 &&
+        tap_ok(tap, usfs_borrow_description(&node, (caddr_t)old, &borrowed) == 0 &&
                        borrowed == old && old->operation_refs == 1,
-               "file, directory, and pager selection retain an operation reference");
+               "the exact file description retains an operation reference");
         (void)usfs_close_open_state(&node, (caddr_t)old);
         usfs_put_open_reference(&vnode, old, 0, &credential);
         if (variant == 2)
@@ -317,18 +292,18 @@ int main(void)
                  test_description_handle(&node, (caddr_t)writer, &fh) == 0 &&
                  fh == 202,
            "f_vinfo resolves each description's handle");
-    tap_ok(&tap, test_node_handle(&node, FREAD, &fh) == 0 &&
+    tap_ok(&tap, test_description_handle(&node, (caddr_t)reader, &fh) == 0 &&
                  fh == 101 &&
-                 test_node_handle(&node, FWRITE, &fh) == 0 &&
+                 test_description_handle(&node, (caddr_t)writer, &fh) == 0 &&
                  fh == 202,
-           "vnode-wide operations choose an access-compatible handle");
+           "exact file descriptions identify their own open handles");
 
     tap_ok(&tap, usfs_retain_mapping_state(&vnode, SHM_RDONLY, NULL) == 0 &&
                  usfs_retain_mapping_state(&vnode, 0, NULL) == 0 &&
                  node.mapping_count == 2 && vnode.v_count == 5,
            "read and write mappings retain compatible descriptions");
-    tap_ok(&tap, test_mapping_handle(&node, 1, &fh) == 0 && fh == 202,
-           "page-out selects a writable retained handle");
+    tap_ok(&tap, writer->write_mappings != 0 && writer->fh == 202,
+           "page-out keeps its writable mapping description");
 
     tap_ok(&tap, usfs_close_open_state(&node, (caddr_t)reader) == 0 &&
                  usfs_release_open_reference(&node, reader, 0, &release) == 0 &&

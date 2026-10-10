@@ -6,7 +6,6 @@
  */
 
 #define _ALL_SOURCE
-#define _THREAD_SAFE
 #include "../../examples/usfs_example.h"
 #include "tap.h"
 
@@ -350,12 +349,12 @@ static int path_utimens (
 static int path_readdir (
     const struct usfs_client_request * request,
     const char * path,
-    struct usfs_open_file * file_info,
+    const struct usfs_object_identity * identity,
     struct usfs_directory_sink * sink
 )
 {
     (void)request;
-    (void)file_info;
+    (void)identity;
     char resolved[PROBE_PATH_CAPACITY];
     const int rc = resolve_backing_path (path, resolved);
     if (rc != 0)

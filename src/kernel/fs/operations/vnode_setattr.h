@@ -11,7 +11,6 @@ struct attribute_change_context
     struct vnode * file_vnode;           // Vnode whose attributes will change.
     struct usfs_mount_data * mount_data; // Mounted instance used for protocol traffic.
     struct usfs_node * node;             // USFS node corresponding to file_vnode.
-    struct usfs_open_state * open_state; // Borrowed handle retained during the change.
     struct ucred * credentials;          // Credentials used for authorization.
     struct vattr current_attributes;     // Attributes used for authorization decisions.
     struct usfs_setattr_in request_body; // Validated mutation sent to the daemon.
@@ -229,17 +228,7 @@ static int prepare_attribute_change (struct attribute_change_context * context)
 
 static int read_current_attributes (struct attribute_change_context * context)
 {
-    if (context->open_state == NULL)
-        return gn_getattr (context->file_vnode, &context->current_attributes, context->credentials);
-
-    struct usfs_attr_out reply;
-    const int rc = _request_node_attributes_with_handle (context->mount_data, context->node, context->credentials, &reply, context->open_state->fh);
-    if (rc != 0)
-        return rc;
-
-    usfs_attr_to_vattr (&reply.attr, &context->current_attributes);
-
-    return 0;
+    return gn_getattr (context->file_vnode, &context->current_attributes, context->credentials);
 }
 
 static int prepare_attribute_change_request (struct attribute_change_context * context)
@@ -301,7 +290,7 @@ static int apply_prepared_attribute_change (struct attribute_change_context * co
     if (mode_change_conflicts_with_shared_mapping (context))
         return EBUSY;
 
-    const int rc = _setattr (context->file_vnode, &context->request_body, context->open_state == NULL ? 0 : context->open_state->fh, context->credentials);
+    const int rc = _setattr (context->file_vnode, &context->request_body, 0, context->credentials);
     if (rc != 0)
         return rc;
 
@@ -326,21 +315,7 @@ static int set_attributes_locked (struct attribute_change_context * context)
     if (context->node == NULL)
         return EIO;
 
-    int rc = usfs_borrow_node_handle (context->node, 0, &context->open_state);
-    if (rc != 0)
-    {
-        if (rc != EBADF)
-            return rc;
-    }
-
-    /* Keep the same object alive across authorization and mutation, including
-       concurrent close or final unmap. A detached object without a handle is
-       rejected by the daemon before any pathname callback. */
-    rc = process_attribute_change_locked (context);
-
-    usfs_put_open_reference (context->file_vnode, context->open_state, 1, context->credentials);
-
-    return rc;
+    return process_attribute_change_locked (context);
 }
 
 int gn_setattr (

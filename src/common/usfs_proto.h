@@ -51,7 +51,7 @@
  * the high 39 bits identify a snapshot, and the low 24 bits give its next
  * entry index. Zero starts a new snapshot. */
 /* Version 9 adds mount-scoped file identifiers and vnode reconstruction. */
-#define USFS_PROTOCOL_VERSION 9u
+#define USFS_PROTOCOL_VERSION 10u
 
 #define USFS_DIRECTORY_CURSOR_INDEX_BITS 24u
 #define USFS_DIRECTORY_CURSOR_INDEX_MASK ((1ull << USFS_DIRECTORY_CURSOR_INDEX_BITS) - 1ull)
@@ -158,7 +158,7 @@ struct usfs_release_in
 
 struct usfs_readdir_in
 {
-    uint64_t fh;     /* daemon directory handle, or zero for handleless walks */
+    uint64_t fh;     /* reserved; always zero */
     uint64_t cookie; /* 0 starts a snapshot; otherwise snapshot ID and entry index */
     uint32_t size;   /* max reply payload bytes, <= USFS_MAX_DATA */
     uint32_t pad;

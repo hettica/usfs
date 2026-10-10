@@ -23,7 +23,6 @@ struct readdir_request_context
 {
     struct usfs_mount_data * mount_data; // Mounted instance used for protocol traffic.
     struct usfs_node * node;             // Directory node being enumerated.
-    uint64_t file_handle;                // Daemon directory handle, or zero when absent.
     uint64_t cursor;                     // Opaque directory cursor requested.
     uint32_t maximum_payload_size;       // Maximum serialized entry bytes accepted.
     struct ucred * credentials;          // Credentials attached to the request.
@@ -69,7 +68,6 @@ static int request_directory_entries (const struct readdir_request_context * con
     struct usfs_request * request = NULL;
 
     memset (&request_body, 0, sizeof (request_body));
-    request_body.fh = context->file_handle;
     request_body.cookie = context->cursor;
     request_body.size = context->maximum_payload_size;
 
@@ -154,32 +152,6 @@ static int copy_directory_entries (
     return rc;
 }
 
-static int borrow_readdir_state (struct usfs_node * node, const struct uio * user_io_request, struct usfs_open_state ** open_state)
-{
-    int rc = EBADF;
-
-    if (user_io_request->uio_iovcnt > 1 && user_io_request->uio_iov[1].iov_len == 0 && user_io_request->uio_iov[1].iov_base != NULL)
-    {
-        /* AIX levels expose this zero-length side channel either as f_vinfo
-         * itself or as the address of the file field that contains it. */
-        caddr_t file_info = (caddr_t)user_io_request->uio_iov[1].iov_base;
-        rc = usfs_borrow_description (node, file_info, open_state);
-
-        if (rc == EBADF || rc == EINVAL)
-        {
-            file_info = *(caddr_t *)user_io_request->uio_iov[1].iov_base;
-            rc = usfs_borrow_description (node, file_info, open_state);
-        }
-    }
-
-    if (rc == EBADF || rc == EINVAL)
-    {
-        /* Kernel-internal directory walks may not have a file description. */
-        rc = usfs_borrow_node_handle (node, 0, open_state);
-    }
-    return rc;
-}
-
 static int read_directory (struct vnode * file_vnode, struct uio * user_io_request, int * end_of_directory, struct ucred * credentials)
 {
     if (end_of_directory != NULL)
@@ -208,11 +180,6 @@ static int read_directory (struct vnode * file_vnode, struct uio * user_io_reque
     if (directory_cursor != 0 && requested_snapshot_id == 0)
         return EINVAL;
 
-    struct usfs_open_state * open_state = NULL;
-    const int handle_rc = borrow_readdir_state (node, user_io_request, &open_state);
-    if (handle_rc != 0 && handle_rc != EBADF)
-        return handle_rc;
-
     /* Wire and native records have different sizes. Fetch a bounded window
      * independently of the native budget; copy only complete native entries. */
     const uint32_t max_payload = USFS_MAX_DATA;
@@ -220,7 +187,6 @@ static int read_directory (struct vnode * file_vnode, struct uio * user_io_reque
     const struct readdir_request_context request_context = {
         .mount_data = mount_data,
         .node = node,
-        .file_handle = open_state == NULL ? 0 : open_state->fh,
         .cursor = directory_cursor,
         .maximum_payload_size = max_payload,
         .credentials = credentials
@@ -230,10 +196,7 @@ static int read_directory (struct vnode * file_vnode, struct uio * user_io_reque
     int rc = request_directory_entries (&request_context, &request);
 
     if (rc != 0)
-    {
-        usfs_put_open_reference (file_vnode, open_state, 1, credentials);
         return rc;
-    }
 
     struct usfs_readdir_out readdir_reply;
     memcpy (&readdir_reply, request->reply_buffer, sizeof (readdir_reply));
@@ -242,7 +205,6 @@ static int read_directory (struct vnode * file_vnode, struct uio * user_io_reque
         (uint64_t)readdir_reply.count > USFS_DIRECTORY_CURSOR_INDEX_MASK - start_index)
     {
         free_request (request);
-        usfs_put_open_reference (file_vnode, open_state, 1, credentials);
         return EIO;
     }
 
@@ -253,8 +215,6 @@ static int read_directory (struct vnode * file_vnode, struct uio * user_io_reque
 
     rc = copy_directory_entries (request, readdir_reply.count, start_index, readdir_reply.snapshot_id, user_io_request);
     free_request (request);
-    usfs_put_open_reference (file_vnode, open_state, 1, credentials);
-
     return rc;
 }
 

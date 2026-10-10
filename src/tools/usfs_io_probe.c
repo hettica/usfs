@@ -13,6 +13,7 @@
 #include <time.h>
 
 #include <sys/dir.h>
+#include <dirent.h>
 #include <sys/mman.h>
 #include <sys/syncvfs.h>
 #include <sys/wait.h>
@@ -25,6 +26,7 @@
 #include <stddef.h>
 #include <setjmp.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1729,6 +1731,424 @@ static int run_readdir_loop (const char * path, const char * count_text)
     return 0;
 }
 
+enum directory_probe_limits
+{
+    DIRECTORY_PROBE_ENTRY_COUNT = 300,
+    DIRECTORY_PROBE_INITIAL_READS = 8,
+    DIRECTORY_PROBE_TOTAL_ENTRIES = DIRECTORY_PROBE_ENTRY_COUNT + 2,
+    DIRECTORY_PROBE_PRIVATE_MODE = 0700,
+    DIRECTORY_PROBE_FILE_MODE = 0600,
+    DIRECTORY_PROBE_REPLACEMENT_MODE = 0644,
+    DIRECTORY_PROBE_DETACHED_MODE = 0400,
+    DIRECTORY_PROBE_PERMISSION_MASK = 0777
+};
+
+static int run_serial_two_open (const char * path)
+{
+    DIR * first_stream = opendir (path);
+    if (first_stream == NULL)
+        return 1;
+
+    if (readdir (first_stream) == NULL)
+    {
+        closedir (first_stream);
+        return 1;
+    }
+
+    DIR * second_stream = opendir (path);
+    if (second_stream == NULL)
+    {
+        closedir (first_stream);
+        return 1;
+    }
+
+    unsigned entry_count = 1;
+    errno = 0;
+    while (readdir (first_stream) != NULL)
+        entry_count++;
+
+    const int read_error = errno;
+    const int second_close = closedir (second_stream);
+    const int first_close = closedir (first_stream);
+    const int result = entry_count != DIRECTORY_PROBE_TOTAL_ENTRIES || read_error != 0 || second_close != 0 || first_close != 0;
+
+    printf ("serial-two-open=%s entries=%u errno=%d\n", result ? "failed" : "valid", entry_count, read_error);
+    return result;
+}
+
+static int read_fixture_entry (DIR * directory_stream, unsigned char * seen_entries, unsigned * entry_count)
+{
+    errno = 0;
+    const struct dirent * entry = readdir (directory_stream);
+    if (entry == NULL)
+        return errno == 0 ? 0 : -1;
+
+    if (strcmp (entry->d_name, ".") == 0 || strcmp (entry->d_name, "..") == 0)
+        return 1;
+
+    const char * entry_name = entry->d_name;
+    if (strncmp (entry_name, "file_", strlen ("file_")) != 0)
+        return -1;
+
+    char * name_end = NULL;
+    const unsigned long entry_index = strtoul (entry_name + strlen ("file_"), &name_end, 10);
+    if (name_end == entry_name + strlen ("file_") || *name_end != '\0' || entry_index >= DIRECTORY_PROBE_ENTRY_COUNT)
+        return -1;
+
+    if (seen_entries[entry_index] != 0)
+        return -1;
+
+    seen_entries[entry_index] = 1;
+    (*entry_count)++;
+    return 1;
+}
+
+static int read_remaining_fixture_entries (DIR * directory_stream, unsigned char * seen_entries, unsigned * entry_count)
+{
+    for (;;)
+    {
+        const int result = read_fixture_entry (directory_stream, seen_entries, entry_count);
+        if (result <= 0)
+            return result;
+    }
+}
+
+static int run_directory_readers (const char * path)
+{
+    unsigned char first_seen[DIRECTORY_PROBE_ENTRY_COUNT] = { 0 };
+    unsigned char second_seen[DIRECTORY_PROBE_ENTRY_COUNT] = { 0 };
+    unsigned first_count = 0;
+    unsigned second_count = 0;
+    DIR * first_stream = opendir (path);
+    if (first_stream == NULL)
+        return 1;
+
+    DIR * second_stream = opendir (path);
+    if (second_stream == NULL)
+    {
+        closedir (first_stream);
+        return 1;
+    }
+
+    int result = 1;
+
+    for (unsigned read_index = 0; read_index < DIRECTORY_PROBE_INITIAL_READS; ++read_index)
+    {
+        if (read_fixture_entry (first_stream, first_seen, &first_count) <= 0)
+            goto close_streams;
+
+        if (read_fixture_entry (second_stream, second_seen, &second_count) <= 0)
+            goto close_streams;
+    }
+
+    if (closedir (first_stream) != 0)
+        goto close_second;
+    first_stream = NULL;
+
+    if (read_remaining_fixture_entries (second_stream, second_seen, &second_count) != 0)
+        goto close_second;
+
+    if (second_count != DIRECTORY_PROBE_ENTRY_COUNT)
+        goto close_second;
+
+    memset (second_seen, 0, sizeof (second_seen));
+    second_count = 0;
+    seekdir (second_stream, 0);
+
+    for (unsigned read_index = 0; read_index < DIRECTORY_PROBE_INITIAL_READS; ++read_index)
+        if (read_fixture_entry (second_stream, second_seen, &second_count) <= 0)
+            goto close_second;
+
+    const long continuation_cookie = telldir (second_stream);
+    if (continuation_cookie == -1)
+        goto close_second;
+
+    const int duplicated_descriptor = dup (dirfd (second_stream));
+    if (duplicated_descriptor < 0)
+        goto close_second;
+
+    if (closedir (second_stream) != 0)
+    {
+        close (duplicated_descriptor);
+        second_stream = NULL;
+        goto close_second;
+    }
+    second_stream = fdopendir (duplicated_descriptor);
+    if (second_stream == NULL)
+    {
+        close (duplicated_descriptor);
+        goto close_second;
+    }
+
+    seekdir (second_stream, continuation_cookie);
+    if (read_remaining_fixture_entries (second_stream, second_seen, &second_count) != 0)
+        goto close_second;
+
+    if (second_count != DIRECTORY_PROBE_ENTRY_COUNT)
+        goto close_second;
+
+    rewinddir (second_stream);
+    memset (second_seen, 0, sizeof (second_seen));
+    second_count = 0;
+
+    for (unsigned read_index = 0; read_index < DIRECTORY_PROBE_INITIAL_READS; ++read_index)
+        if (read_fixture_entry (second_stream, second_seen, &second_count) <= 0)
+            goto close_second;
+
+    const pid_t child = fork ();
+    if (child < 0)
+        goto close_second;
+
+    if (child == 0)
+    {
+        const int read_result = read_remaining_fixture_entries (second_stream, second_seen, &second_count);
+        _exit (read_result == 0 && second_count == DIRECTORY_PROBE_ENTRY_COUNT ? 0 : 1);
+    }
+
+    int child_status = 0;
+    if (waitpid (child, &child_status, 0) != child || !WIFEXITED (child_status) || WEXITSTATUS (child_status) != 0)
+        goto close_second;
+
+    result = 0;
+
+close_streams:
+    if (first_stream != NULL && closedir (first_stream) != 0)
+        result = 1;
+
+close_second:
+    if (second_stream != NULL && closedir (second_stream) != 0)
+        result = 1;
+
+    printf ("directory-readers=%s\n", result == 0 ? "valid" : "failed");
+    return result;
+}
+
+static int verify_renamed_directory (const char * source_root, const char * opened_root)
+{
+    char original_path[PATH_MAX];
+    char renamed_path[PATH_MAX];
+    char entry_path[PATH_MAX];
+    char opened_path[PATH_MAX];
+
+    if (snprintf (original_path, sizeof (original_path), "%s/original", source_root) >= (int)sizeof (original_path) ||
+        snprintf (renamed_path, sizeof (renamed_path), "%s/renamed", source_root) >= (int)sizeof (renamed_path) ||
+        snprintf (entry_path, sizeof (entry_path), "%s/original/entry", source_root) >= (int)sizeof (entry_path) ||
+        snprintf (opened_path, sizeof (opened_path), "%s/original", opened_root) >= (int)sizeof (opened_path))
+        return 1;
+
+    if (mkdir (original_path, DIRECTORY_PROBE_PRIVATE_MODE) != 0)
+        return 1;
+
+    const int entry_descriptor = open (entry_path, O_CREAT | O_EXCL | O_WRONLY, DIRECTORY_PROBE_FILE_MODE);
+    if (entry_descriptor < 0)
+        return 1;
+
+    if (close (entry_descriptor) != 0)
+        return 1;
+
+    DIR * directory_stream = opendir (opened_path);
+    if (directory_stream == NULL)
+        return 1;
+
+    int saw_entry = 0;
+    errno = 0;
+    const struct dirent * first_entry = readdir (directory_stream);
+    if (first_entry != NULL && strcmp (first_entry->d_name, "entry") == 0)
+        saw_entry = 1;
+
+    int result = 1;
+    if (first_entry == NULL && errno != 0)
+        goto close_stream;
+
+    if (rename (original_path, renamed_path) != 0)
+        goto close_stream;
+
+    errno = 0;
+    const struct dirent * entry;
+    while ((entry = readdir (directory_stream)) != NULL)
+        if (strcmp (entry->d_name, "entry") == 0)
+            saw_entry = 1;
+
+    struct stat held_attributes;
+    struct stat renamed_attributes;
+    if (errno == 0 && saw_entry && fstat (dirfd (directory_stream), &held_attributes) == 0 && stat (renamed_path, &renamed_attributes) == 0 &&
+        held_attributes.st_ino == renamed_attributes.st_ino)
+        result = 0;
+
+close_stream:
+    if (closedir (directory_stream) != 0)
+        result = 1;
+
+    char renamed_entry_path[PATH_MAX];
+    if (snprintf (renamed_entry_path, sizeof (renamed_entry_path), "%s/entry", renamed_path) >= (int)sizeof (renamed_entry_path))
+        return 1;
+
+    unlink (renamed_entry_path);
+    rmdir (renamed_path);
+    return result;
+}
+
+static int verify_removed_directory (const char * source_root, const char * opened_root)
+{
+    char directory_path[PATH_MAX];
+    char opened_path[PATH_MAX];
+    if (snprintf (directory_path, sizeof (directory_path), "%s/removed", source_root) >= (int)sizeof (directory_path) ||
+        snprintf (opened_path, sizeof (opened_path), "%s/removed", opened_root) >= (int)sizeof (opened_path))
+        return 1;
+
+    if (mkdir (directory_path, DIRECTORY_PROBE_PRIVATE_MODE) != 0)
+        return 1;
+
+    DIR * directory_stream = opendir (opened_path);
+    if (directory_stream == NULL)
+        return 1;
+
+    errno = 0;
+    readdir (directory_stream);
+
+    int result = 1;
+    if (errno != 0 || rmdir (directory_path) != 0 || mkdir (directory_path, DIRECTORY_PROBE_PRIVATE_MODE) != 0)
+        goto close_stream;
+
+    struct stat held_attributes;
+    struct stat replacement_attributes;
+    if (fstat (dirfd (directory_stream), &held_attributes) != 0 || stat (directory_path, &replacement_attributes) != 0 ||
+        held_attributes.st_ino == replacement_attributes.st_ino)
+        goto close_stream;
+
+    errno = 0;
+    while (readdir (directory_stream) != NULL)
+        ;
+
+    if (errno == 0)
+        result = 0;
+
+close_stream:
+    if (closedir (directory_stream) != 0)
+        result = 1;
+
+    rmdir (directory_path);
+    return result;
+}
+
+static int verify_detached_file (const char * source_root, const char * opened_root, const int writable_mount)
+{
+    const char * failed_stage = "create initial file";
+    char file_path[PATH_MAX];
+    char opened_path[PATH_MAX];
+    if (snprintf (file_path, sizeof (file_path), "%s/file", source_root) >= (int)sizeof (file_path) ||
+        snprintf (opened_path, sizeof (opened_path), "%s/file", opened_root) >= (int)sizeof (opened_path))
+        return 1;
+
+    const int initial_descriptor = open (file_path, O_CREAT | O_EXCL | O_WRONLY, DIRECTORY_PROBE_FILE_MODE);
+    if (initial_descriptor < 0)
+        return 1;
+
+    const int write_succeeded = write (initial_descriptor, "old", strlen ("old")) == strlen ("old");
+    const int close_succeeded = close (initial_descriptor) == 0;
+    if (!write_succeeded || !close_succeeded)
+        return 1;
+
+    failed_stage = "open mirrored file";
+    int held_descriptor = open (opened_path, writable_mount ? O_RDWR : O_RDONLY);
+    if (held_descriptor < 0)
+        return 1;
+
+    int replacement_descriptor = INVALID_FILE_DESCRIPTOR;
+    int result = 1;
+    failed_stage = "unlink original name";
+
+    if (unlink (file_path) != 0)
+        goto close_descriptors;
+
+    failed_stage = "create replacement";
+    replacement_descriptor = open (file_path, O_CREAT | O_EXCL | O_RDWR, DIRECTORY_PROBE_REPLACEMENT_MODE);
+    if (replacement_descriptor < 0)
+        goto close_descriptors;
+
+    struct stat held_attributes;
+    struct stat replacement_attributes;
+    failed_stage = "compare retained and replacement attributes";
+    if (fstat (held_descriptor, &held_attributes) != 0 || fstat (replacement_descriptor, &replacement_attributes) != 0 ||
+        held_attributes.st_ino == replacement_attributes.st_ino)
+        goto close_descriptors;
+
+    failed_stage = "change retained mode";
+    if (writable_mount && fchmod (held_descriptor, DIRECTORY_PROBE_DETACHED_MODE) != 0)
+        goto close_descriptors;
+
+    /* AIX rejects fsync on an O_RDONLY descriptor with EBADF, including on
+     * ordinary JFS2 files. The writable memfs case exercises vnode sync. */
+    failed_stage = "synchronize retained object";
+    if (writable_mount && fsync (held_descriptor) != 0)
+    {
+        fprintf (stderr, "Failed to synchronize retained file %s: %s\n", opened_path, strerror (errno));
+        goto close_descriptors;
+    }
+
+    failed_stage = "read retained and replacement attributes";
+    if (fstat (held_descriptor, &held_attributes) != 0 || fstat (replacement_descriptor, &replacement_attributes) != 0)
+        goto close_descriptors;
+
+    failed_stage = "compare retained and replacement modes";
+    const mode_t expected_held_mode = writable_mount ? DIRECTORY_PROBE_DETACHED_MODE : DIRECTORY_PROBE_FILE_MODE;
+    if ((held_attributes.st_mode & DIRECTORY_PROBE_PERMISSION_MASK) == expected_held_mode &&
+        (replacement_attributes.st_mode & DIRECTORY_PROBE_PERMISSION_MASK) == DIRECTORY_PROBE_REPLACEMENT_MODE)
+        result = 0;
+
+close_descriptors:
+    if (result != 0)
+        fprintf (stderr, "Failed to verify detached file at %s\n", failed_stage);
+
+    if (close (held_descriptor) != 0)
+        result = 1;
+
+    if (replacement_descriptor >= 0 && close (replacement_descriptor) != 0)
+        result = 1;
+
+    unlink (file_path);
+    return result;
+}
+
+static int verify_detached_objects (const char * source_root, const char * opened_root, const int writable_mount)
+{
+    char probe_root[PATH_MAX];
+    char opened_probe_root[PATH_MAX];
+    if (snprintf (probe_root, sizeof (probe_root), "%s/directory-identity-%ld", source_root, (long)getpid ()) >= (int)sizeof (probe_root) ||
+        snprintf (opened_probe_root, sizeof (opened_probe_root), "%s/directory-identity-%ld", opened_root, (long)getpid ()) >=
+            (int)sizeof (opened_probe_root))
+        return 1;
+
+    if (mkdir (probe_root, DIRECTORY_PROBE_PRIVATE_MODE) != 0)
+        return 1;
+
+    const int renamed_result = verify_renamed_directory (probe_root, opened_probe_root);
+    const int removed_result = verify_removed_directory (probe_root, opened_probe_root);
+    const int file_result = verify_detached_file (probe_root, opened_probe_root, writable_mount);
+    const int cleanup_result = rmdir (probe_root);
+    const int result = renamed_result || removed_result || file_result || cleanup_result != 0;
+
+    printf (
+        "detached-objects=%s rename=%d remove=%d file=%d cleanup=%d\n",
+        result ? "failed" : "valid",
+        renamed_result,
+        removed_result,
+        file_result,
+        cleanup_result
+    );
+    return result;
+}
+
+static int run_detached_objects (const char * root)
+{
+    return verify_detached_objects (root, root, true);
+}
+
+static int run_mirror_detached_objects (const char * source_root, const char * mirror_root)
+{
+    return verify_detached_objects (source_root, mirror_root, false);
+}
+
 static int run_dual_open (const char * path)
 {
     char value = '\0';
@@ -3127,6 +3547,9 @@ static int dispatch_path_probe (const char * name, const char * path, int * resu
         { "create-flags", run_create_flags },
         { "retained-handles", run_retained_handles },
         { "dual-open", run_dual_open },
+        { "directory-readers", run_directory_readers },
+        { "serial-two-open", run_serial_two_open },
+        { "detached-objects", run_detached_objects },
         { "readiness", run_readiness },
         { "statfs", run_statfs },
         { "stat", run_stat }
@@ -3204,7 +3627,8 @@ static int print_usage (void)
                      "|mmap-hold PATH COUNT INDEX READY RELEASE"
                      "|mmap-release-read|mmap-release-write PATH COUNT INDEX READY RELEASE"
                      "|readdir|readdir-loop PATH COUNT|readdir-large PATH"
-                     "|dual-open|retained-handles PATH"
+                     "|dual-open|retained-handles|directory-readers|serial-two-open|detached-objects PATH"
+                     "|mirror-detached-objects SOURCE MIRROR"
                      "|stat-held PATH READY COMMAND_FIFO|rename SOURCE DESTINATION"
                      "|recreated-identity ROOT"
                      "|identity-churn ROOT"
@@ -3224,6 +3648,8 @@ int main (int argc, char ** argv)
 
     if (argc == 4 && strcmp (argv[1], "cache-eviction") == 0)
         return run_cache_eviction (argv[2], argv[3]);
+    if (argc == 4 && strcmp (argv[1], "mirror-detached-objects") == 0)
+        return run_mirror_detached_objects (argv[2], argv[3]);
     if (argc == 4 && strcmp (argv[1], "mapped-setid-policy") == 0)
         return strcmp (argv[3], "race") == 0 ? run_mapped_setid_race (argv[2]) : run_mapped_setid_policy (argv[2], argv[3]);
     if (argc == 2 && strcmp (argv[1], "wait-dispatch-queue") == 0)

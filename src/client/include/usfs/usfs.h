@@ -18,7 +18,7 @@
 extern "C" {
 #endif
 
-#define USFS_CLIENT_API_VERSION     1u
+#define USFS_CLIENT_API_VERSION     2u
 #define USFS_CLIENT_DEFAULT_WORKERS 10u
 #define USFS_CLIENT_MAX_WORKERS     64u
 #define USFS_TIME_NOW               (-2L)
@@ -69,6 +69,18 @@ struct usfs_open_file
 {
     uint64_t value; // Backend-owned handle value; zero is valid.
     int open_flags; // POSIX open flags supplied to the backend.
+};
+
+/* Borrowed mount-scoped identity for an object request. The callback path is
+ * supplied separately and can be NULL after the last name is removed. Cached
+ * backend fields are optional; nodeid remains valid for the mount lifetime. */
+struct usfs_object_identity
+{
+    uint64_t nodeid;          // Stable node identifier within this mount.
+    uint64_t backend_dev;     // Cached backend device number when known.
+    uint64_t backend_ino;     // Cached backend inode number when known.
+    mode_t backend_type;      // Cached backend file type when known.
+    int has_backend_identity; // Whether the cached backend fields are valid.
 };
 
 struct usfs_behavior
@@ -171,7 +183,7 @@ struct usfs_operations
     int (*readdir
     ) (const struct usfs_client_request *,
        const char *,
-       struct usfs_open_file *,
+       const struct usfs_object_identity *,
        struct usfs_directory_sink *);                                                                 // Produce a complete directory snapshot.
     int (*fsyncdir) (const struct usfs_client_request *, const char *, int, struct usfs_open_file *); // Synchronize directory state.
     int (*releasedir) (const struct usfs_client_request *, const char *, struct usfs_open_file *);    // Release one directory handle.
@@ -192,6 +204,9 @@ void * usfs_request_user_data (const struct usfs_client_request * request);
 uid_t usfs_request_uid (const struct usfs_client_request * request);
 gid_t usfs_request_gid (const struct usfs_client_request * request);
 pid_t usfs_request_pid (const struct usfs_client_request * request);
+/* Returns a borrowed identity for vnode-only callbacks, open, and release;
+ * NULL for requests without a single existing object. */
+const struct usfs_object_identity * usfs_request_object_identity (const struct usfs_client_request * request);
 
 /* A sink remembers its first error even if the backend continues adding entries. */
 int usfs_directory_add (struct usfs_directory_sink * sink, const char * name, const struct stat * metadata);

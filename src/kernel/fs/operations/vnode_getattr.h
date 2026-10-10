@@ -59,14 +59,7 @@ static int request_node_attributes (
     struct usfs_attr_out * attributes_reply
 )
 {
-    struct usfs_open_state * open_state = NULL;
-    int rc = usfs_borrow_node_handle (node, 0, &open_state);
-    if (rc != 0 && rc != EBADF)
-        return rc;
-
-    rc = _request_node_attributes_with_handle (mount_data, node, credentials, attributes_reply, open_state == NULL ? 0 : open_state->fh);
-    usfs_put_open_reference (node->vn, open_state, 1, credentials);
-    return rc;
+    return _request_node_attributes_with_handle (mount_data, node, credentials, attributes_reply, 0);
 }
 
 int gn_getattr (struct vnode * file_vnode, struct vattr * attributes, struct ucred * credentials)
@@ -80,9 +73,6 @@ int gn_getattr (struct vnode * file_vnode, struct vattr * attributes, struct ucr
     // Root permissions are authoritative backend data too. Failed metadata
     // must fail authorization and stat; forced recovery uses mount identity
     // independently of these ordinary attribute requests.
-    // Send the handle when the file is open, so a file that was unlinked while
-    // open can still be stat'ed: its name is gone, and the handle is then the
-    // only way for the daemon to find the object.
     struct usfs_attr_out attributes_reply;
     const int rc = request_node_attributes (mount_data, node, credentials, &attributes_reply);
 

@@ -10,6 +10,9 @@ use warnings;
 my ($path, $version, $release, @required) = @ARGV;
 defined $release or die "usage: verify-rpm.pl rpm version release [payload ...]\n";
 
+my ($package_os) = $path =~ /\.(aix7\.[23])\.ppc\.rpm$/;
+defined $package_os or die "unexpected AIX RPM filename: $path\n";
+
 open my $fh, '<', $path or die "cannot open $path: $!\n";
 binmode $fh;
 local $/;
@@ -74,6 +77,7 @@ my %identity = (
     1001 => $version,
     1002 => $release,
     1014 => 'MIT',
+    1021 => $package_os,
     1022 => 'ppc',
 );
 for my $tag (sort keys %identity) {
