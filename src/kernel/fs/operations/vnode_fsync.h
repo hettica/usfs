@@ -11,15 +11,7 @@ int gn_fsync (struct vnode * file_vnode, const int32long64_t open_flags, const i
     if (file_vnode == NULL || file_vnode->v_gnode == NULL)
         return EINVAL;
 
-    struct usfs_open_state * open_state = NULL;
-    int rc = usfs_borrow_node_handle (_node_of (file_vnode), open_flags, &open_state);
-    if (rc != 0)
-        return rc;
-
-    rc = _sync_node (file_vnode, open_state->fh, open_flags, 0, 0, 0, credentials);
-    usfs_put_open_reference (file_vnode, open_state, 1, credentials);
-
-    return rc;
+    return _sync_node (file_vnode, 0, open_flags, 0, 0, 0, credentials);
 }
 
 #endif

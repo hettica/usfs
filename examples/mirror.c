@@ -14,7 +14,7 @@
  *
  * Compile with:
  *
- *     gcc -maix64 -Isrc/client/include mirror.c libusfs.a -o usfs_mirror
+ *     gcc -maix64 -pthread -Isrc/client/include mirror.c libusfs.a -lpthreads -o usfs_mirror
  *
  * Usage:
  *
@@ -32,6 +32,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,11 +45,62 @@
    trailing slash and never "/" (see resolve_source_directory). */
 static char * source_directory_path;
 static size_t source_directory_path_length;
+static struct stat source_root_attributes;
+static int source_root_identity_known;
 
 static struct options
 {
     const char * source; // Source directory supplied through --source.
 } options;
+
+struct mirror_anchor
+{
+    struct mirror_anchor * next; // Next object retained by this mount.
+    uint64_t nodeid;             // Stable mount-scoped object identity.
+    unsigned open_refs;          // Open instances retaining this anchor.
+    int descriptor;              // Owned descriptor for attributes and sync.
+    DIR * directory_stream;      // Owned stream for a directory, or NULL for a file.
+};
+
+struct mirror_open
+{
+    struct mirror_anchor * anchor; // Shared object state retained by this open.
+    int descriptor;                // Descriptor owned by this open instance.
+};
+
+static pthread_mutex_t anchor_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct mirror_anchor * anchors;
+
+static struct mirror_anchor * find_anchor (const uint64_t nodeid)
+{
+    for (struct mirror_anchor * anchor = anchors; anchor != NULL; anchor = anchor->next)
+        if (anchor->nodeid == nodeid)
+            return anchor;
+
+    return NULL;
+}
+
+static int object_matches_identity (
+    const struct stat * attributes,
+    const struct usfs_object_identity * identity,
+    const char * path
+)
+{
+    if (identity == NULL)
+        return true;
+
+    if (identity->has_backend_identity)
+        return (uint64_t)attributes->st_dev == identity->backend_dev &&
+            (uint64_t)attributes->st_ino == identity->backend_ino &&
+            (attributes->st_mode & S_IFMT) == identity->backend_type;
+
+    if (path == NULL || strcmp (path, "/") != 0 || !source_root_identity_known)
+        return false;
+
+    return attributes->st_dev == source_root_attributes.st_dev &&
+        attributes->st_ino == source_root_attributes.st_ino &&
+        (attributes->st_mode & S_IFMT) == (source_root_attributes.st_mode & S_IFMT);
+}
 
 
 /*
@@ -78,12 +130,33 @@ static int initialize_filesystem (const struct usfs_client_request * request, co
     (void)request;
     (void)limits;
     (void)behavior;
+
+    if (stat (source_directory_path, &source_root_attributes) != 0)
+        return -errno;
+
+    source_root_identity_known = true;
     return 0;
 }
 
 static void destroy_filesystem (const struct usfs_client_request * request)
 {
     (void)request;
+
+    pthread_mutex_lock (&anchor_lock);
+
+    while (anchors != NULL)
+    {
+        struct mirror_anchor * anchor = anchors;
+        anchors = anchor->next;
+
+        if (anchor->directory_stream != NULL)
+            closedir (anchor->directory_stream);
+
+        close (anchor->descriptor);
+        free (anchor);
+    }
+
+    pthread_mutex_unlock (&anchor_lock);
 
     free (source_directory_path);
     source_directory_path = NULL;
@@ -101,11 +174,31 @@ static int get_file_attributes (
     struct usfs_open_file * file_info
 )
 {
-    (void)request;
+    const struct usfs_object_identity * identity = usfs_request_object_identity (request);
     char source_path[PATH_MAX];
 
     if (has_file_handle (file_info))
-        return fstat ((int)file_info->value, file_attributes) == 0 ? 0 : -errno;
+    {
+        const struct mirror_open * opened = (const struct mirror_open *)(uintptr_t)file_info->value;
+
+        return fstat (opened->descriptor, file_attributes) == 0 ? 0 : -errno;
+    }
+
+    if (identity != NULL)
+    {
+        pthread_mutex_lock (&anchor_lock);
+        const struct mirror_anchor * anchor = find_anchor (identity->nodeid);
+
+        if (anchor != NULL)
+        {
+            const int rc = fstat (anchor->descriptor, file_attributes) == 0 ? 0 : -errno;
+
+            pthread_mutex_unlock (&anchor_lock);
+            return rc;
+        }
+
+        pthread_mutex_unlock (&anchor_lock);
+    }
 
     if (path == NULL)
         return -ESTALE;
@@ -119,7 +212,7 @@ static int get_file_attributes (
     if (lstat (source_path, file_attributes) == -1)
         return -errno;
 
-    return 0;
+    return object_matches_identity (file_attributes, identity, path) ? 0 : -ESTALE;
 }
 
 static int read_symbolic_link (const struct usfs_client_request * request, const char * path, char * buffer, size_t buffer_capacity)
@@ -167,24 +260,61 @@ static int read_directory_entries (DIR * directory_stream, struct usfs_directory
 static int read_directory (
     const struct usfs_client_request * request,
     const char * path,
-    struct usfs_open_file * file_info,
+    const struct usfs_object_identity * identity,
     struct usfs_directory_sink * sink
 )
 {
     char source_path[PATH_MAX];
 
     (void)request;
-    (void)file_info;
+
+    if (identity == NULL)
+        return -ESTALE;
+
+    pthread_mutex_lock (&anchor_lock);
+    struct mirror_anchor * anchor = find_anchor (identity->nodeid);
+
+    if (anchor != NULL)
+    {
+        if (anchor->directory_stream == NULL)
+        {
+            pthread_mutex_unlock (&anchor_lock);
+            return -ENOTDIR;
+        }
+
+        rewinddir (anchor->directory_stream);
+        const int read_result = read_directory_entries (anchor->directory_stream, sink);
+
+        pthread_mutex_unlock (&anchor_lock);
+        return read_result;
+    }
+
+    pthread_mutex_unlock (&anchor_lock);
+
+    if (path == NULL)
+        return -ESTALE;
 
     const int operation_result = build_source_path (path, source_path, sizeof (source_path));
     if (operation_result != 0)
         return operation_result;
 
-    /* A separate stream owns this listing's cursor. The persistent directory
-       descriptor remains available for handle-based metadata operations. */
     DIR * directory_stream = opendir (source_path);
     if (directory_stream == NULL)
         return -errno;
+
+    struct stat attributes;
+    if (fstat (dirfd (directory_stream), &attributes) != 0)
+    {
+        const int error = errno;
+        closedir (directory_stream);
+        return -error;
+    }
+
+    if (!object_matches_identity (&attributes, identity, path))
+    {
+        closedir (directory_stream);
+        return -ESTALE;
+    }
 
     const int read_result = read_directory_entries (directory_stream, sink);
     const int close_result = closedir (directory_stream);
@@ -196,9 +326,82 @@ static int read_directory (
     return close_error == 0 ? 0 : -close_error;
 }
 
+static int retain_object_anchor (
+    const struct usfs_object_identity * identity,
+    const int file_descriptor,
+    const int is_directory,
+    struct mirror_anchor ** retained_anchor
+)
+{
+    pthread_mutex_lock (&anchor_lock);
+
+    struct mirror_anchor * anchor = find_anchor (identity->nodeid);
+
+    if (anchor != NULL)
+    {
+        anchor->open_refs++;
+        *retained_anchor = anchor;
+        pthread_mutex_unlock (&anchor_lock);
+        return 0;
+    }
+
+    anchor = calloc (1, sizeof (*anchor));
+    if (anchor == NULL)
+    {
+        pthread_mutex_unlock (&anchor_lock);
+        return -ENOMEM;
+    }
+
+    anchor->descriptor = dup (file_descriptor);
+    if (anchor->descriptor == -1)
+    {
+        const int error = errno;
+        free (anchor);
+        pthread_mutex_unlock (&anchor_lock);
+        return -error;
+    }
+
+    if (is_directory)
+    {
+        const int stream_descriptor = dup (file_descriptor);
+        if (stream_descriptor == -1)
+        {
+            const int error = errno;
+            close (anchor->descriptor);
+            free (anchor);
+            pthread_mutex_unlock (&anchor_lock);
+            return -error;
+        }
+
+        anchor->directory_stream = fdopendir (stream_descriptor);
+        if (anchor->directory_stream == NULL)
+        {
+            const int error = errno;
+            close (stream_descriptor);
+            close (anchor->descriptor);
+            free (anchor);
+            pthread_mutex_unlock (&anchor_lock);
+            return -error;
+        }
+    }
+
+    anchor->nodeid = identity->nodeid;
+    anchor->open_refs = 1;
+    anchor->next = anchors;
+    anchors = anchor;
+    *retained_anchor = anchor;
+
+    pthread_mutex_unlock (&anchor_lock);
+    return 0;
+}
+
 static int open_file (const struct usfs_client_request * request, const char * path, struct usfs_open_file * file_info)
 {
-    (void)request;
+    const struct usfs_object_identity * identity = usfs_request_object_identity (request);
+
+    if (identity == NULL || path == NULL)
+        return -ESTALE;
+
     char source_path[PATH_MAX];
     const int operation_result = build_source_path (path, source_path, sizeof (source_path));
     if (operation_result != 0)
@@ -211,21 +414,75 @@ static int open_file (const struct usfs_client_request * request, const char * p
     if (file_descriptor == -1)
         return -errno;
 
-    /* A present native handle carries the descriptor directly, including zero.
-       Ownership transfers to release_file (). */
-    file_info->value = (uint64_t)file_descriptor;
+    struct stat attributes;
+    if (fstat (file_descriptor, &attributes) != 0)
+    {
+        const int error = errno;
+        close (file_descriptor);
+        return -error;
+    }
 
-    /* cppcheck-suppress resourceLeak */
+    if (!object_matches_identity (&attributes, identity, path))
+    {
+        close (file_descriptor);
+        return -ESTALE;
+    }
+
+    struct mirror_open * opened = calloc (1, sizeof (*opened));
+    if (opened == NULL)
+    {
+        close (file_descriptor);
+        return -ENOMEM;
+    }
+
+    const int anchor_result = retain_object_anchor (identity, file_descriptor, S_ISDIR (attributes.st_mode), &opened->anchor);
+    if (anchor_result != 0)
+    {
+        free (opened);
+        close (file_descriptor);
+        return anchor_result;
+    }
+
+    opened->descriptor = file_descriptor;
+    file_info->value = (uint64_t)(uintptr_t)opened;
+
     return 0;
 }
 
-static int get_operation_file_descriptor (const char * path, const struct usfs_open_file * file_info, int * file_descriptor)
+static int get_operation_file_descriptor (
+    const struct usfs_client_request * request,
+    const char * path,
+    const struct usfs_open_file * file_info,
+    int * file_descriptor
+)
 {
     if (has_file_handle (file_info))
     {
-        *file_descriptor = (int)file_info->value;
+        const struct mirror_open * opened = (const struct mirror_open *)(uintptr_t)file_info->value;
+        *file_descriptor = opened->descriptor;
         return 0;
     }
+
+    const struct usfs_object_identity * identity = usfs_request_object_identity (request);
+    if (identity != NULL)
+    {
+        pthread_mutex_lock (&anchor_lock);
+        const struct mirror_anchor * anchor = find_anchor (identity->nodeid);
+
+        if (anchor != NULL)
+        {
+            *file_descriptor = dup (anchor->descriptor);
+            const int result = *file_descriptor == -1 ? -errno : 0;
+
+            pthread_mutex_unlock (&anchor_lock);
+            return result;
+        }
+
+        pthread_mutex_unlock (&anchor_lock);
+    }
+
+    if (path == NULL)
+        return -ESTALE;
 
     char source_path[PATH_MAX];
     const int path_result = build_source_path (path, source_path, sizeof (source_path));
@@ -235,6 +492,20 @@ static int get_operation_file_descriptor (const char * path, const struct usfs_o
     *file_descriptor = open (source_path, O_RDONLY);
     if (*file_descriptor == -1)
         return -errno;
+
+    struct stat attributes;
+    if (fstat (*file_descriptor, &attributes) != 0)
+    {
+        const int error = errno;
+        close (*file_descriptor);
+        return -error;
+    }
+
+    if (!object_matches_identity (&attributes, identity, path))
+    {
+        close (*file_descriptor);
+        return -ESTALE;
+    }
 
     return 0;
 }
@@ -248,9 +519,8 @@ static ssize_t read_file (
     struct usfs_open_file * file_info
 )
 {
-    (void)request;
     int file_descriptor;
-    const int descriptor_result = get_operation_file_descriptor (path, file_info, &file_descriptor);
+    const int descriptor_result = get_operation_file_descriptor (request, path, file_info, &file_descriptor);
     if (descriptor_result != 0)
         return descriptor_result;
 
@@ -271,7 +541,32 @@ static int release_file (const struct usfs_client_request * request, const char 
 
     if (has_file_handle (file_info))
     {
-        close ((int)file_info->value);
+        struct mirror_open * opened = (struct mirror_open *)(uintptr_t)file_info->value;
+
+        pthread_mutex_lock (&anchor_lock);
+
+        struct mirror_anchor * anchor = opened->anchor;
+        anchor->open_refs--;
+
+        if (anchor->open_refs == 0)
+        {
+            struct mirror_anchor ** link = &anchors;
+            while (*link != anchor)
+                link = &(*link)->next;
+
+            *link = anchor->next;
+
+            if (anchor->directory_stream != NULL)
+                closedir (anchor->directory_stream);
+
+            close (anchor->descriptor);
+            free (anchor);
+        }
+
+        pthread_mutex_unlock (&anchor_lock);
+
+        close (opened->descriptor);
+        free (opened);
         file_info->value = 0;
     }
 
@@ -285,9 +580,8 @@ static int synchronize_file (
     struct usfs_open_file * file_info
 )
 {
-    (void)request;
     int file_descriptor;
-    const int descriptor_result = get_operation_file_descriptor (path, file_info, &file_descriptor);
+    const int descriptor_result = get_operation_file_descriptor (request, path, file_info, &file_descriptor);
     if (descriptor_result != 0)
         return descriptor_result;
 
@@ -335,6 +629,7 @@ static const struct usfs_operations filesystem_operations = {
     .open = open_file,
     .read = read_file,
     .fsync = synchronize_file,
+    .fsyncdir = synchronize_file,
     .release = release_file,
     .statfs = get_filesystem_statistics,
     .syncfs = synchronize_filesystem,

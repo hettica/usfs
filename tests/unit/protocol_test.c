@@ -432,23 +432,23 @@ static void test_golden_headers(struct tap_state *state)
     struct usfs_in_hdr input;
     struct usfs_reply_header output;
     static const unsigned char input_le[40] = {
-        0x28,0,0,0, 9,0, 4,0, 8,7,6,5,4,3,2,1,
+        0x28,0,0,0, 10,0, 4,0, 8,7,6,5,4,3,2,1,
         0x18,0x17,0x16,0x15,0x14,0x13,0x12,0x11,
         0x24,0x23,0x22,0x21, 0x34,0x33,0x32,0x31,
         0x44,0x43,0x42,0x41, 0,0,0,0
     };
     static const unsigned char input_be[40] = {
-        0,0,0,0x28, 0,9, 0,4, 1,2,3,4,5,6,7,8,
+        0,0,0,0x28, 0,10, 0,4, 1,2,3,4,5,6,7,8,
         0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,
         0x21,0x22,0x23,0x24, 0x31,0x32,0x33,0x34,
         0x41,0x42,0x43,0x44, 0,0,0,0
     };
     static const unsigned char output_le[24] = {
-        0x18,0,0,0, 9,0, 4,0, 8,7,6,5,4,3,2,1,
+        0x18,0,0,0, 10,0, 4,0, 8,7,6,5,4,3,2,1,
         0x0d,0,0,0, 0,0,0,0
     };
     static const unsigned char output_be[24] = {
-        0,0,0,0x18, 0,9, 0,4, 1,2,3,4,5,6,7,8,
+        0,0,0,0x18, 0,10, 0,4, 1,2,3,4,5,6,7,8,
         0,0,0,0x0d, 0,0,0,0
     };
     const uint16_t endian = 1;

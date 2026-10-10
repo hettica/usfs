@@ -240,12 +240,12 @@ static int mt_getattr (const struct usfs_client_request * request, const char * 
 static int mt_readdir (
     const struct usfs_client_request * request,
     const char * path,
-    struct usfs_open_file * file_info,
+    const struct usfs_object_identity * identity,
     struct usfs_directory_sink * sink
 )
 {
     (void)request;
-    (void)file_info;
+    (void)identity;
     if (strcmp (path, "/") != 0)
         return -ENOENT;
 

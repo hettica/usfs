@@ -26,6 +26,12 @@ if(NOT CMAKE_C_COMPILER_ID STREQUAL "GNU")
     message(FATAL_ERROR "USFS currently requires GCC on AIX")
 endif()
 
+if(NOT CMAKE_SYSTEM_VERSION MATCHES "^7\\.[23]$")
+    message(FATAL_ERROR "USFS packages support AIX 7.2 and 7.3; detected ${CMAKE_SYSTEM_VERSION}")
+endif()
+
+set(USFS_PACKAGE_OS "aix${CMAKE_SYSTEM_VERSION}")
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
@@ -100,7 +106,7 @@ function(usfs_set_output target directory name)
 endfunction()
 
 function(usfs_common_target target)
-    target_compile_options(${target} PRIVATE ${USFS_DIAGNOSTIC_FLAGS})
+    target_compile_options(${target} PRIVATE ${USFS_DIAGNOSTIC_FLAGS} -pthread)
     target_compile_definitions(${target} PRIVATE ${USFS_COMMON_DEFINITIONS})
     target_include_directories(${target} PRIVATE
         "${CMAKE_SOURCE_DIR}/src/common")
@@ -368,6 +374,7 @@ function(usfs_add_unit name kind)
         target_compile_definitions(${_target} PRIVATE
             _KERNEL _ALL_SOURCE _POSIX_SOURCE USFS_TRACE_DISABLED)
     elseif(kind STREQUAL "CLIENT")
+        target_compile_options(${_target} PRIVATE -pthread)
         target_include_directories(${_target} PRIVATE
             "${CMAKE_SOURCE_DIR}/src/client/include"
             "${CMAKE_SOURCE_DIR}/src/client/include/usfs")
@@ -403,6 +410,8 @@ usfs_add_unit(kernel_common_test KERNEL tests/harness/tap.c src/common/usfs_vali
     src/kernel/fs/helpers.c tests/unit/aix/support/fake_kernel.c tests/unit/aix/kernel_common_test.c)
 usfs_add_unit(open_state_test KERNEL tests/harness/tap.c src/common/usfs_validate.c
     src/kernel/fs/helpers.c tests/unit/aix/support/fake_kernel.c tests/unit/aix/open_state_test.c)
+usfs_add_unit(readdir_identity_test KERNEL tests/harness/tap.c src/common/usfs_validate.c
+    tests/unit/aix/readdir_identity_test.c)
 usfs_add_unit(request_test KERNEL tests/harness/tap.c src/common/usfs_validate.c
     src/kernel/device/protocol/request_build.c tests/unit/aix/support/fake_kernel.c tests/unit/aix/request_test.c)
 usfs_add_unit(request_state_test KERNEL tests/harness/tap.c src/kernel/device/protocol/request_state.c

@@ -29,6 +29,10 @@
 #include "usfs_proto.h"
 #include "usfs_validate.h"
 
+#ifndef _THREAD_SAFE
+    #error "Compile the USFS client with -pthread for AIX thread-local errno"
+#endif
+
 #define USFS_DEVICE_PATH "/dev/usfs0"
 
 /* AIX kernel-side open mode bits as delivered in usfs_open_in.flags
@@ -299,19 +303,15 @@ struct client_handle
     uint64_t nodeid;             // Wire node identifier.
     uint64_t fh;                 // Backend callback handle.
     uint64_t wire_fh;            // Nonzero opaque handle sent to the kernel, including for backend fh zero.
-    uint64_t generation;         // Unique handle lifetime identifier.
     int flags;                   // Open flags supplied to callbacks.
     int isdir;                   // Whether this is a directory handle.
 };
 
 struct client_dircache_key
 {
-    uint64_t nodeid;     // Directory node identifier.
-    uint64_t fh;         // Backend directory handle.
-    uint64_t generation; // Handle lifetime used for identity checks.
-    uint32_t uid;        // Request user identity.
-    uint32_t gid;        // Request group identity.
-    uint32_t pid;        // Request process identity.
+    uint64_t nodeid; // Directory node identifier.
+    uint32_t uid;    // Request user identity.
+    uint32_t gid;    // Request group identity.
 };
 
 struct client_dircache
@@ -329,7 +329,6 @@ struct client_dircache
     size_t spool_reserved;          // Bytes charged to the daemon's spool quota.
     bool spooled;                   // Whether spool_fd owns a temporary file.
     bool owns_node_ref;             // Whether this snapshot retains its node.
-    bool completed;                 // Entry storage was released after EOF.
 };
 
 /* Admission counts are protected by lock; the lock itself is never held
@@ -390,6 +389,8 @@ struct usfs_client_request
     uid_t uid;                   // Caller identity, or zero during lifecycle calls.
     gid_t gid;
     pid_t pid;
+    struct usfs_object_identity object_identity; // Borrowed identity for the current node request.
+    int has_object_identity;                     // Whether object_identity describes the current request.
 };
 
 struct request_context
@@ -557,6 +558,7 @@ static int request_mutates_namespace (const uint16_t opcode)
         case USFS_OP_RENAME:
         case USFS_OP_SYMLINK:
         case USFS_OP_LINK:
+        case USFS_OP_RELEASE:
             return true;
         default:
             return false;
@@ -1246,14 +1248,12 @@ static void collect_unreferenced_nodes (struct usfs_client * client)
     }
 }
 
-static void invalidate_handle_directory_cache_locked (struct usfs_client *, uint64_t, uint64_t);
-
 struct open_handle_state
 {
     struct usfs_open_file file_info; // Flags and backend handle shared across open and publication.
     uint64_t nodeid;                 // Wire node identifier to retain at publication.
     uint64_t wire_fh;                // Published kernel handle distinct from the backend callback value.
-    uint32_t is_directory;           // Whether directory callbacks and cache invalidation apply.
+    uint32_t is_directory;           // Whether the backend uses directory callbacks.
 };
 
 /* node_lock protects the handle table. Duplicate nonzero backend handles retain
@@ -1278,9 +1278,14 @@ static uint64_t select_wire_handle (const struct usfs_client * client, const uin
     }
 }
 
-static uint64_t backend_handle_value (struct usfs_client * client, const uint64_t nodeid, const uint64_t wire_handle)
+static int backend_handle_value (
+    struct usfs_client * client,
+    const uint64_t nodeid,
+    const uint64_t wire_handle,
+    uint64_t * backend_handle
+)
 {
-    uint64_t backend_handle = wire_handle;
+    int result = -ESTALE;
 
     pthread_mutex_lock (&client->node_lock);
     for (const struct client_handle * handle = client->handles; handle != NULL; handle = handle->next)
@@ -1288,18 +1293,17 @@ static uint64_t backend_handle_value (struct usfs_client * client, const uint64_
         if (handle->nodeid != nodeid || handle->wire_fh != wire_handle)
             continue;
 
-        backend_handle = handle->fh;
+        *backend_handle = handle->fh;
+        result = 0;
         break;
     }
     pthread_mutex_unlock (&client->node_lock);
 
-    return backend_handle;
+    return result;
 }
 
 static void publish_client_handle (struct usfs_client * client, struct client_handle * handle, struct open_handle_state * opened)
 {
-    pthread_mutex_lock (&client->dircache_lock);
-
     pthread_mutex_lock (&client->node_lock);
     struct client_node * node = find_node_by_id (client, opened->nodeid);
 
@@ -1308,7 +1312,9 @@ static void publish_client_handle (struct usfs_client * client, struct client_ha
     handle->flags = opened->file_info.open_flags;
     handle->isdir = opened->is_directory != 0;
 
-    handle->generation = client->handle_generation == UINT64_MAX ? 0 : ++client->handle_generation;
+    if (client->handle_generation != UINT64_MAX)
+        client->handle_generation++;
+
     handle->wire_fh = select_wire_handle (client, handle->fh);
     opened->wire_fh = handle->wire_fh;
     handle->next = client->handles;
@@ -1318,11 +1324,6 @@ static void publish_client_handle (struct usfs_client * client, struct client_ha
         node->open_refs++;
 
     pthread_mutex_unlock (&client->node_lock);
-
-    if (opened->is_directory)
-        invalidate_handle_directory_cache_locked (client, opened->nodeid, opened->wire_fh);
-
-    pthread_mutex_unlock (&client->dircache_lock);
 }
 
 static void relink_alias_with_prepared_name (struct usfs_client * client, struct client_alias * alias, const uint64_t parent, char * name)
@@ -1555,15 +1556,32 @@ static int resolve_node_handle_path (struct usfs_client * client, const uint64_t
     pthread_mutex_lock (&client->node_lock);
     const struct client_node * node = find_node_by_id (client, id);
 
+    if (id != USFS_ROOT_ID && node == NULL)
+    {
+        pthread_mutex_unlock (&client->node_lock);
+        return -ESTALE;
+    }
+
+    if (fh != 0)
+    {
+        const struct client_handle * handle = client->handles;
+
+        while (handle != NULL && (handle->nodeid != id || handle->wire_fh != fh))
+            handle = handle->next;
+
+        if (handle == NULL)
+        {
+            pthread_mutex_unlock (&client->node_lock);
+            return -ESTALE;
+        }
+    }
+
     resolved->path = resolved->buffer;
 
     if (node != NULL && node->detached && node->hidden_names == 0)
     {
         resolved->path = NULL;
-        result = fh != 0 ? 0 : -ESTALE;
-        for (const struct client_handle * handle = client->handles; handle != NULL; handle = handle->next)
-            if (handle->nodeid == id && handle->wire_fh == fh)
-                result = 0;
+        result = 0;
     }
     else
     {
@@ -1770,7 +1788,18 @@ static int send_reply (const struct request_context * context, const int error, 
     pthread_mutex_lock (&client->reply_lock);
     const int result = write_all_bytes (client->fd, write_buf, out->len);
     if (result != 0)
-        fail_session (client, errno);
+    {
+        const int write_error = errno;
+
+        emit_diagnostic (
+            client,
+            "Failed to write reply for operation %u, request %llu: %s\n",
+            (unsigned)request_header->opcode,
+            (unsigned long long)request_header->unique,
+            strerror (write_error)
+        );
+        fail_session (client, write_error);
+    }
 
     pthread_mutex_unlock (&client->reply_lock);
 
@@ -1790,6 +1819,36 @@ static void set_request_context (struct usfs_client * client, const struct usfs_
     context->gid = (gid_t)request_header->gid;
     context->pid = (pid_t)request_header->pid;
     context->user_data = client->user_data;
+    context->has_object_identity = false;
+}
+
+static void set_request_object_identity (
+    const uint16_t opcode,
+    const uint64_t nodeid,
+    const struct client_node * node
+)
+{
+    struct usfs_client_request * request = get_callback_request ();
+    struct usfs_object_identity * identity = &request->object_identity;
+
+    request->has_object_identity = opcode == USFS_OP_GETATTR || opcode == USFS_OP_SETATTR ||
+        opcode == USFS_OP_FSYNC || opcode == USFS_OP_READDIR || opcode == USFS_OP_OPEN ||
+        opcode == USFS_OP_RELEASE;
+
+    if (!request->has_object_identity)
+        return;
+
+    memset (identity, 0, sizeof (*identity));
+    identity->nodeid = nodeid;
+
+    if (node != NULL)
+    {
+        identity->backend_dev = node->backend_dev;
+        identity->backend_ino = node->backend_ino;
+        identity->backend_type = node->backend_type;
+        identity->has_backend_identity = node->backend_ino != 0 && node->backend_type != 0;
+    }
+
 }
 
 static int read_backend_attributes (const struct usfs_client * client, const char * path, struct stat * metadata, struct usfs_open_file * file_info)
@@ -2356,7 +2415,9 @@ static int read_handle_attributes (
 
     struct usfs_open_file file_info = { 0 };
 
-    file_info.value = backend_handle_value (client, nodeid, handle);
+    const int rc = backend_handle_value (client, nodeid, handle, &file_info.value);
+    if (rc != 0)
+        return rc;
 
     return read_backend_attributes (client, path, metadata, &file_info);
 }
@@ -2947,21 +3008,15 @@ static int handle_create_attr_request (const struct request_context * context, c
 
 static void publish_removed_entry (struct usfs_client * client, const uint64_t parent, const char * name)
 {
-    uint64_t removed_id = 0;
-
     pthread_mutex_lock (&client->node_lock);
     struct client_alias * removed = find_alias (client, parent, name);
 
     if (removed != NULL)
     {
-        removed_id = removed->node->id;
         remove_alias (client, removed);
     }
 
     pthread_mutex_unlock (&client->node_lock);
-
-    if (removed_id != 0)
-        invalidate_node_directory_cache (client, removed_id);
 
     invalidate_node_directory_cache (client, parent);
 }
@@ -3044,7 +3099,6 @@ static void publish_hidden_alias (
     alias->node->detached = alias->node->names == alias->node->hidden_names;
     pthread_mutex_unlock (&client->node_lock);
     invalidate_node_directory_cache (client, alias->parent);
-    invalidate_node_directory_cache (client, alias->node->id);
 }
 
 /* The namespace writer owns the alias through selection, callbacks and publication. */
@@ -3495,7 +3549,9 @@ static int set_attributes_and_reply (const struct request_context * context, con
     if (request->fh != 0)
     {
         memset (&file_info, 0, sizeof (file_info));
-        file_info.value = backend_handle_value (client, context->header->nodeid, request->fh);
+        const int handle_rc = backend_handle_value (client, context->header->nodeid, request->fh, &file_info.value);
+        if (handle_rc != 0)
+            return send_reply (context, -handle_rc, NULL, 0);
         file_info_pointer = &file_info;
     }
 
@@ -3807,7 +3863,9 @@ static int read_file_and_reply (const struct request_context * context, const ch
     struct usfs_open_file file_info = { 0 };
 
     file_info.open_flags = O_RDONLY;
-    file_info.value = backend_handle_value (client, context->header->nodeid, request->fh);
+    const int handle_rc = backend_handle_value (client, context->header->nodeid, request->fh, &file_info.value);
+    if (handle_rc != 0)
+        return send_reply (context, -handle_rc, NULL, 0);
     memset (data, 0, request->size);
 
     const ssize_t transferred = client->ops.read (get_callback_request (), path, data, (size_t)request->size, (off_t)request->offset, &file_info);
@@ -3903,7 +3961,9 @@ static int write_file_and_reply (const struct request_context * context, const c
     struct usfs_open_file file_info = { 0 };
 
     file_info.open_flags = O_WRONLY;
-    file_info.value = backend_handle_value (client, context->header->nodeid, request->fh);
+    const int handle_rc = backend_handle_value (client, context->header->nodeid, request->fh, &file_info.value);
+    if (handle_rc != 0)
+        return send_reply (context, -handle_rc, NULL, 0);
 
     const int position_error = prepare_write_position (client, path, request, &file_info);
     if (position_error != 0)
@@ -4046,13 +4106,6 @@ static void release_backend_handle (const struct usfs_client * client, const str
 
 static void dispose_client_handle (struct usfs_client * client, struct client_handle * handle)
 {
-    pthread_mutex_lock (&client->dircache_lock);
-
-    if (handle->isdir)
-        invalidate_handle_directory_cache_locked (client, handle->nodeid, handle->wire_fh);
-
-    pthread_mutex_unlock (&client->dircache_lock);
-
     char path_buffer[USFS_PATH_MAX];
     const char * path = NULL;
 
@@ -4189,7 +4242,9 @@ static int handle_flush_request (const struct request_context * context, const c
     if (file_info.open_flags < 0)
         return send_reply (context, -file_info.open_flags, NULL, 0);
 
-    file_info.value = backend_handle_value (client, request_header->nodeid, flush_request.fh);
+    rc = backend_handle_value (client, request_header->nodeid, flush_request.fh, &file_info.value);
+    if (rc != 0)
+        return send_reply (context, -rc, NULL, 0);
     omit_handle_callback_path (client, true, &resolved);
     rc = client->ops.flush (get_callback_request (), resolved.path, &file_info);
 
@@ -4243,8 +4298,16 @@ static int sync_backend_handle (const struct request_context * context, const ch
 {
     struct usfs_client * client = context->client;
     struct usfs_open_file file_info = { 0 };
+    struct usfs_open_file * file_info_pointer = NULL;
 
-    file_info.value = backend_handle_value (client, context->header->nodeid, request->fh);
+    if (request->fh != 0)
+    {
+        const int rc = backend_handle_value (client, context->header->nodeid, request->fh, &file_info.value);
+        if (rc != 0)
+            return rc;
+
+        file_info_pointer = &file_info;
+    }
 
     const int datasync = (request->flags & USFS_FSYNC_DATASYNC) != 0;
 
@@ -4253,13 +4316,13 @@ static int sync_backend_handle (const struct request_context * context, const ch
         if (client->ops.fsyncdir == NULL)
             return -ENOSYS;
 
-        return client->ops.fsyncdir (get_callback_request (), path, datasync, &file_info);
+        return client->ops.fsyncdir (get_callback_request (), path, datasync, file_info_pointer);
     }
 
     if (client->ops.fsync == NULL)
         return -ENOSYS;
 
-    return client->ops.fsync (get_callback_request (), path, datasync, &file_info);
+    return client->ops.fsync (get_callback_request (), path, datasync, file_info_pointer);
 }
 
 static int handle_fsync_request (const struct request_context * context, const char * payload, const uint32_t payload_length)
@@ -4278,7 +4341,7 @@ static int handle_fsync_request (const struct request_context * context, const c
     if (rc != 0)
         return send_reply (context, -rc, NULL, 0);
 
-    omit_handle_callback_path (client, true, &resolved);
+    omit_handle_callback_path (client, fsync_request.fh != 0, &resolved);
     rc = sync_backend_handle (context, resolved.path, &fsync_request);
 
     return send_reply (context, normalize_callback_error (rc), NULL, 0);
@@ -4329,46 +4392,13 @@ static int directory_cache_keys_match (const struct client_dircache_key * left, 
     if (left->nodeid != right->nodeid)
         return false;
 
-    if (left->fh != right->fh)
-        return false;
-
-    if (left->generation != right->generation)
-        return false;
-
     if (left->uid != right->uid)
         return false;
 
     if (left->gid != right->gid)
         return false;
 
-    if (left->pid != right->pid)
-        return false;
-
     return true;
-}
-
-static uint64_t get_directory_handle_generation (struct usfs_client * client, const uint64_t nodeid, const uint64_t fh)
-{
-    uint64_t generation = 0;
-    unsigned matches = 0;
-
-    if (fh == 0)
-        return 0;
-
-    pthread_mutex_lock (&client->node_lock);
-
-    for (const struct client_handle * handle = client->handles; handle != NULL; handle = handle->next)
-    {
-        if (handle->isdir && handle->nodeid == nodeid && handle->wire_fh == fh)
-        {
-            generation = handle->generation;
-            ++matches;
-        }
-    }
-
-    pthread_mutex_unlock (&client->node_lock);
-
-    return matches == 1 ? generation : 0;
 }
 
 static struct client_dircache * find_directory_cache_entry (
@@ -4437,25 +4467,6 @@ static void invalidate_node_directory_cache (struct usfs_client * client, const 
     pthread_mutex_unlock (&client->dircache_lock);
 }
 
-static void invalidate_handle_directory_cache_locked (struct usfs_client * client, const uint64_t nodeid, const uint64_t fh)
-{
-    for (int slot_index = 0; slot_index < CLIENT_DIRCACHE_SLOTS; ++slot_index)
-    {
-        struct client_dircache * slot = &client->dircache[slot_index];
-
-        if (slot->snapshot_id == 0)
-            continue;
-
-        if (slot->key.nodeid != nodeid)
-            continue;
-
-        if (slot->key.fh != fh)
-            continue;
-
-        clear_directory_cache_slot (client, slot);
-    }
-}
-
 static struct client_dircache * select_directory_cache_slot (struct usfs_client * client)
 {
     struct client_dircache * slot = &client->dircache[0];
@@ -4489,12 +4500,6 @@ static int publish_directory_snapshot (
     for (;;)
     {
         pthread_mutex_lock (&client->dircache_lock);
-
-        if (key->generation != 0 && get_directory_handle_generation (client, key->nodeid, key->fh) != key->generation)
-        {
-            pthread_mutex_unlock (&client->dircache_lock);
-            return ESTALE;
-        }
 
         if (client->next_snapshot_id >= USFS_DIRECTORY_CURSOR_ID_MAX)
         {
@@ -4584,26 +4589,26 @@ static int reserve_directory_spool (struct usfs_directory_sink * directory_buffe
 
     while (extra > CLIENT_DIRSPOOL_MAX - client->dircache_spool_bytes)
     {
-        struct client_dircache * oldest_handleless = NULL;
+        struct client_dircache * oldest_snapshot = NULL;
 
         for (int slot_index = 0; slot_index < CLIENT_DIRCACHE_SLOTS; slot_index++)
         {
             struct client_dircache * candidate = &client->dircache[slot_index];
 
-            if (candidate->snapshot_id == 0 || candidate->key.generation != 0 || candidate->spool_reserved == 0)
+            if (candidate->snapshot_id == 0 || candidate->spool_reserved == 0)
                 continue;
 
-            if (oldest_handleless == NULL || candidate->seq < oldest_handleless->seq)
-                oldest_handleless = candidate;
+            if (oldest_snapshot == NULL || candidate->seq < oldest_snapshot->seq)
+                oldest_snapshot = candidate;
         }
 
-        if (oldest_handleless == NULL)
+        if (oldest_snapshot == NULL)
         {
             pthread_mutex_unlock (&client->dircache_lock);
             return ENOSPC;
         }
 
-        clear_directory_cache_slot (client, oldest_handleless);
+        clear_directory_cache_slot (client, oldest_snapshot);
     }
 
     client->dircache_spool_bytes += extra;
@@ -4917,7 +4922,6 @@ int usfs_directory_add (struct usfs_directory_sink * directory_buffer, const cha
 
 static int load_readdir_snapshot (
     const struct request_context * context,
-    const struct usfs_readdir_in * request,
     const char * path,
     const struct client_dircache_key * key,
     uint64_t * snapshot_id
@@ -4925,13 +4929,11 @@ static int load_readdir_snapshot (
 {
     struct usfs_client * client = context->client;
     struct usfs_directory_sink directory_buffer = { 0 };
-    struct usfs_open_file file_info = { 0 };
 
     directory_buffer.client = client;
     directory_buffer.auto_ino = CLIENT_SYNTHETIC_INODE_BASE + context->header->nodeid;
-    file_info.value = backend_handle_value (client, context->header->nodeid, request->fh);
-
-    const int callback_result = client->ops.readdir (get_callback_request (), path, &file_info, &directory_buffer);
+    const struct usfs_client_request * request = get_callback_request ();
+    const int callback_result = client->ops.readdir (request, path, usfs_request_object_identity (request), &directory_buffer);
 
     int rc = directory_buffer.error != 0 ? directory_buffer.error : normalize_callback_error (callback_result);
     if (rc == 0)
@@ -5071,30 +5073,10 @@ static int send_readdir_window (
         return send_reply (context, ESTALE, NULL, 0);
     }
 
-    if (snapshot->completed && start_index < snapshot->count)
-    {
-        pthread_mutex_unlock (&client->dircache_lock);
-        return send_reply (context, ESTALE, NULL, 0);
-    }
-
-    int rc = 0;
-    if (snapshot->completed)
-    {
-        reply->snapshot_id = snapshot_id;
-        reply->count = 0;
-        reply->pad = 0;
-        reply_length = sizeof (*reply);
-    }
-    else
-        rc = copy_readdir_window (snapshot, start_index, maximum_bytes, reply, &reply_length);
+    const int rc = copy_readdir_window (snapshot, start_index, maximum_bytes, reply, &reply_length);
 
     if (rc == EIO)
         clear_directory_cache_slot (client, snapshot);
-    else if (rc == 0 && key->generation == 0 && reply->count == 0 && start_index >= snapshot->count)
-    {
-        release_directory_cache_resources (client, snapshot);
-        snapshot->completed = true;
-    }
 
     if (rc != EIO)
         snapshot->seq = ++client->dircache_seq;
@@ -5121,6 +5103,9 @@ static int handle_readdir_request (const struct request_context * context, const
     if (readdir_request.size == 0 || readdir_request.size > USFS_MAX_DATA)
         readdir_request.size = USFS_MAX_DATA;
 
+    if (readdir_request.fh != 0)
+        return send_reply (context, EINVAL, NULL, 0);
+
     struct resolved_handle_path resolved = { 0 };
     const int path_rc = resolve_node_handle_path (client, request_header->nodeid, readdir_request.fh, &resolved);
     if (path_rc != 0)
@@ -5129,14 +5114,10 @@ static int handle_readdir_request (const struct request_context * context, const
     if (client->ops.readdir == NULL)
         return send_reply (context, ENOSYS, NULL, 0);
 
-    omit_handle_callback_path (client, true, &resolved);
     struct client_dircache_key key = { 0 };
     key.nodeid = request_header->nodeid;
-    key.fh = readdir_request.fh;
-    key.generation = get_directory_handle_generation (client, key.nodeid, key.fh);
     key.uid = request_header->uid;
     key.gid = request_header->gid;
-    key.pid = request_header->pid;
 
     uint64_t snapshot_id = readdir_request.cookie >> USFS_DIRECTORY_CURSOR_INDEX_BITS;
     const uint32_t start_index = (uint32_t)(readdir_request.cookie & USFS_DIRECTORY_CURSOR_INDEX_MASK);
@@ -5146,7 +5127,7 @@ static int handle_readdir_request (const struct request_context * context, const
 
     if (readdir_request.cookie == 0)
     {
-        const int rc = load_readdir_snapshot (context, &readdir_request, resolved.path, &key, &snapshot_id);
+        const int rc = load_readdir_snapshot (context, resolved.path, &key, &snapshot_id);
         if (rc != 0)
             return send_reply (context, rc, NULL, 0);
     }
@@ -5341,19 +5322,6 @@ static void finish_request (struct usfs_client * client, struct client_node * ob
     release_namespace_access (client, exclusive);
 }
 
-static int release_requires_namespace_writer (struct usfs_client * client, const struct usfs_in_hdr * request, const struct client_node * node)
-{
-    if (request->opcode != USFS_OP_RELEASE || node == NULL)
-        return false;
-
-    pthread_mutex_lock (&client->node_lock);
-    const int hidden = node->hidden_names != 0;
-
-    pthread_mutex_unlock (&client->node_lock);
-
-    return hidden;
-}
-
 static void handle_request (struct usfs_client * client, const char * message, const size_t message_length)
 {
     struct client_context_scope scope __attribute__ ((cleanup (restore_callback_context))) = { 0 };
@@ -5401,22 +5369,9 @@ static void handle_request (struct usfs_client * client, const char * message, c
     }
 
     retained = retain_request_node (client, request_header.nodeid);
-    if (!exclusive && release_requires_namespace_writer (client, &request_header, retained))
-    {
-        release_namespace_access (client, false);
-        exclusive = true;
-        error = acquire_namespace_access (client, exclusive);
-
-        if (error != 0)
-        {
-            pthread_mutex_lock (&client->node_lock);
-            retained->operation_refs--;
-            queue_node_for_collection (client, retained);
-            pthread_mutex_unlock (&client->node_lock);
-            send_reply (&context, error, NULL, 0);
-            return;
-        }
-    }
+    pthread_mutex_lock (&client->node_lock);
+    set_request_object_identity (request_header.opcode, request_header.nodeid, retained);
+    pthread_mutex_unlock (&client->node_lock);
 
     error = lock_request_node_for_mutation (&request_header, retained, &object);
     if (error != 0)
@@ -6188,8 +6143,17 @@ static int initialize_filesystem_once (struct usfs_client * client)
     return 0;
 }
 
-static int fail_session_on_device_error (struct usfs_client * client, const int error)
+static int fail_session_on_device_error (struct usfs_client * client, const int error, const ssize_t read_result)
 {
+    emit_diagnostic (
+        client,
+        "Failed to read filesystem request (result=%lld, errno=%d, exited=%d, fatal=%d): %s\n",
+        (long long)read_result,
+        error,
+        is_session_exited (&client->session),
+        __atomic_load_n (&client->session.fatal_error, __ATOMIC_ACQUIRE),
+        strerror (error)
+    );
     fail_session (client, error);
 
     return resolve_session_result (client, -error);
@@ -6204,7 +6168,7 @@ static int read_and_handle_request (struct usfs_client * client)
         if (errno == EINTR || errno == EAGAIN)
             return 0; /* The request loop re-checks the session exit state. */
 
-        return fail_session_on_device_error (client, errno);
+        return fail_session_on_device_error (client, errno, request_length);
     }
 
     if (request_length == 0)
@@ -6419,7 +6383,7 @@ static int read_and_enqueue_requests (struct usfs_client * client, struct client
         {
             if (errno == EINTR || errno == EAGAIN)
                 continue;
-            return fail_session_on_device_error (client, errno);
+            return fail_session_on_device_error (client, errno, request_length);
         }
 
         if (request_length == 0)
@@ -6675,6 +6639,14 @@ gid_t usfs_request_gid (const struct usfs_client_request * request)
 pid_t usfs_request_pid (const struct usfs_client_request * request)
 {
     return request != NULL ? request->pid : 0;
+}
+
+const struct usfs_object_identity * usfs_request_object_identity (const struct usfs_client_request * request)
+{
+    if (request == NULL || !request->has_object_identity)
+        return NULL;
+
+    return &request->object_identity;
 }
 
 int usfs_client_run (struct usfs_client * client, const unsigned int worker_count)

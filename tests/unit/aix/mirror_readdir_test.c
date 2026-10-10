@@ -115,6 +115,7 @@ static int close_test_directory (DIR * directory_stream)
 #define fstat(...)         stat_test_file (__VA_ARGS__)
 #define close(...)         close_test_file (__VA_ARGS__)
 #define opendir(...)       open_test_directory (__VA_ARGS__)
+#define dirfd(...)         0
 #define readdir            read_test_directory
 #define closedir           close_test_directory
 #define usfs_directory_add fill_test_directory
@@ -125,6 +126,7 @@ static int close_test_directory (DIR * directory_stream)
 #undef closedir
 #undef readdir
 #undef opendir
+#undef dirfd
 #undef close
 #undef fstat
 #undef open
@@ -153,47 +155,30 @@ static void reset_directory_case (void)
     close_calls = 0;
     filled_entries = 0;
     source_directory_path = "/source";
+    memset (&source_root_attributes, 0, sizeof (source_root_attributes));
+    source_root_attributes.st_ino = TEST_DIRECTORY_INODE;
+    source_root_attributes.st_mode = S_IFDIR;
+    source_root_identity_known = 1;
 }
 
 static int run_directory_case (void)
 {
-    return read_directory (NULL, "/", NULL, NULL);
-}
+    const struct usfs_object_identity identity = { .nodeid = 1 };
 
-static void test_directory_handle (struct tap_state * tap)
-{
-    struct usfs_open_file file_info = { 0 };
-    struct stat attributes = { 0 };
-
-    reset_directory_case ();
-    file_info.open_flags = O_RDONLY;
-    file_info.value = UINT64_MAX;
-    const int open_result = filesystem_operations.opendir == NULL ? -ENOSYS : filesystem_operations.opendir (NULL, "/", &file_info);
-    const int stat_result = open_result == 0 ? filesystem_operations.getattr (NULL, NULL, &attributes, &file_info) : open_result;
-
-    tap_ok (
-        tap,
-        open_result == 0 && descriptor_open_calls == 1 && file_info.value == 0 && stat_result == 0 && descriptor_stat_calls == 1 &&
-            S_ISDIR (attributes.st_mode) && attributes.st_ino == TEST_DIRECTORY_INODE,
-        "directory open owns descriptor zero and handle metadata describes that directory"
-    );
-
-    tap_ok (
-        tap,
-        filesystem_operations.getattr (NULL, NULL, &attributes, NULL) == -ESTALE && descriptor_stat_calls == 1,
-        "absent handle without a pathname does not read descriptor zero"
-    );
-
-    const int close_result = filesystem_operations.releasedir == NULL ? -ENOSYS : filesystem_operations.releasedir (NULL, NULL, &file_info);
-
-    tap_ok (tap, close_result == 0 && descriptor_close_calls == 1, "directory release closes its owned descriptor zero exactly once");
+    return read_directory (NULL, "/", &identity, NULL);
 }
 
 int main (void)
 {
     struct tap_state tap;
 
-    tap_plan (&tap, 11);
+    tap_plan (&tap, 9);
+
+    reset_directory_case ();
+    const struct usfs_object_identity unknown_identity = { .nodeid = 9 };
+    struct stat attributes = { .st_ino = TEST_DIRECTORY_INODE, .st_mode = S_IFDIR };
+    tap_ok (&tap, !object_matches_identity (&attributes, &unknown_identity, "/child"),
+            "a path fallback without a verifiable object identity fails closed");
 
     reset_directory_case ();
     tap_ok (
@@ -245,8 +230,6 @@ int main (void)
         run_directory_case () == -EACCES && read_calls == 0 && close_calls == 0,
         "open failure returns its error without touching a stream"
     );
-
-    test_directory_handle (&tap);
 
     return tap_finish (&tap);
 }

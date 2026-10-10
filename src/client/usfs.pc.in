@@ -7,4 +7,4 @@ Name: usfs
 Description: Native userspace filesystem client for IBM AIX
 Version: @USFS_PACKAGE_VERSION@
 Libs: -maix64 -L${libdir} -lusfs -lpthreads
-Cflags: -maix64 -I${includedir}
+Cflags: -maix64 -pthread -I${includedir}

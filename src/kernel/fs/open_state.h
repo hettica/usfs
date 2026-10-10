@@ -77,37 +77,6 @@ static int usfs_retain_operation_locked (struct usfs_node * node, struct usfs_op
     return 0;
 }
 
-static int supports_open_access (const struct usfs_open_state * open_state, const int32long64_t required_access)
-{
-    if (required_access == 0)
-        return true;
-
-    if ((open_state->flags & required_access) == required_access)
-        return true;
-
-    return false;
-}
-
-static int has_retained_open_owner (const struct usfs_open_state * open_state)
-{
-    if (open_state->closing)
-        return true;
-
-    if (open_state->operation_refs != 0)
-        return true;
-
-    if (open_state->cache_refs != 0)
-        return true;
-
-    if (open_state->read_mappings != 0)
-        return true;
-
-    if (open_state->write_mappings != 0)
-        return true;
-
-    return false;
-}
-
 static int is_open_state_closable (const struct usfs_open_state * linked_state, const struct usfs_open_state * open_state)
 {
     if (linked_state != open_state)
@@ -149,56 +118,6 @@ static int usfs_borrow_description (struct usfs_node * node, const caddr_t file_
             return rc;
 
         rc = usfs_retain_operation_locked (node, open_state, retained_state_out);
-    }
-
-    return rc;
-}
-
-static struct usfs_open_state * find_node_handle (const struct usfs_node * node, const int32long64_t required_access)
-{
-    for (struct usfs_open_state * open_state = node->opens; open_state != NULL; open_state = open_state->next)
-    {
-        if (!open_state->active)
-            continue;
-
-        if (!supports_open_access (open_state, required_access))
-            continue;
-
-        return open_state;
-    }
-
-    for (struct usfs_open_state * open_state = node->opens; open_state != NULL; open_state = open_state->next)
-    {
-        if (!has_retained_open_owner (open_state))
-            continue;
-
-        if (!supports_open_access (open_state, required_access))
-            continue;
-
-        return open_state;
-    }
-
-    return NULL;
-}
-
-static int usfs_borrow_node_handle (struct usfs_node * node, const int32long64_t open_flags, struct usfs_open_state ** retained_state_out)
-{
-    const int32long64_t required_access = open_flags & (FREAD | FWRITE);
-    int rc = EBADF;
-
-    if (node == NULL)
-        return EINVAL;
-
-    if (retained_state_out == NULL)
-        return EINVAL;
-
-    *retained_state_out = NULL;
-
-    write_synchronized_with (global_lock)
-    {
-        struct usfs_open_state * open_state = find_node_handle (node, required_access);
-        if (open_state != NULL)
-            rc = usfs_retain_operation_locked (node, open_state, retained_state_out);
     }
 
     return rc;

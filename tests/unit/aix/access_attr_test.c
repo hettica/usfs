@@ -20,10 +20,8 @@ static struct usfs_node attribute_node;
 static struct usfs_request attribute_request;
 static struct usfs_attr_out attribute_reply;
 static int allocation_error, transport_error, request_balance;
-static struct usfs_open_state retained;
 static int handle_available, operation_balance, close_during_getattr, releases;
 static uint64_t getattr_handle, setattr_handle;
-static int mutation_retained;
 
 static struct usfs_node *_node_of(struct vnode *vp)
 {
@@ -31,28 +29,6 @@ static struct usfs_node *_node_of(struct vnode *vp)
     return &attribute_node;
 }
 
-static int usfs_borrow_node_handle(struct usfs_node *node, int32long64_t flags,
-                                   struct usfs_open_state **state)
-{
-    (void)node; (void)flags;
-    if (handle_available) {
-        *state = &retained;
-        ++operation_balance;
-        return 0;
-    }
-    *state = NULL;
-    return EBADF;
-}
-
-static void usfs_put_open_reference(struct vnode *virtual_fs_node, struct usfs_open_state *state,
-                                    int operation, struct ucred *credential)
-{
-    (void)virtual_fs_node; (void)state; (void)operation; (void)credential;
-    if (state != NULL) {
-        --operation_balance;
-        if (!handle_available && operation_balance == 0) ++releases;
-    }
-}
 
 int allocate_request(const struct usfs_request_allocation_spec *spec,
                       struct usfs_request **request)
@@ -89,7 +65,6 @@ static int _setattr(struct vnode *vp, const struct usfs_setattr_in *body,
 {
     (void)vp;
     setattr_handle = fh;
-    mutation_retained = operation_balance == 1 && releases == 0;
     (void)crp;
     usfs_fake_kernel.setattr_calls += 1;
     usfs_fake_kernel.setattr_body = *body;
@@ -183,7 +158,6 @@ static void reset_fixture(struct vnode *vnode, struct ucred *credential)
     memset(&attribute_node, 0, sizeof(attribute_node));
     handle_available = operation_balance = close_during_getattr = releases = 0;
     getattr_handle = setattr_handle = 0;
-    mutation_retained = 0;
     usfs_fake_kernel_reset();
     memset(vnode, 0, sizeof(*vnode));
     memset(credential, 0, sizeof(*credential));
@@ -458,7 +432,6 @@ static void test_retained_attributes(struct tap_state *tap)
         int rc;
         reset_fixture(&vnode, &credential);
         real_getattr = handle_available = close_during_getattr = 1;
-        retained.fh = 902;
         attribute_node.vn = &vnode;
         attribute_node.nodeid = 2;
         memset(&attribute_reply, 0, sizeof(attribute_reply));
@@ -477,11 +450,8 @@ static void test_retained_attributes(struct tap_state *tap)
                        scenario == 6 ? T_SETTIME : scenario == 4 ? 0 : 0600,
                        0, 0, &credential);
         tap_ok(tap, rc == expected[scenario] && operation_balance == 0 &&
-               request_balance == 0 && getattr_handle == 902 &&
-               (scenario == 3 ? releases == 0 : releases == 1) &&
-               (scenario == 0 || scenario == 2 || scenario == 6 ?
-                setattr_handle == 902 && mutation_retained : setattr_handle == 0),
-               "attribute authorization retains its handle through close, mutation and every error exit");
+               request_balance == 0 && getattr_handle == 0 && releases == 0 && setattr_handle == 0,
+               "attribute authorization uses object identity without borrowing an open handle");
     }
     allocation_error = 0;
 }
