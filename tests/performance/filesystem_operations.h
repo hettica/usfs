@@ -69,7 +69,7 @@ static const char * const metadata_names[META_COUNT] = { "stat-path",
                                                          "readlink",
                                                          "chmod",
                                                          "chown",
-                                                         "truncate-path-einval",
+                                                         "truncate-path",
                                                          "ftruncate-handle",
                                                          "utime",
                                                          "fsync-file",
@@ -306,10 +306,7 @@ static int execute_metadata_iteration (struct metadata_context * context, const 
         case META_CHOWN:
             return chown (context->path, getuid (), getgid ());
         case META_TRUNCATE:
-            /* Current gn_ftrunc rejects the path API's absent open description.
-             * Record rejection latency explicitly; this is not successful truncate. */
-            rc = truncate (context->path, OVERHEAD_FILE_BYTES - OVERHEAD_PAGE_BYTES);
-            return rc == -1 && errno == EINVAL ? 0 : -1;
+            return truncate (context->path, OVERHEAD_FILE_BYTES - OVERHEAD_PAGE_BYTES);
         case META_FTRUNCATE:
             return ftruncate (context->descriptor, OVERHEAD_FILE_BYTES - OVERHEAD_PAGE_BYTES);
         case META_UTIME:

@@ -144,7 +144,10 @@ struct usfs_operations
     int (*readlink) (const struct usfs_client_request *, const char *, char *, size_t);               // Read a terminated symbolic-link target.
     int (*chmod) (const struct usfs_client_request *, const char *, mode_t, struct usfs_open_file *); // Change object permissions.
     int (*chown) (const struct usfs_client_request *, const char *, uid_t, gid_t, struct usfs_open_file *); // Change object owner and group.
-    int (*truncate) (const struct usfs_client_request *, const char *, off_t, struct usfs_open_file *);     // Change the file length.
+    /* AIX vnode truncation has no supported per-open handle argument. Both
+     * truncate() and ftruncate() can arrive without file_info. Use the request
+     * identity when path is also NULL after unlink. O_TRUNC can supply a handle. */
+    int (*truncate) (const struct usfs_client_request *, const char *, off_t, struct usfs_open_file *); // Change the file length.
     int (*utimens
     ) (const struct usfs_client_request *,
        const char *,

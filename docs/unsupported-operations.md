@@ -35,15 +35,9 @@ The following AIX interfaces also have no USFS implementation:
 - `vfs_statfsvp`: per-vnode filesystem statistics. Ordinary `statvfs` uses the
   implemented filesystem-statistics path and succeeded in the same probe.
 
-## Known failure outside the unsupported entry points
-
-Pathname `truncate(path, length)` currently fails with `EINVAL` and leaves the
-file length unchanged. `ftruncate(descriptor, length)` succeeded in the POWER
-AIX probe. This is a defect in an otherwise implemented operation, not an
-`ENOSYS` placeholder.
-
 The entry-point inventory comes from
 [`src/kernel/fs/operations/not_implemented`](../src/kernel/fs/operations/not_implemented/).
 The repository's unsupported-operation unit test and vnode compatibility test
-check the explicit `ENOSYS` results; the performance test also records the
-current `truncate`, `ioctl`, lock, `fclear`, and FIFO behavior.
+check the explicit `ENOSYS` results; the performance test also measures
+pathname and descriptor truncation and records current `ioctl`, lock,
+`fclear`, and FIFO behavior.

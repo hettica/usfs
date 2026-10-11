@@ -103,6 +103,25 @@ static int parse_u64 (const char * text, uint64_t maximum, uint64_t * value)
     return 0;
 }
 
+static int run_path_truncate (const char * path, const char * size_text)
+{
+    uint64_t requested_size;
+
+    if (parse_u64 (size_text, (uint64_t)INT64_MAX, &requested_size) != 0)
+    {
+        fprintf (stderr, "Failed to truncate file %s: invalid requested size %s\n", path, size_text);
+        return 2;
+    }
+
+    if (truncate (path, (off_t)requested_size) != 0)
+    {
+        fprintf (stderr, "Failed to truncate file %s: %s\n", path, strerror (errno));
+        return 1;
+    }
+
+    return 0;
+}
+
 static ssize_t transfer_io (const int file_descriptor, unsigned char * buffer, const uint64_t count_value, const uint64_t offset_value, const int positioned, const int flags)
 {
     errno = 0;
@@ -3623,7 +3642,7 @@ static int print_usage (void)
                      "|mmap-unlink|mmap-fork PATH COUNT"
                      "|mmap-repeat PATH COUNT ITERATIONS"
                      "|mmap-tail PATH FILE_SIZE MAP_SIZE"
-                     "|mmap-truncate PATH OLD_SIZE NEW_SIZE"
+                     "|mmap-truncate PATH OLD_SIZE NEW_SIZE|truncate-path PATH SIZE"
                      "|mmap-hold PATH COUNT INDEX READY RELEASE"
                      "|mmap-release-read|mmap-release-write PATH COUNT INDEX READY RELEASE"
                      "|readdir|readdir-loop PATH COUNT|readdir-large PATH"
@@ -3696,6 +3715,8 @@ int main (int argc, char ** argv)
         return run_mmap_tail (argv[2], argv[3], argv[4]);
     if (argc == 5 && strcmp (argv[1], "mmap-truncate") == 0)
         return run_mmap_truncate (argv[2], argv[3], argv[4]);
+    if (argc == 4 && strcmp (argv[1], "truncate-path") == 0)
+        return run_path_truncate (argv[2], argv[3]);
     if (argc == 7 && strcmp (argv[1], "mmap-hold") == 0)
         return run_mmap_hold (argv[2], argv[3], argv[4], argv[5], argv[6], 0);
     if (argc == 7 && (strcmp (argv[1], "mmap-release-read") == 0 ||

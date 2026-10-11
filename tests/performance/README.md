@@ -75,8 +75,8 @@ There are 200 individual samples per operation per round (two in smoke mode).
 Both cached and first-fetch mapped reads are selected by retaining a shared
 mapping; mapped flush includes `msync(MS_SYNC)` and an `fsync` completion barrier.
 Missing-path and unsupported-operation probes require their documented or
-observed error outcomes. `truncate-path-einval` explicitly records the current
-path-based truncate rejection; it is not a successful truncate result.
+observed error outcomes. Pathname and descriptor truncation samples require
+successful operations.
 
 Instrumentation brackets callbacks with a monotonic wall clock and AIX
 `getrusage(RUSAGE_THREAD)` CPU snapshots. The bracket includes the injected delay

@@ -90,9 +90,9 @@ Should not be reproducible during manual sequential execution of examples above.
 
 USFS mounts do not support record locks, ACLs, privilege control lists,
 extended attributes, quotas, `fclear`, special-file creation, file `ioctl`,
-or `pathconf`/`fpathconf`. Pathname `truncate()` currently fails, although
-`ftruncate()` works. See [unsupported filesystem operations](docs/unsupported-operations.md)
-for the complete list, observed errors, and important exceptions.
+or `pathconf`/`fpathconf`. See
+[unsupported filesystem operations](docs/unsupported-operations.md) for the
+complete list, observed errors, and important exceptions.
 
 ## Roadmap
 

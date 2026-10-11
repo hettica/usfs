@@ -510,26 +510,33 @@ phase_mmap()
 
 phase_truncate()
 {
-    say "STEP truncate: shrink and extend"
+    say "STEP truncate: pathname shrink and extend"
 
     printf '0123456789' > "$1/trunc.txt" 2>>"$LOGFILE"
 
-    # Shrink to 4 bytes.
-    if command -v truncate >/dev/null 2>&1; then
-        truncate -s 4 "$1/trunc.txt" 2>>"$LOGFILE"
+    if /usr/sbin/usfs_io_probe truncate-path "$1/trunc.txt" 4 >>"$LOGFILE" 2>&1; then
+        got=$(cat "$1/trunc.txt" 2>/dev/null)
+        size=$(ls -l "$1/trunc.txt" 2>/dev/null | awk '{ print $5 }')
+
+        if [ "$got" = "0123" ] && [ "$size" = "4" ]; then
+            say "OK   pathname truncate shrank the file to 4 bytes"
+        else
+            fail "after pathname shrink content='$got' size='$size'"
+        fi
     else
-        # No truncate(1) on AIX; use a shell redirect through dd.
-        dd if="$1/trunc.txt" of=/tmp/memfs_t bs=1 count=4 2>/dev/null
-        cp /tmp/memfs_t "$1/trunc.txt" 2>/dev/null
-        rm -f /tmp/memfs_t
+        fail "pathname truncate failed to shrink the file"
     fi
 
-    got=$(cat "$1/trunc.txt" 2>/dev/null)
-    size=$(ls -l "$1/trunc.txt" 2>/dev/null | awk '{ print $5 }')
-    if [ "$got" = "0123" ] && [ "$size" = "4" ]; then
-        say "OK   truncated to 4 bytes"
+    if /usr/sbin/usfs_io_probe truncate-path "$1/trunc.txt" 8 >>"$LOGFILE" 2>&1; then
+        size=$(ls -l "$1/trunc.txt" 2>/dev/null | awk '{ print $5 }')
+
+        if [ "$size" = "8" ]; then
+            say "OK   pathname truncate extended the file to 8 bytes"
+        else
+            fail "after pathname extension size='$size'"
+        fi
     else
-        fail "after truncate content='$got' size='$size'"
+        fail "pathname truncate failed to extend the file"
     fi
 }
 
