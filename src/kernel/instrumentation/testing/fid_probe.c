@@ -8,7 +8,8 @@
 
 #include <sys/lkup.h>
 
-/* The probe uses the native AIX lookup, fid and fidtovp entry points. */
+/* Test-only native vnode diagnostics, including operations unavailable through
+ * AIX's ordinary directory descriptors. This object never enters release builds. */
 typedef char usfs_test_fileid_size_check[(sizeof (struct fileid) == USFS_TEST_FID_RAW_BYTES) ? 1 : -1];
 typedef char usfs_test_fsid_size_check[(sizeof (fsid_t) == USFS_TEST_FSID_RAW_BYTES) ? 1 : -1];
 
@@ -176,12 +177,28 @@ static int resolve_identifier (struct usfs_test_fid_probe * request, struct ucre
     return rc;
 }
 
+static int synchronize_directory (struct usfs_test_fid_probe * request, struct ucred * credentials)
+{
+    struct vnode * directory_vnode = NULL;
+    int rc = lookup_usfs_vnode (request->path, credentials, &directory_vnode);
+    if (rc != 0)
+        return rc;
+
+    if (directory_vnode->v_vntype != VDIR)
+        rc = ENOTDIR;
+    else
+        rc = VNOP_FSYNC (directory_vnode, FFILESYNC, 0, credentials);
+
+    VNOP_RELE (directory_vnode);
+    return rc;
+}
+
 static int validate_probe_request (const struct usfs_test_fid_probe * request)
 {
     if (request->abi_version != USFS_TEST_ABI_VERSION)
         return EINVAL;
 
-    if (request->action != USFS_TEST_FID_CAPTURE && request->action != USFS_TEST_FID_RESOLVE)
+    if (request->action != USFS_TEST_FID_CAPTURE && request->action != USFS_TEST_FID_RESOLVE && request->action != USFS_TEST_VNODE_SYNC_DIRECTORY)
         return EINVAL;
 
     if (request->reserved != 0)
@@ -193,7 +210,7 @@ static int validate_probe_request (const struct usfs_test_fid_probe * request)
     if (request->expected_path[0] != '\0' && !valid_probe_path (request->expected_path))
         return EINVAL;
 
-    if (request->action == USFS_TEST_FID_CAPTURE && request->expected_path[0] != '\0')
+    if (request->action != USFS_TEST_FID_RESOLVE && request->expected_path[0] != '\0')
         return EINVAL;
 
     return 0;
@@ -223,8 +240,10 @@ int usfs_test_fid_probe (void * user_buffer)
         {
             if (request->action == USFS_TEST_FID_CAPTURE)
                 rc = capture_identifier (request, credentials);
-            else
+            else if (request->action == USFS_TEST_FID_RESOLVE)
                 rc = resolve_identifier (request, credentials);
+            else
+                rc = synchronize_directory (request, credentials);
 
             crfree (credentials);
         }

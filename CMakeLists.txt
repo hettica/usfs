@@ -341,6 +341,8 @@ usfs_add_test_tool(usfs_usercopy_test tests/harness/tap.c
 usfs_add_test_tool(usfs_io_probe src/tools/usfs_io_probe.c)
 usfs_add_test_tool(usfs_fid_probe src/tools/usfs_fid_probe.c)
 usfs_add_test_tool(usfs_access_probe src/tools/usfs_access_probe.c)
+usfs_add_test_tool(usfs_overhead tests/performance/benchmark.c)
+target_link_libraries(_usfs_testing_usfs_overhead PRIVATE _usfs_client pthreads)
 usfs_add_test_tool(usfs_mt_test_daemon src/tools/usfs_mt_test_daemon.c
     tests/helpers/namespace_client.c)
 target_link_libraries(_usfs_testing_usfs_mt_test_daemon PRIVATE _usfs_client pthreads)
@@ -355,6 +357,7 @@ add_custom_target(_usfs_testing_artifacts DEPENDS
     _usfs_testing_usfs_testctl _usfs_testing_usfs_scenario_daemon
     _usfs_testing_usfs_usercopy_test _usfs_testing_usfs_io_probe _usfs_testing_usfs_fid_probe
     _usfs_testing_usfs_access_probe _usfs_testing_usfs_mt_test_daemon _usfs_testing_usfs_path_test_daemon
+    _usfs_testing_usfs_overhead
     _usfs_mirror _usfs_memfs _usfs_probe _usfs_ctl)
 
 # AIX userspace unit programs.

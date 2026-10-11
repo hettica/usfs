@@ -363,7 +363,10 @@ static int read_file_data (const struct rdwr_context * context)
 {
     struct usfs_node * node = context->node;
 
-    write_synchronized_with (node->mutation_lock)
+    /* Read transfers do not mutate USFS node state. Retain shared ownership
+       across every RPC or VMM chunk; writes, truncation, and mapping creation
+       remain exclusive. The VMM synchronizes its own page faults. */
+    read_synchronized_with (node->mutation_lock)
     {
         if (node->gn->gn_seg != 0)
             return transfer_cached_data (node->vn, context->file_handle, UIO_READ, 0, context->user_io_request, context->credentials);

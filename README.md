@@ -98,3 +98,9 @@ Should not be reproducible during manual sequential execution of examples above.
 - s3fs and sshfs on AIX.
 
 Further development will depend on community demand. Feedback is highly appreciated.
+
+## Performance
+
+One initial performance test has been completed. See the
+[performance summary](docs/performance.md) for the results. More performance
+tests and improvements are planned for later stages of development.

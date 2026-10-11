@@ -29,7 +29,8 @@
 enum usfs_test_fid_action
 {
     USFS_TEST_FID_CAPTURE = 1,
-    USFS_TEST_FID_RESOLVE = 2
+    USFS_TEST_FID_RESOLVE = 2,
+    USFS_TEST_VNODE_SYNC_DIRECTORY = 3
 };
 
 #define USFS_TEST_INFO_SELFTEST 0x00000002u
@@ -186,7 +187,7 @@ struct usfs_test_selftest
 struct usfs_test_fid_probe
 {
     uint32_t abi_version;                                   // USFS_TEST_ABI_VERSION for the test-only ioctl.
-    uint32_t action;                                        // Capture from path or resolve saved bytes.
+    uint32_t action;                                        // Capture/resolve identity or synchronize a directory vnode.
     char path[USFS_TEST_FID_PATH_MAX];                      // Absolute object path for capture, mount path for resolve.
     char expected_path[USFS_TEST_FID_PATH_MAX];             // Optional current object path for canonical-vnode comparison.
     unsigned char file_id[USFS_TEST_FID_RAW_BYTES];         // Full native AIX fileid including cleared padding.

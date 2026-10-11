@@ -48,6 +48,8 @@ static int context_test_key_create (pthread_key_t * key, void (*destroy) (void *
     return pthread_key_create (key, destroy);
 }
 static int reply_write_error;
+enum { CLIENT_TEST_WAKE_DESCRIPTOR = 75 };
+static unsigned capacity_notifications;
 static char * directory_spool_data;
 static size_t directory_spool_length, directory_spool_capacity;
 static int directory_spool_create_error, directory_spool_write_error, directory_spool_read_error;
@@ -100,8 +102,11 @@ ssize_t read (int fd, void * data, size_t size)
 
 ssize_t write (int fd, const void * data, size_t size)
 {
-    if (fd == 75 && size == 1)
+    if (fd == CLIENT_TEST_WAKE_DESCRIPTOR && size == 1)
+    {
+        __atomic_fetch_add (&capacity_notifications, 1, __ATOMIC_RELAXED);
         return 1;
+    }
     if (fd != 73 || size < sizeof (captured_reply))
         abort ();
     if (reply_write_error)
@@ -4123,10 +4128,46 @@ static void test_native_api_contract (struct tap_state * tap)
     );
 }
 
+static void test_worker_capacity_notifications (struct tap_state * tap)
+{
+    struct usfs_client client = { 0 };
+    struct client_mt_runtime runtime;
+    char received[sizeof (struct usfs_in_hdr)];
+    const struct usfs_in_hdr request = { .opcode = USFS_OP_GETATTR };
+    size_t request_length = 0;
+
+    client.session.wake_write = CLIENT_TEST_WAKE_DESCRIPTOR;
+    if (initialize_worker_runtime (&runtime, &client, 1) != 0)
+        abort ();
+
+    struct client_mt_worker worker = { .pool = &runtime.pool, .readbuf = received };
+    capacity_notifications = 0;
+    int valid = enqueue_worker_request (&runtime.pool, (const char *)&request, sizeof (request)) == 0;
+    valid &= dequeue_worker_request (&worker, &request_length) && request_length == sizeof (request);
+    valid &= memcmp (received, &request, sizeof (request)) == 0;
+    tap_ok (tap, valid && capacity_notifications == 0, "dequeue from a queue with spare capacity preserves the request without a wake FIFO write");
+
+    for (size_t index = 0; index < runtime.pool.capacity; ++index)
+        if (enqueue_worker_request (&runtime.pool, (const char *)&request, sizeof (request)) != 0)
+            abort ();
+
+    valid = dequeue_worker_request (&worker, &request_length);
+    tap_ok (tap, valid && capacity_notifications == 1, "dequeue from a full queue notifies the capacity waiter");
+
+    valid = dequeue_worker_request (&worker, &request_length);
+    tap_ok (tap, valid && capacity_notifications == 1, "draining remaining requests does not repeat the capacity notification");
+
+    runtime.pool.stopping = 1;
+    valid = !dequeue_worker_request (&worker, &request_length);
+    tap_ok (tap, valid && capacity_notifications == 1, "an empty stopped worker queue exits without manufacturing a capacity notification");
+    destroy_worker_runtime (&runtime);
+}
+
 int main (void)
 {
     struct tap_state tap;
-    tap_plan (&tap, 268);
+    tap_plan (&tap, 272);
+    test_worker_capacity_notifications (&tap);
     test_native_api_contract (&tap);
     tap_ok (&tap, get_callback_request () == NULL, "no callback context leaks outside callback scope");
     test_lifecycle_context (&tap);

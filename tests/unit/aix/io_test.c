@@ -19,16 +19,36 @@ static char transfer_buffer[USFS_MAX_DATA];
 static int lock_depth, lock_entries, bad_lock, calls, balance, scenario;
 static uint64_t eof;
 static int namespace_depth;
+static int read_lock_depth, read_lock_entries, cached_reads, remove_segment_on_unlock;
+static uint16_t request_opcode;
 enum
 {
     COPY_FAULT_AFTER_BYTES = 7,
     COPY_TEST_INITIAL_OFFSET = 19,
     COPY_TEST_PROCESSED_VECTORS = 2,
-    COPY_TEST_FIRST_VECTOR_BYTES = 5
+    COPY_TEST_FIRST_VECTOR_BYTES = 5,
+    IO_TEST_CACHE_SEGMENT = 1,
+    IO_TEST_FULL_READ_CHUNKS = 2,
+    IO_TEST_COPY_FAULT_SCENARIO = 4
 };
 static int fail_copy_after_bytes = -1;
 static unsigned copied_bytes;
-void lock_read(complex_lock_t lock) { (void)lock; ++namespace_depth; }
+void lock_read (complex_lock_t lock)
+{
+    if (lock == &test_mount.namespace_lock)
+    {
+        ++namespace_depth;
+        return;
+    }
+
+    if (lock_depth != 0)
+        bad_lock = 1;
+
+    ++lock_depth;
+    ++lock_entries;
+    ++read_lock_depth;
+    ++read_lock_entries;
+}
 static int usfs_strip_write_privileges(struct vnode *vp, uint64_t fh, struct ucred *crp)
 { (void)vp; (void)fh; (void)crp; return namespace_depth == 1 ? 0 : EIO; }
 
@@ -40,7 +60,22 @@ void lock_write(complex_lock_t lock)
     ++lock_entries;
 }
 
-void lock_done(complex_lock_t lock) { if (lock == &test_mount.namespace_lock) --namespace_depth; else --lock_depth; }
+void lock_done (complex_lock_t lock)
+{
+    if (lock == &test_mount.namespace_lock)
+    {
+        --namespace_depth;
+        return;
+    }
+
+    --lock_depth;
+    if (read_lock_depth != 0)
+    {
+        --read_lock_depth;
+        if (remove_segment_on_unlock)
+            test_gnode.gn_seg = 0;
+    }
+}
 static struct usfs_mount_data *_mount_of(struct vnode *vp) { (void)vp; return &test_mount; }
 static struct usfs_node *_node_of(struct vnode *vp) { (void)vp; return &test_node; }
 static int usfs_borrow_description(struct usfs_node *node, caddr_t vinfo,
@@ -54,19 +89,35 @@ static void usfs_put_open_reference(struct vnode *virtual_fs_node, struct usfs_o
 int gn_getattr(struct vnode *vp, struct vattr *attr, struct ucred *crp)
 { (void)vp; (void)attr; (void)crp; return 0; }
 
-int allocate_request(const struct usfs_request_allocation_spec *spec, struct usfs_request **out)
+int allocate_request (const struct usfs_request_allocation_spec * spec, struct usfs_request ** out)
 {
-    memcpy(&test_body, spec->opcode_specific_body.bytes, sizeof(test_body));
-    memset(&test_request, 0, sizeof(test_request));
+    request_opcode = spec->opcode;
+    memcpy (&test_body, spec->opcode_specific_body.bytes, sizeof (test_body));
+    memset (&test_request, 0, sizeof (test_request));
     test_request.reply_buffer = (char *)&test_reply;
-    test_request.reply_buffer_size = sizeof(test_reply);
+    test_request.reply_buffer_size = sizeof (test_reply);
+    if (request_opcode == USFS_OP_READ)
+    {
+        memset (transfer_buffer, 0, spec->max_allowed_reply_buffer_size);
+        test_request.reply_buffer = transfer_buffer;
+        test_request.reply_buffer_size = spec->max_allowed_reply_buffer_size;
+    }
     ++balance;
     *out = &test_request;
     return 0;
 }
-void free_request(struct usfs_request *request) { (void)request; --balance; }
-caddr_t usfs_msg_data(const struct usfs_request *request, uint32_t body, uint32_t name)
-{ (void)request; (void)body; (void)name; return transfer_buffer; }
+void free_request (struct usfs_request * request)
+{
+    (void)request;
+    --balance;
+}
+caddr_t usfs_msg_data (const struct usfs_request * request, uint32_t body, uint32_t name)
+{
+    (void)request;
+    (void)body;
+    (void)name;
+    return transfer_buffer;
+}
 int uiomove(caddr_t data, int32long64_t count, enum uio_rw direction, struct uio *uio)
 {
     if (scenario == 4) return EFAULT;
@@ -118,27 +169,44 @@ int uiomove(caddr_t data, int32long64_t count, enum uio_rw direction, struct uio
 int usfs_kuiomove(enum usfs_uiomove_site site, caddr_t data, long count,
                    int direction, struct uio *uio)
 { (void)site; return uiomove(data, count, (enum uio_rw)direction, uio); }
-int usfs_call(struct usfs_connection *connection, struct usfs_request *request)
+int usfs_call (struct usfs_connection * connection, struct usfs_request * request)
 {
     (void)connection;
     ++calls;
-    if (lock_depth != 1) bad_lock = 1;
-    memset(&test_reply, 0, sizeof(test_reply));
+    if (lock_depth != 1)
+        bad_lock = 1;
+    if (request_opcode == USFS_OP_READ)
+        return 0;
+    memset (&test_reply, 0, sizeof (test_reply));
     test_reply.offset = test_body.flags & USFS_WRITE_APPEND ? eof : test_body.offset;
     test_reply.written = test_body.size;
-    if (scenario == 1 && calls == 2) test_reply.written = 2;
-    if (scenario == 2 && calls == 2) request->error = ENOSPC;
-    if (scenario == 3) ++test_reply.offset;
+    if (scenario == 1 && calls == 2)
+        test_reply.written = 2;
+    if (scenario == 2 && calls == 2)
+        request->error = ENOSPC;
+    if (scenario == 3)
+        ++test_reply.offset;
     eof = test_reply.offset + test_reply.written;
     /* A later chunk must retain its position even if a page writeback changed
        backend EOF between requests. */
-    if (calls == 1) eof += 17;
+    if (calls == 1)
+        eof += 17;
     return 0;
 }
 
-static int transfer_cached_data(struct vnode *vp, uint64_t fh, enum uio_rw rw,
-                            int32long64_t flags, struct uio *uio, struct ucred *crp)
-{ (void)vp; (void)fh; (void)rw; (void)flags; (void)uio; (void)crp; return EIO; }
+static int transfer_cached_data (struct vnode * vp, uint64_t fh, enum uio_rw rw, int32long64_t flags, struct uio * uio, struct ucred * crp)
+{
+    (void)vp;
+    (void)fh;
+    (void)rw;
+    (void)flags;
+    (void)uio;
+    (void)crp;
+    ++cached_reads;
+    if (lock_depth != 1 || read_lock_depth != 1)
+        bad_lock = 1;
+    return EIO;
+}
 static int _sync_node(struct vnode *vp, uint64_t fh, int32long64_t flags,
                       int range, offset_t offset, offset_t length, struct ucred *crp)
 { (void)vp; (void)fh; (void)flags; (void)range; (void)offset; (void)length; (void)crp; return 0; }
@@ -258,20 +326,96 @@ static void test_partial_copy_failure (struct tap_state * tap)
     );
 }
 
-int main(void)
+static void test_chunked_read_ownership (struct tap_state * tap)
+{
+    static uint64_t destination[IO_TEST_FULL_READ_CHUNKS * USFS_MAX_DATA / sizeof (uint64_t) + 1];
+    static const char * descriptions[] = { "a multi-chunk read retains one shared guard across every daemon reply",
+                                           "a failed uncached copy releases shared ownership and its request without advancing the caller" };
+
+    for (unsigned fault = 0; fault < sizeof (descriptions) / sizeof (descriptions[0]); ++fault)
+    {
+        memset (destination, 0xff, sizeof (destination));
+
+        struct iovec vector = { .iov_base = (char *)destination, .iov_len = sizeof (destination) };
+        struct uio user_io = { .uio_iov = &vector, .uio_iovcnt = 1, .uio_resid = sizeof (destination) };
+        const struct rdwr_context context = { .node = &test_node, .mount_data = &test_mount, .user_io_request = &user_io };
+
+        test_node.gn = &test_gnode;
+        test_gnode.gn_seg = 0;
+        remove_segment_on_unlock = 0;
+        calls = balance = lock_depth = lock_entries = bad_lock = 0;
+        read_lock_depth = read_lock_entries = cached_reads = 0;
+        scenario = fault ? IO_TEST_COPY_FAULT_SCENARIO : 0;
+        const int rc = read_file_data (&context);
+        const int expected_error = fault ? EFAULT : 0;
+        const int expected_calls = fault ? 1 : IO_TEST_FULL_READ_CHUNKS + 1;
+        const int completed = fault ? user_io.uio_resid == sizeof (destination) && user_io.uio_offset == 0 && destination[0] == UINT64_MAX
+                                    : user_io.uio_resid == 0 && user_io.uio_offset == sizeof (destination) && destination[0] == 0 &&
+                                          destination[sizeof (destination) / sizeof (destination[0]) - 1] == 0;
+
+        tap_ok (
+            tap,
+            rc == expected_error && calls == expected_calls && completed && read_lock_entries == 1 && lock_entries == 1 && lock_depth == 0 &&
+                read_lock_depth == 0 && !bad_lock && balance == 0,
+            descriptions[fault]
+        );
+    }
+}
+
+static void test_read_lock_modes (struct tap_state * tap)
+{
+    enum read_lock_scenario
+    {
+        READ_UNCACHED,
+        READ_CACHED,
+        READ_SEGMENT_RETIREMENT,
+        READ_LOCK_SCENARIOS
+    };
+    static const char * descriptions[] = { "uncached reads hold shared mutation ownership through the daemon transfer",
+                                           "cached reads retain shared mutation ownership and propagate transfer failure",
+                                           "cached reads keep the selected segment until shared ownership is released" };
+
+    for (unsigned index = 0; index < READ_LOCK_SCENARIOS; ++index)
+    {
+        uint64_t destination = UINT64_MAX;
+        struct iovec vector = { .iov_base = (char *)&destination, .iov_len = sizeof (destination) };
+        struct uio user_io = { .uio_iov = &vector, .uio_iovcnt = 1, .uio_resid = sizeof (destination) };
+        const struct rdwr_context context = { .node = &test_node, .mount_data = &test_mount, .user_io_request = &user_io };
+
+        test_node.gn = &test_gnode;
+        test_gnode.gn_seg = index == READ_UNCACHED ? 0 : IO_TEST_CACHE_SEGMENT;
+        remove_segment_on_unlock = index == READ_SEGMENT_RETIREMENT;
+        calls = balance = lock_depth = lock_entries = bad_lock = 0;
+        read_lock_depth = read_lock_entries = cached_reads = 0;
+        scenario = 0;
+        const int rc = read_file_data (&context);
+        const int expected = index == READ_UNCACHED ? 0 : EIO;
+        const int transferred = index == READ_UNCACHED ? calls == 1 && destination == 0 && user_io.uio_resid == 0 : calls == 0 && cached_reads == 1;
+        const int segment_released = index != READ_SEGMENT_RETIREMENT || test_gnode.gn_seg == 0;
+        tap_ok (
+            tap,
+            rc == expected && transferred && segment_released && read_lock_entries == 1 && lock_entries == 1 && lock_depth == 0 &&
+                read_lock_depth == 0 && !bad_lock && balance == 0,
+            descriptions[index]
+        );
+    }
+
+    test_gnode.gn_seg = 0;
+    remove_segment_on_unlock = 0;
+}
+
+int main (void)
 {
     struct tap_state tap;
     struct vnode vnode;
     struct uio uio;
     struct iovec iovec;
 
-    tap_plan (&tap, 24);
-    memset(&vnode, 0, sizeof(vnode));
-    memset(&uio, 0, sizeof(uio));
-    memset(&iovec, 0, sizeof(iovec));
-    tap_ok(&tap, usfs_validate_rdwr_arguments(NULL, UIO_READ, &uio) ==
-                 EINVAL,
-           "rdwr rejects null vnode");
+    tap_plan (&tap, 29);
+    memset (&vnode, 0, sizeof (vnode));
+    memset (&uio, 0, sizeof (uio));
+    memset (&iovec, 0, sizeof (iovec));
+    tap_ok (&tap, usfs_validate_rdwr_arguments (NULL, UIO_READ, &uio) == EINVAL, "rdwr rejects null vnode");
     tap_ok(&tap, usfs_validate_rdwr_arguments(&vnode, UIO_READ, NULL) ==
                  EINVAL,
            "rdwr rejects null uio");
@@ -308,5 +452,7 @@ int main(void)
            "rdwr chunk is capped at protocol maximum");
     test_write_transactions(&tap);
     test_partial_copy_failure (&tap);
+    test_read_lock_modes (&tap);
+    test_chunked_read_ownership (&tap);
     return tap_finish(&tap);
 }

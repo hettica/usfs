@@ -6308,11 +6308,14 @@ static int dequeue_worker_request (const struct client_mt_worker * worker, size_
     *request_length = pool->slots[pool->head].len;
     memcpy (worker->readbuf, pool->slots[pool->head].data, *request_length);
     pool->head = (pool->head + 1) % pool->capacity;
+    const bool reader_needs_capacity = pool->count == pool->capacity;
     pool->count -= 1;
-    pthread_cond_signal (&pool->writable);
     pthread_mutex_unlock (&pool->lock);
 
-    notify_session (&pool->client->session);
+    /* Only a full queue can leave the reader polling for capacity. Session
+       termination has its own unconditional notification. */
+    if (reader_needs_capacity)
+        notify_session (&pool->client->session);
 
     return true;
 }
