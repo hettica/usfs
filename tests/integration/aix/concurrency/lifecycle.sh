@@ -43,6 +43,17 @@ is_mounted()
     mount 2>/dev/null | grep -q " $MOUNT "
 }
 
+mount_reservation_reached()
+{
+    local schedule_status
+    schedule_status=$(/usr/sbin/usfs_testctl schedule-status 2>/dev/null) || return 1
+
+    case "$schedule_status" in
+        *'schedule=1 reached=0x1 '*'timed_out=0 active=1'*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 device_status()
 {
     lsdev -l usfs0 -F status 2>/dev/null
@@ -206,6 +217,17 @@ tap_ok "$mount_failure" "mount-versus-termination schedule arms while quiescent"
 /usr/sbin/usfs_scenario_daemon "$MOUNT" "$SCENARIO" "$REQUESTS" \
     >"$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
+# Termination must begin after the mount reserves its connection. Otherwise
+# rmdev can close admission before the daemon even opens its channel.
+if ! usfs_wait_until "mount reservation checkpoint" 20 mount_reservation_reached; then
+    tap_diag "daemon log follows"
+    sed 's/^/# /' "$DAEMON_LOG" 2>/dev/null
+    schedule_status=$(/usr/sbin/usfs_testctl schedule-status 2>/dev/null)
+    tap_diag "schedule status: $schedule_status"
+    tap_ok 1 "mount reservation completes through the termination rendezvous"
+    exit 1
+fi
+
 rmdev -l usfs0 >"$BASE/mount-rmdev.log" 2>&1 &
 MOUNT_TERM_PID=$!
 
