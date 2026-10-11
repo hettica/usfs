@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/concurrency/lifecycle.sh
+#     bash tests/integration/aix/concurrency/lifecycle.sh
 #
 # Notes:
 #   Requires USFS_TESTING schedule controls. It may temporarily transition

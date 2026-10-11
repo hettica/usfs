@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/fault/init_matrix.sh
+#     bash tests/integration/aix/fault/init_matrix.sh
 #
 # Notes:
 #   Temporarily runs rmdev/mkdev for usfs0. Under coverage, checkpoints preserve

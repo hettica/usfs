@@ -104,3 +104,16 @@ Further development will depend on community demand. Feedback is highly apprecia
 One initial performance test has been completed. See the
 [performance summary](docs/performance.md) for the results. More performance
 tests and improvements are planned for later stages of development.
+
+## Tests and coverage
+
+Build and run tests directly on AIX with the out-of-source CMake workflow.
+For a complete non-performance campaign over SSH and a downloadable coverage
+archive, run:
+
+```sh
+bash collect-coverage.sh root@aix.example.com /ws/usfs-coverage
+```
+
+See [the coverage archive guide](docs/coverage-archive.md) for prerequisites,
+test scope, HTML review, and portable coverage exports.

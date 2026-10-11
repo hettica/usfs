@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/fault/runtime.sh
+#     bash tests/integration/aix/fault/runtime.sh
 #
 # Notes:
 #   Requires USFS_TESTING and a quiescent extension when arming faults. Each

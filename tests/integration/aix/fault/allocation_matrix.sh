@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/fault/allocation_matrix.sh
+#     bash tests/integration/aix/fault/allocation_matrix.sh
 #
 # Notes:
 #   Requires USFS_TESTING fault controls. Faults may be armed only while the

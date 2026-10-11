@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/contract/disconnect_matrix.sh
+#     bash tests/integration/aix/contract/disconnect_matrix.sh
 #
 # Notes:
 #   Requires USFS_TESTING and the scenario daemon. All waits are bounded; each

@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/fault/lifecycle_timeout.sh
+#     bash tests/integration/aix/fault/lifecycle_timeout.sh
 #
 # Notes:
 #   Requires USFS_TESTING timeout controls. The exit trap resets fault state,

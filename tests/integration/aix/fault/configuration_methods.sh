@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/fault/configuration_methods.sh
+#     bash tests/integration/aix/fault/configuration_methods.sh
 
 set -u
 
@@ -152,7 +152,7 @@ registry_failure=0
 registry_base=/tmp/usfs-vfs-reconcile.$$
 mkdir "$registry_base" || exit 1
 cp -p /etc/vfs "$registry_base/original" || exit 1
-# Only this test-owned disposable VM registry is changed. Preserve a complete
+# Only the test-owned registry fixtures are changed. Preserve a complete
 # original and restore it on interruption as well as normal completion.
 restore_registry()
 {

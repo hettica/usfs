@@ -436,7 +436,10 @@ run_case "mirror refuses identifiers without identity callbacks" "$PROBE" unsupp
 stop_backend || exit 1
 
 reload_result=0
-run_bounded_command "FID device removal" "$CASE_TIMEOUT_SECONDS" rmdev -l usfs0 >"$BASE/reload.log" 2>&1 || reload_result=1
+usfs_coverage_checkpoint file-identifiers-pre-term || reload_result=1
+usfs_coverage_expect_export file-identifiers-term || reload_result=1
+USFS_COVERAGE_EVENT=file-identifiers-term \
+    run_bounded_command "FID device removal" "$CASE_TIMEOUT_SECONDS" rmdev -l usfs0 >"$BASE/reload.log" 2>&1 || reload_result=1
 if [ "$reload_result" -eq 0 ]; then
     run_bounded_command "FID device reconfiguration" "$CASE_TIMEOUT_SECONDS" mkdev -l usfs0 >>"$BASE/reload.log" 2>&1 || reload_result=1
 fi

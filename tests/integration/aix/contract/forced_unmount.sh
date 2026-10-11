@@ -8,7 +8,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/contract/forced_unmount.sh
+#     bash tests/integration/aix/contract/forced_unmount.sh
 #
 # Notes:
 #   UVMNT_FORCE detaches the namespace and quarantines the daemon channel, but

@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/concurrency/vnode_identity.sh
+#     bash tests/integration/aix/concurrency/vnode_identity.sh
 #
 # Notes:
 #   Requires USFS_TESTING vnode accounting and rendezvous controls. The final

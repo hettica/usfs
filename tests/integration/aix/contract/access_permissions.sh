@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/contract/access_permissions.sh
+#     bash tests/integration/aix/contract/access_permissions.sh
 
 set -u
 

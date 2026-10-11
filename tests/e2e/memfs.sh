@@ -12,7 +12,7 @@
 #
 # Usage:
 #   Run through `make test-e2e` in the AIX CMake binary directory.
-#   On a prepared AIX VM:
+#   On a prepared AIX host:
 #     MEMFS_PHASES=rw,truncate SIZE_MB=16 bash tests/e2e/memfs.sh
 #
 # Every step prints a timestamped progress line, and every wait is bounded by a
@@ -29,7 +29,7 @@
 #   MOUNT_WAIT / READ_WAIT / STOP_WAIT                    (90 / 240 / 60)
 #   LOGFILE       progress log            (default /tmp/usfs_memfs.log)
 #
-# A small SIZE_MB keeps the capacity phase quick on a slow VM.
+# A small SIZE_MB keeps the capacity phase quick on a small host.
 
 set -u
 
@@ -47,11 +47,19 @@ STOP_WAIT=${STOP_WAIT:-60}
 LOGFILE=${LOGFILE:-/tmp/usfs_memfs.log}
 
 DAEMON=/usr/sbin/usfs_memfs
+if [ -n "${USFS_COVERAGE_SUITE:-}" ]; then
+    export USFS_COVERAGE_DAEMON=$DAEMON
+    DAEMON="bash ${USFS_SOURCE_DIR:?}/scripts/aix/coverage-exec.sh"
+fi
 DAEMON_RE='[u]sfs_memfs'
 
 coverage_expect_profile()
 {
-    return 0
+    _pid=$1
+    [ -n "${USFS_COVERAGE_SUITE:-}" ] || return 0
+    [ -x /usr/sbin/usfs_coverage ] || return 0
+    bash "${USFS_SOURCE_DIR:?}/scripts/aix/coverage-checkpoint.sh" expect-profile \
+        "$USFS_COVERAGE_SUITE" memfs "$_pid"
 }
 
 START=$(date +%s)

@@ -8,7 +8,7 @@
 #
 # Usage:
 #   Run through `make test-e2e` in the AIX CMake binary directory.
-#   On a prepared AIX VM: cd /home && bash tests/e2e/observability.sh
+#   On a prepared AIX host: bash tests/e2e/observability.sh
 
 set -u
 . "${USFS_SOURCE_DIR:?}/tests/helpers/aix.sh"

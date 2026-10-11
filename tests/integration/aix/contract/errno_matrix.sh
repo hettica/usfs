@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/contract/errno_matrix.sh
+#     bash tests/integration/aix/contract/errno_matrix.sh
 #
 # Notes:
 #   Requires the testing scenario daemon. Expected failing filesystem commands

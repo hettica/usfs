@@ -16,7 +16,7 @@ ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 BUILD_ROOT=${USFS_SOAK_TEST_BUILD:-$ROOT/build/soak-qualification}
 # Campaign data needs substantially more space than the small AIX /var
 # filesystem commonly provides. /home is also the documented operator
-# workspace and satisfies the bounded automation reserve in the VM image.
+# workspace; callers can select another filesystem with sufficient free space.
 WORK_ROOT=${USFS_SOAK_TEST_WORKDIR:-/home/usfs-soak-runs}
 REVISION=soak-test
 NAME="usfs-soak-0.1.0-$REVISION-aix$AIX_VERSION-ppc64"

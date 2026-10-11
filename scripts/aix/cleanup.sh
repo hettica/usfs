@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 # Purpose:
-#   Remove all USFS runtime state from the VM: stop every USFS demo daemon
+#   Remove all USFS runtime state from the AIX host: stop every USFS demo daemon
 #   (usfs_mirror, usfs_memfs, scenario daemons, and the
 #   multithreaded test daemon) and unmount
 #   every USFS file system. Report what remains so cleanup is verifiable.
@@ -11,7 +11,7 @@
 # Safe to run at any time; it is idempotent and touches nothing else.
 #
 # Usage:
-#   Run from the repository root on the AIX VM:
+#   Run from the repository root on the AIX host:
 #     bash scripts/aix/cleanup.sh
 
 # Bracketed first character keeps the grep from matching itself; -E because the

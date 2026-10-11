@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/contract/usercopy_io.sh
+#     bash tests/integration/aix/contract/usercopy_io.sh
 #
 # Notes:
 #   Requires USFS_TESTING, usfs_usercopy_test, and the scenario daemon. Request

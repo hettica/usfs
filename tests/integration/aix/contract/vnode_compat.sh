@@ -10,7 +10,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/contract/vnode_compat.sh
+#     bash tests/integration/aix/contract/vnode_compat.sh
 #
 # Notes:
 #   Requires the test-only usfs_io_probe. Exact errno assertions prevent an

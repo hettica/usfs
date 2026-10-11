@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/fault/init_retry.sh
+#     bash tests/integration/aix/fault/init_retry.sh
 #
 # Notes:
 #   Temporarily unconfigures usfs0 and preserves coverage before unload when

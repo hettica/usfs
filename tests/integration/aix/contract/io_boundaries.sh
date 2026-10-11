@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/contract/io_boundaries.sh
+#     bash tests/integration/aix/contract/io_boundaries.sh
 #
 # Notes:
 #   Requires the test-only usfs_io_probe and scenario daemon. Request logs are

@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/contract/handle_lifecycle.sh
+#     bash tests/integration/aix/contract/handle_lifecycle.sh
 #
 # Notes:
 #   Requires USFS_TESTING accounting controls. The final assertion checks live,

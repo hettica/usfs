@@ -153,7 +153,7 @@ if [ "$CPUS" -lt 2 ]; then
         preflight_fail "at least two CPUs are required"
     fi
     TEST_UNDERSIZED=1
-    echo "NOTICE: bounded undersized-VM automation mode (not qualification)"
+    echo "NOTICE: bounded single-CPU automation mode (not qualification)"
 fi
 MEMORY_KIB=$(/usr/sbin/lsattr -El sys0 -a realmem -F value 2>/dev/null | sed -n '1p')
 soak_is_uint "$MEMORY_KIB" || preflight_fail "cannot determine sys0 realmem"

@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/concurrency/controlled.sh
+#     bash tests/integration/aix/concurrency/controlled.sh
 #
 # Notes:
 #   Requires the USFS_TESTING extension and scenario daemon. The test emits

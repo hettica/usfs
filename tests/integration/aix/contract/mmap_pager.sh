@@ -6,12 +6,12 @@
 #   Exercise the AIX client pager with hostile daemon replies, disconnects,
 #   cancellation, large sparse objects, concurrent faults, and allocation
 #   failures. Every wait is bounded so a pager regression is reported instead
-#   of silently wedging the VM test run.
+#   of silently hanging the AIX test run.
 #
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/contract/mmap_pager.sh
+#     bash tests/integration/aix/contract/mmap_pager.sh
 
 set -u
 

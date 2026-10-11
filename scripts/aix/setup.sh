@@ -3,12 +3,12 @@
 # SPDX-License-Identifier: MIT
 #
 # Purpose:
-#   Perform idempotent USFS device setup on the AIX VM: ensure the ODM
+#   Perform idempotent USFS device setup on the AIX host: ensure the ODM
 #   predefined entry exists, define usfs0, and configure the device so the
 #   kernel extension is loaded and /dev/usfs0 is present.
 #
 # Usage:
-#   Run from the repository root on the AIX VM:
+#   Run from the repository root on the AIX host:
 #     bash scripts/aix/setup.sh
 #
 #   Public CMake targets call this helper while activating a build variant.

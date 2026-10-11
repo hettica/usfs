@@ -12,7 +12,7 @@
 #
 # Usage:
 #   Run through `make test-e2e` in the AIX CMake binary directory.
-#   On a prepared AIX VM:
+#   On a prepared AIX host:
 #     MIRROR_PHASES=structure,content bash tests/e2e/mirror.sh
 #
 # Every step prints a timestamped progress line, and every wait is bounded by a
@@ -33,7 +33,7 @@
 #   FIXTURE        fixture location            (default /tmp/usfs_fixture)
 #   LOGFILE        progress log                (default /tmp/usfs_mirror.log)
 #
-# The VM is slow; defaults are deliberately small. For a soak run over the
+# Defaults keep repeated test runs bounded. For a soak run over the
 # whole of /usr:  MIRROR_SRC=/usr N_ENTRIES=100000 ITERATIONS=1
 
 set -u
@@ -54,11 +54,19 @@ FIXTURE=${FIXTURE:-/tmp/usfs_fixture}
 LOGFILE=${LOGFILE:-/tmp/usfs_mirror.log}
 
 DAEMON=/usr/sbin/usfs_mirror
+if [ -n "${USFS_COVERAGE_SUITE:-}" ]; then
+    export USFS_COVERAGE_DAEMON=$DAEMON
+    DAEMON="bash ${USFS_SOURCE_DIR:?}/scripts/aix/coverage-exec.sh"
+fi
 DAEMON_RE='[u]sfs_mirror'
 
 coverage_expect_profile()
 {
-    return 0
+    _pid=$1
+    [ -n "${USFS_COVERAGE_SUITE:-}" ] || return 0
+    [ -x /usr/sbin/usfs_coverage ] || return 0
+    bash "${USFS_SOURCE_DIR:?}/scripts/aix/coverage-checkpoint.sh" expect-profile \
+        "$USFS_COVERAGE_SUITE" mirror "$_pid"
 }
 
 START=$(date +%s)

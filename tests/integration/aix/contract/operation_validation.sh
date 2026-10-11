@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/contract/operation_validation.sh
+#     bash tests/integration/aix/contract/operation_validation.sh
 #
 # Notes:
 #   Requires the test-only scenario daemon. Every malformed reply is followed

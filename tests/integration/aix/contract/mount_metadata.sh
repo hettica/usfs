@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/contract/mount_metadata.sh
+#     bash tests/integration/aix/contract/mount_metadata.sh
 #
 # Notes:
 #   Corruption is injected by the test-only scenario daemon. Each failed mount

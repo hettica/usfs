@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/integration/aix/contract/protocol.sh
+#     bash tests/integration/aix/contract/protocol.sh
 #
 # Notes:
 #   Scenario files program the test daemon one reply at a time. The test emits

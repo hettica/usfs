@@ -3,16 +3,18 @@
 # SPDX-License-Identifier: MIT
 #
 # Purpose: Run a public USFS test target directly on the AIX host.
-# Usage: bash scripts/aix/run-target.sh test|test-e2e source build
+# Usage: bash scripts/aix/run-target.sh test|test-e2e|coverage source build [run] [revision] [dirty]
 
 set -eu
 
 # Public test targets are unattended gates. No test utility may inherit the
 # terminal and wait on a hidden confirmation prompt.
 exec </dev/null
-unset USFS_COVERAGE_SUITE USFS_COVERAGE_EVENT
 
 mode=$1
+if [ "$mode" != coverage ]; then
+    unset USFS_COVERAGE_SUITE USFS_COVERAGE_EVENT
+fi
 USFS_SOURCE_DIR=$2
 USFS_BINARY_DIR=$3
 export USFS_SOURCE_DIR USFS_BINARY_DIR
@@ -45,7 +47,10 @@ restore_release()
     fi
     exit "$restore_status"
 }
-trap restore_release EXIT HUP INT TERM
+trap restore_release EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 run_units()
 {
@@ -149,5 +154,10 @@ run_e2e()
 case "$mode" in
     test) run_non_e2e ;;
     test-e2e) run_e2e ;;
+    coverage)
+        bash "$USFS_SOURCE_DIR/scripts/aix/run-coverage.sh" \
+            "$USFS_SOURCE_DIR" "$USFS_BINARY_DIR" "${4:-quick}" \
+            "${5:-unknown}" "${6:-unknown}"
+        ;;
     *) echo "unknown public target runner mode: $mode" >&2; exit 2 ;;
 esac

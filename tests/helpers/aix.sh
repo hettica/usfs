@@ -33,20 +33,30 @@ USFS_TEST_MOUNTS=""
 
 usfs_coverage_checkpoint()
 {
-    # This preview does not include the coverage collection workflow.
-    return 0
+    label=$1
+    [ -n "${USFS_COVERAGE_SUITE:-}" ] || return 0
+    [ -x /usr/sbin/usfs_coverage ] || return 0
+    bash "${USFS_SOURCE_DIR:?}/scripts/aix/coverage-checkpoint.sh" snapshot \
+        "$USFS_COVERAGE_SUITE" "$label"
 }
 
 usfs_coverage_expect_export()
 {
-    # This preview does not include the coverage collection workflow.
-    return 0
+    label=$1
+    [ -n "${USFS_COVERAGE_SUITE:-}" ] || return 0
+    [ -x /usr/sbin/usfs_coverage ] || return 0
+    bash "${USFS_SOURCE_DIR:?}/scripts/aix/coverage-checkpoint.sh" expect-export \
+        "$USFS_COVERAGE_SUITE" "$label"
 }
 
 usfs_coverage_expect_profile()
 {
-    # This preview does not include the coverage collection workflow.
-    return 0
+    workload=$1
+    pid=$2
+    [ -n "${USFS_COVERAGE_SUITE:-}" ] || return 0
+    [ -x /usr/sbin/usfs_coverage ] || return 0
+    bash "${USFS_SOURCE_DIR:?}/scripts/aix/coverage-checkpoint.sh" expect-profile \
+        "$USFS_COVERAGE_SUITE" "$workload" "$pid"
 }
 
 tap_plan()

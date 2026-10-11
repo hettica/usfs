@@ -79,6 +79,9 @@ set(USFS_SOAK_REVISION "${USFS_BUILD_REVISION}" CACHE STRING "Revision used in t
 
 set(USFS_BIN_DIR "${CMAKE_BINARY_DIR}/bin")
 set(USFS_TEST_BIN_DIR "${CMAKE_BINARY_DIR}/testing/bin")
+set(USFS_COVERAGE_BIN_DIR "${CMAKE_BINARY_DIR}/coverage/bin")
+set(USFS_COVERAGE_RUN quick CACHE STRING "Coverage run identifier")
+set(USFS_GCOV_FLAGS -fprofile-arcs -ftest-coverage -fprofile-update=atomic)
 set(USFS_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
 set(USFS_PACKAGES_DIR "${CMAKE_BINARY_DIR}/packages")
 if(CMAKE_CROSSCOMPILING)
@@ -362,31 +365,46 @@ add_custom_target(_usfs_testing_artifacts DEPENDS
 
 # AIX userspace unit programs.
 set(USFS_UNIT_TARGETS "")
+set(USFS_COVERAGE_UNIT_TARGETS "")
 function(usfs_add_unit name kind)
     set(_sources ${ARGN})
-    set(_target _usfs_unit_${name})
-    set(_directory "${CMAKE_BINARY_DIR}/tests")
-    add_executable(${_target} EXCLUDE_FROM_ALL ${_sources})
-    target_compile_options(${_target} PRIVATE -maix64 -Wall -Wextra -Werror)
-    target_include_directories(${_target} PRIVATE
-        "${CMAKE_SOURCE_DIR}/src/common" "${CMAKE_SOURCE_DIR}/src/kernel"
-        "${CMAKE_SOURCE_DIR}/tests/harness"
-        "${CMAKE_SOURCE_DIR}/tests/unit/aix")
-    if(kind STREQUAL "KERNEL")
-        target_compile_options(${_target} PRIVATE -O2 -Wno-unused-function)
-        target_compile_definitions(${_target} PRIVATE
-            _KERNEL _ALL_SOURCE _POSIX_SOURCE USFS_TRACE_DISABLED)
-    elseif(kind STREQUAL "CLIENT")
-        target_compile_options(${_target} PRIVATE -pthread)
+    foreach(_variant IN ITEMS normal coverage)
+        if(_variant STREQUAL normal)
+            set(_target _usfs_unit_${name})
+            set(_directory "${CMAKE_BINARY_DIR}/tests")
+        else()
+            set(_target _usfs_coverage_unit_${name})
+            set(_directory "${CMAKE_BINARY_DIR}/coverage/aix-unit")
+        endif()
+        add_executable(${_target} EXCLUDE_FROM_ALL ${_sources})
+        target_compile_options(${_target} PRIVATE -maix64 -Wall -Wextra -Werror)
         target_include_directories(${_target} PRIVATE
-            "${CMAKE_SOURCE_DIR}/src/client/include"
-            "${CMAKE_SOURCE_DIR}/src/client/include/usfs")
-        target_compile_definitions(${_target} PRIVATE _POSIX_C_SOURCE=200809L)
-        target_link_libraries(${_target} PRIVATE pthreads)
-    endif()
-    list(APPEND USFS_UNIT_TARGETS ${_target})
-    usfs_set_output(${_target} "${_directory}" "${name}")
+            "${CMAKE_SOURCE_DIR}/src/common" "${CMAKE_SOURCE_DIR}/src/kernel"
+            "${CMAKE_SOURCE_DIR}/tests/harness"
+            "${CMAKE_SOURCE_DIR}/tests/unit/aix")
+        if(kind STREQUAL "KERNEL")
+            target_compile_options(${_target} PRIVATE -O2 -Wno-unused-function)
+            target_compile_definitions(${_target} PRIVATE
+                _KERNEL _ALL_SOURCE _POSIX_SOURCE USFS_TRACE_DISABLED)
+        elseif(kind STREQUAL "CLIENT")
+            target_compile_options(${_target} PRIVATE -pthread)
+            target_include_directories(${_target} PRIVATE
+                "${CMAKE_SOURCE_DIR}/src/client/include"
+                "${CMAKE_SOURCE_DIR}/src/client/include/usfs")
+            target_compile_definitions(${_target} PRIVATE _POSIX_C_SOURCE=200809L)
+            target_link_libraries(${_target} PRIVATE pthreads)
+        endif()
+        if(_variant STREQUAL coverage)
+            target_compile_options(${_target} PRIVATE ${USFS_GCOV_FLAGS})
+            target_link_options(${_target} PRIVATE ${USFS_GCOV_FLAGS})
+            list(APPEND USFS_COVERAGE_UNIT_TARGETS ${_target})
+        else()
+            list(APPEND USFS_UNIT_TARGETS ${_target})
+        endif()
+        usfs_set_output(${_target} "${_directory}" "${name}")
+    endforeach()
     set(USFS_UNIT_TARGETS "${USFS_UNIT_TARGETS}" PARENT_SCOPE)
+    set(USFS_COVERAGE_UNIT_TARGETS "${USFS_COVERAGE_UNIT_TARGETS}" PARENT_SCOPE)
 endfunction()
 
 usfs_add_unit(tap_selftest PORTABLE tests/harness/tap.c tests/harness/tap_selftest.c)
@@ -401,8 +419,10 @@ usfs_add_unit(usfs_client_test CLIENT tests/harness/tap.c src/common/usfs_valida
 usfs_add_unit(mirror_readdir_test CLIENT tests/harness/tap.c
     tests/unit/aix/mirror_readdir_test.c)
 target_link_libraries(_usfs_unit_mirror_readdir_test PRIVATE _usfs_client)
+target_link_libraries(_usfs_coverage_unit_mirror_readdir_test PRIVATE _usfs_client_coverage)
 usfs_add_unit(memfs_fid_test CLIENT tests/harness/tap.c tests/unit/aix/memfs_fid_test.c)
 target_link_libraries(_usfs_unit_memfs_fid_test PRIVATE _usfs_client)
+target_link_libraries(_usfs_coverage_unit_memfs_fid_test PRIVATE _usfs_client_coverage)
 usfs_add_unit(synchronized_test PORTABLE tests/harness/tap.c tests/unit/synchronized_test.c)
 usfs_add_unit(soak_worker_test PORTABLE tests/harness/tap.c tests/unit/soak_worker_test.c)
 usfs_add_unit(fake_kernel_test KERNEL tests/harness/tap.c tests/unit/aix/support/fake_kernel.c
@@ -432,6 +452,7 @@ usfs_add_unit(mapping_pager_test KERNEL tests/harness/tap.c src/kernel/fs/io_hel
 usfs_add_unit(unsupported_ops_test KERNEL tests/harness/tap.c tests/unit/aix/unsupported_ops_test.c)
 # Keep the trivial stubs callable for direct unit assertions.
 target_compile_options(_usfs_unit_unsupported_ops_test PRIVATE -O0)
+target_compile_options(_usfs_coverage_unit_unsupported_ops_test PRIVATE -O0)
 usfs_add_unit(namespace_test KERNEL tests/harness/tap.c src/common/usfs_validate.c
     src/kernel/fs/helpers.c tests/unit/aix/namespace_test.c)
 usfs_add_unit(device_transport_test KERNEL tests/harness/tap.c
@@ -440,6 +461,7 @@ usfs_add_unit(device_operations_test KERNEL tests/harness/tap.c
     src/common/usfs_validate.c src/kernel/device/protocol/transport_validation.c tests/unit/aix/device_operations_test.c)
 # Preserve direct header-operation calls for negative-path assertions.
 target_compile_options(_usfs_unit_device_operations_test PRIVATE -O0)
+target_compile_options(_usfs_coverage_unit_device_operations_test PRIVATE -O0)
 usfs_add_unit(runtime_config_test KERNEL tests/harness/tap.c
     src/kernel/device/runtime_config.c tests/unit/aix/runtime_config_test.c)
 usfs_add_unit(observability_test KERNEL tests/harness/tap.c src/common/usfs_status.c
@@ -449,6 +471,7 @@ usfs_add_unit(mount_lifecycle_test KERNEL tests/harness/tap.c
 usfs_add_unit(mount_lifecycle_deferred_test KERNEL tests/harness/tap.c
     src/kernel/instrumentation/adapter.c tests/unit/aix/mount_lifecycle_test.c)
 target_compile_definitions(_usfs_unit_mount_lifecycle_deferred_test PRIVATE USFS_COVERAGE)
+target_compile_definitions(_usfs_coverage_unit_mount_lifecycle_deferred_test PRIVATE USFS_COVERAGE)
 usfs_add_unit(vfs_root_test KERNEL tests/harness/tap.c tests/unit/aix/vfs_root_test.c)
 usfs_add_unit(fid_format_test KERNEL tests/harness/tap.c tests/unit/aix/fid_format_test.c)
 usfs_add_unit(fid_ops_test KERNEL tests/harness/tap.c src/common/usfs_validate.c
@@ -458,6 +481,107 @@ usfs_add_unit(lifecycle_state_test KERNEL tests/harness/tap.c src/kernel/lifecyc
     tests/unit/aix/lifecycle_state_test.c)
 
 add_custom_target(_usfs_unit_programs DEPENDS ${USFS_UNIT_TARGETS})
+add_custom_target(_usfs_coverage_unit_programs DEPENDS ${USFS_COVERAGE_UNIT_TARGETS})
+
+# Coverage builds support arbitrary source and binary directories on AIX.
+usfs_kernel_objects(_usfs_kernel_coverage_core ${USFS_KERNEL_CORE_SOURCES})
+target_compile_options(_usfs_kernel_coverage_core PRIVATE ${USFS_GCOV_FLAGS})
+usfs_kernel_objects(_usfs_kernel_coverage_instrumentation
+    src/kernel/instrumentation/services.c src/kernel/instrumentation/adapter.c
+    src/kernel/instrumentation/testing/runtime.c
+    src/kernel/instrumentation/testing/fid_probe.c tests/kernel/aix/selftest.c)
+target_compile_options(_usfs_kernel_coverage_instrumentation PRIVATE ${USFS_GCOV_FLAGS})
+target_compile_definitions(_usfs_kernel_coverage_instrumentation PRIVATE USFS_COVERAGE USFS_TESTING)
+target_include_directories(_usfs_kernel_coverage_instrumentation PRIVATE
+    "${CMAKE_SOURCE_DIR}/src/kernel/instrumentation/coverage"
+    "${CMAKE_SOURCE_DIR}/src/kernel/instrumentation/testing")
+add_library(_usfs_kernel_coverage_runtime OBJECT EXCLUDE_FROM_ALL
+    src/kernel/instrumentation/coverage/runtime.c
+    src/kernel/instrumentation/coverage/control.c)
+target_compile_options(_usfs_kernel_coverage_runtime PRIVATE ${USFS_DIAGNOSTIC_FLAGS})
+target_compile_definitions(_usfs_kernel_coverage_runtime PRIVATE
+    _KERNEL _ALL_SOURCE _POSIX_SOURCE USFS_COVERAGE)
+target_include_directories(_usfs_kernel_coverage_runtime PRIVATE
+    "${USFS_GENERATED_DIR}" "${CMAKE_SOURCE_DIR}/src/kernel"
+    "${CMAKE_SOURCE_DIR}/src/common"
+    "${CMAKE_SOURCE_DIR}/src/kernel/instrumentation/coverage")
+add_dependencies(_usfs_kernel_coverage_runtime _usfs_errids)
+
+set(USFS_COVERAGE_REGISTRY "${CMAKE_BINARY_DIR}/coverage/generated/registry.c")
+add_custom_command(
+    OUTPUT "${USFS_COVERAGE_REGISTRY}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_BINARY_DIR}/coverage/generated"
+    COMMAND bash "${CMAKE_SOURCE_DIR}/scripts/aix/generate-gcov-registry.sh"
+        "${USFS_COVERAGE_REGISTRY}"
+        $<TARGET_OBJECTS:_usfs_kernel_coverage_core>
+        $<TARGET_OBJECTS:_usfs_kernel_coverage_instrumentation>
+    DEPENDS _usfs_kernel_coverage_core _usfs_kernel_coverage_instrumentation
+        "${CMAKE_SOURCE_DIR}/scripts/aix/generate-gcov-registry.sh"
+        $<TARGET_OBJECTS:_usfs_kernel_coverage_core>
+        $<TARGET_OBJECTS:_usfs_kernel_coverage_instrumentation>
+    COMMAND_EXPAND_LISTS VERBATIM)
+add_library(_usfs_kernel_coverage_registry OBJECT EXCLUDE_FROM_ALL "${USFS_COVERAGE_REGISTRY}")
+target_compile_options(_usfs_kernel_coverage_registry PRIVATE ${USFS_DIAGNOSTIC_FLAGS})
+target_compile_definitions(_usfs_kernel_coverage_registry PRIVATE
+    _KERNEL _ALL_SOURCE _POSIX_SOURCE USFS_COVERAGE)
+target_include_directories(_usfs_kernel_coverage_registry PRIVATE
+    "${CMAKE_SOURCE_DIR}/src/kernel" "${CMAKE_SOURCE_DIR}/src/common"
+    "${CMAKE_SOURCE_DIR}/src/kernel/instrumentation/coverage")
+
+add_custom_command(
+    OUTPUT "${USFS_COVERAGE_BIN_DIR}/usfs.kext"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${USFS_COVERAGE_BIN_DIR}"
+    COMMAND "${CMAKE_LINKER}" -b64 -e usfs_kext_entry
+        -o "${USFS_COVERAGE_BIN_DIR}/usfs.kext" "-bI:${USFS_KERNEX_IMPORT_FILE}"
+        $<TARGET_OBJECTS:_usfs_kernel_coverage_core>
+        $<TARGET_OBJECTS:_usfs_kernel_coverage_instrumentation>
+        $<TARGET_OBJECTS:_usfs_kernel_coverage_runtime>
+        $<TARGET_OBJECTS:_usfs_kernel_coverage_registry>
+        $<TARGET_OBJECTS:_usfs_kernel_hooks> -lsys -lcsys
+    COMMAND bash "${CMAKE_SOURCE_DIR}/scripts/aix/verify-kernel.sh"
+        coverage "${USFS_COVERAGE_BIN_DIR}/usfs.kext"
+    DEPENDS _usfs_kernel_coverage_core _usfs_kernel_coverage_instrumentation
+        _usfs_kernel_coverage_runtime _usfs_kernel_coverage_registry
+        $<TARGET_OBJECTS:_usfs_kernel_coverage_core>
+        $<TARGET_OBJECTS:_usfs_kernel_coverage_instrumentation>
+        $<TARGET_OBJECTS:_usfs_kernel_coverage_runtime>
+        $<TARGET_OBJECTS:_usfs_kernel_coverage_registry>
+        $<TARGET_OBJECTS:_usfs_kernel_hooks>
+        _usfs_kernel_hooks "${CMAKE_SOURCE_DIR}/scripts/aix/verify-kernel.sh"
+    COMMAND_EXPAND_LISTS VERBATIM)
+add_custom_target(_usfs_kernel_coverage DEPENDS "${USFS_COVERAGE_BIN_DIR}/usfs.kext")
+
+add_library(_usfs_client_coverage STATIC EXCLUDE_FROM_ALL
+    src/client/lib/usfs_client.c src/common/usfs_validate.c)
+usfs_common_target(_usfs_client_coverage)
+target_include_directories(_usfs_client_coverage PUBLIC "${CMAKE_SOURCE_DIR}/src/client/include")
+target_include_directories(_usfs_client_coverage PRIVATE "${CMAKE_SOURCE_DIR}/src/client/include/usfs")
+set_target_properties(_usfs_client_coverage PROPERTIES PREFIX "lib" SUFFIX ".a")
+target_compile_options(_usfs_client_coverage PRIVATE ${USFS_GCOV_FLAGS})
+target_link_options(_usfs_client_coverage INTERFACE ${USFS_GCOV_FLAGS})
+target_link_libraries(_usfs_client_coverage PUBLIC pthreads)
+usfs_set_output(_usfs_client_coverage "${USFS_COVERAGE_BIN_DIR}" usfs)
+foreach(_example IN ITEMS mirror memfs)
+    add_executable(_usfs_coverage_${_example} EXCLUDE_FROM_ALL "examples/${_example}.c")
+    usfs_common_target(_usfs_coverage_${_example})
+    target_compile_options(_usfs_coverage_${_example} PRIVATE ${USFS_GCOV_FLAGS})
+    target_link_options(_usfs_coverage_${_example} PRIVATE ${USFS_GCOV_FLAGS})
+    target_link_libraries(_usfs_coverage_${_example} PRIVATE _usfs_client_coverage pthreads)
+    usfs_set_output(_usfs_coverage_${_example} "${USFS_COVERAGE_BIN_DIR}" "usfs_${_example}")
+endforeach()
+usfs_add_test_tool(usfs_coverage src/tools/usfs_coverage.c)
+usfs_set_output(_usfs_testing_usfs_coverage "${USFS_COVERAGE_BIN_DIR}" usfs_coverage)
+
+add_custom_target(_usfs_coverage_artifacts DEPENDS
+    _usfs_kernel_coverage _usfs_coverage_unit_programs
+    _usfs_client_coverage _usfs_coverage_mirror
+    _usfs_coverage_memfs _usfs_testing_usfs_coverage
+    _usfs_testing_cfgusfs _usfs_testing_ucfgusfs _usfs_testing_chusfs
+    _usfs_testing_usfs_testctl _usfs_testing_usfs_scenario_daemon
+    _usfs_testing_usfs_usercopy_test _usfs_testing_usfs_io_probe _usfs_testing_usfs_fid_probe
+    _usfs_testing_usfs_access_probe _usfs_testing_usfs_mt_test_daemon _usfs_testing_usfs_path_test_daemon
+    _usfs_probe _usfs_ctl)
+
 set(USFS_RPM_FILE
     "usfs-${USFS_PACKAGE_VERSION}-${USFS_PACKAGE_RELEASE}.aix${CMAKE_HOST_SYSTEM_VERSION}.ppc.rpm")
 set(USFS_RPM_PATH "${USFS_PACKAGES_DIR}/${USFS_RPM_FILE}")
@@ -486,6 +610,13 @@ add_custom_target(test-e2e
     DEPENDS _usfs_release_artifacts _usfs_testing_artifacts
     USES_TERMINAL VERBATIM)
 
+add_custom_target(coverage
+    COMMAND bash "${CMAKE_SOURCE_DIR}/scripts/aix/run-target.sh"
+        coverage "${CMAKE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}"
+        "${USFS_COVERAGE_RUN}" "${USFS_BUILD_REVISION}" "${USFS_BUILD_DIRTY}"
+    DEPENDS _usfs_release_artifacts _usfs_testing_artifacts _usfs_coverage_artifacts
+    USES_TERMINAL VERBATIM)
+
 set(USFS_SOAK_NAME
     "usfs-soak-${USFS_PACKAGE_VERSION}-${USFS_SOAK_REVISION}-aix${CMAKE_HOST_SYSTEM_VERSION}-ppc64")
 set(USFS_SOAK_PATH "${USFS_PACKAGES_DIR}/${USFS_SOAK_NAME}.tar.gz")
@@ -511,5 +642,5 @@ add_custom_target(soak
         "${CMAKE_SOURCE_DIR}/scripts/aix/build-soak.sh"
     VERBATIM)
 
-message(STATUS "USFS public targets: package (default), test, test-e2e, soak")
+message(STATUS "USFS public targets: package (default), test, test-e2e, coverage, soak")
 message(STATUS "Artifacts will be written below ${CMAKE_BINARY_DIR}")

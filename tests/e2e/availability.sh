@@ -9,7 +9,7 @@
 # Usage:
 #   Run through `make test-e2e` in the AIX CMake binary directory.
 #   Directly on a testing AIX deployment:
-#     cd /home && bash tests/e2e/availability.sh
+#     bash tests/e2e/availability.sh
 
 set -u
 . "${USFS_SOURCE_DIR:?}/tests/helpers/aix.sh"

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 # Purpose: Install one already-built USFS CMake variant directly on AIX.
-# Usage: bash scripts/aix/install-variant.sh release|testing source build
+# Usage: bash scripts/aix/install-variant.sh release|testing|coverage source build
 
 set -eu
 
@@ -47,6 +47,11 @@ case "$variant" in
         examples="$build_root/bin"
         rm -f /usr/sbin/usfs_coverage
         ;;
+    coverage)
+        kernel="$build_root/coverage/bin/usfs.kext"
+        methods="$build_root/testing/bin"
+        examples="$build_root/coverage/bin"
+        ;;
     *) echo "unknown install variant: $variant" >&2; exit 2 ;;
 esac
 
@@ -65,6 +70,11 @@ if [ "$variant" != release ]; then
         "$build_root/testing/bin/usfs_access_probe" \
         "$build_root/testing/bin/usfs_mt_test_daemon" \
         "$build_root/testing/bin/usfs_path_test_daemon" /usr/sbin/
+fi
+
+if [ "$variant" = coverage ]; then
+    cp "$build_root/coverage/bin/usfs_coverage" /usr/sbin/
+    chmod 555 /usr/sbin/usfs_coverage
 fi
 
 ln -sf /usr/lib/methods/usfs/chusfs /usr/sbin/chusfs
