@@ -3011,6 +3011,68 @@ static int handle_create_attr_request (const struct request_context * context, c
     return execute_prepared_create_attr (context, &create_request, &resources);
 }
 
+static void copy_node_identity (struct usfs_object_identity * identity, const uint64_t nodeid, const struct client_node * node)
+{
+    memset (identity, 0, sizeof (*identity));
+    identity->nodeid = nodeid;
+
+    if (node == NULL)
+        return;
+
+    identity->backend_dev = node->backend_dev;
+    identity->backend_ino = node->backend_ino;
+    identity->backend_type = node->backend_type;
+    identity->has_backend_identity = node->backend_ino != 0 && node->backend_type != 0;
+}
+
+/* Called with exclusive namespace admission. No path-only fallback is safe. */
+static int prepare_expected_entry (
+    struct usfs_client * client,
+    const uint64_t parent_nodeid,
+    const char * name,
+    const uint64_t expected_nodeid,
+    struct path_buffer * path,
+    struct usfs_expected_entry * expected
+)
+{
+    int rc = build_child_path (client, parent_nodeid, name, path);
+    if (rc != 0)
+        return -rc;
+
+    pthread_mutex_lock (&client->node_lock);
+    const struct client_node * parent = find_node_by_id (client, parent_nodeid);
+    const struct client_alias * alias = find_alias (client, parent_nodeid, name);
+
+    if ((parent_nodeid != USFS_ROOT_ID && parent == NULL) || (expected_nodeid == 0 && alias != NULL) ||
+        (expected_nodeid != 0 && (alias == NULL || alias->node->id != expected_nodeid)))
+    {
+        pthread_mutex_unlock (&client->node_lock);
+        return ESTALE;
+    }
+
+    expected->path = path->data;
+    expected->exists = expected_nodeid != 0;
+    copy_node_identity (&expected->parent, parent_nodeid, parent);
+    copy_node_identity (&expected->object, expected_nodeid, alias != NULL ? alias->node : NULL);
+    pthread_mutex_unlock (&client->node_lock);
+
+    return 0;
+}
+
+static int parse_remove_request (const char * payload, const uint32_t payload_length, struct usfs_remove_in * request, const char ** name)
+{
+    if (payload_length <= sizeof (*request))
+        return EINVAL;
+
+    memcpy (request, payload, sizeof (*request));
+    *name = payload + sizeof (*request);
+
+    if (request->target <= USFS_ROOT_ID || !is_payload_null_terminated (*name, payload_length - (uint32_t)sizeof (*request)))
+        return EINVAL;
+
+    return 0;
+}
+
 static void publish_removed_entry (struct usfs_client * client, const uint64_t parent, const char * name)
 {
     pthread_mutex_lock (&client->node_lock);
@@ -3111,17 +3173,17 @@ static int hide_open_entry (
     struct usfs_client * client,
     const uint64_t parent,
     const char * name,
-    const char * path,
+    const struct usfs_expected_entry * source,
     struct hidden_entry_operation * operation
 )
 {
-    if ((client->behavior.remove_policy == USFS_REMOVE_IMMEDIATE))
+    if (client->behavior.remove_policy == USFS_REMOVE_IMMEDIATE)
         return 0;
 
     pthread_mutex_lock (&client->node_lock);
     struct client_alias * alias = find_alias (client, parent, name);
-    const int should_hide = alias != NULL && alias->node->open_refs != 0 && !S_ISDIR (alias->node->backend_type);
-
+    const int should_hide =
+        alias != NULL && alias->node->id == source->object.nodeid && alias->node->open_refs != 0 && !S_ISDIR (alias->node->backend_type);
     pthread_mutex_unlock (&client->node_lock);
 
     if (!should_hide)
@@ -3139,7 +3201,15 @@ static int hide_open_entry (
     if (rc != 0)
         return rc;
 
-    rc = client->ops.rename (get_callback_request (), path, operation->path.data);
+    struct usfs_expected_entry destination = { 0 };
+    rc = prepare_expected_entry (client, parent, prepared_name, 0, &operation->path, &destination);
+    if (rc != 0)
+    {
+        free (prepared_name);
+        return -rc;
+    }
+
+    rc = client->ops.rename (get_callback_request (), source, &destination);
     if (rc != 0)
     {
         free (prepared_name);
@@ -3147,24 +3217,30 @@ static int hide_open_entry (
     }
 
     publish_hidden_alias (client, alias, prepared_name, operation);
-
     return 1;
 }
 
-static int rollback_hidden_entry (struct usfs_client * client, const char * original_path, struct hidden_entry_operation * operation)
+static int rollback_hidden_entry (struct usfs_client * client, struct hidden_entry_operation * operation)
 {
-    struct stat metadata = { 0 };
-    int rc = read_path_attributes (client, original_path, &metadata);
-    if (rc != -ENOENT)
-        return rc == 0 ? -EEXIST : rc;
+    struct client_alias * alias = operation->alias;
+    struct path_buffer hidden_path = { 0 };
+    struct path_buffer original_path = { 0 };
+    struct usfs_expected_entry source = { 0 };
+    struct usfs_expected_entry destination = { 0 };
 
-    rc = client->ops.rename (get_callback_request (), operation->path.data, original_path);
+    int rc = prepare_expected_entry (client, alias->parent, alias->name, alias->node->id, &hidden_path, &source);
+    if (rc != 0)
+        return -rc;
+
+    rc = prepare_expected_entry (client, alias->parent, operation->original_name, 0, &original_path, &destination);
+    if (rc != 0)
+        return -rc;
+
+    rc = client->ops.rename (get_callback_request (), &source, &destination);
     if (rc != 0)
         return rc;
 
     pthread_mutex_lock (&client->node_lock);
-    struct client_alias * alias = operation->alias;
-
     relink_alias_with_prepared_name (client, alias, alias->parent, operation->original_name);
     operation->original_name = NULL;
 
@@ -3185,66 +3261,57 @@ static int handle_remove_entry_request (
     const struct request_context * context,
     const char * payload,
     const uint32_t payload_length,
-    int (*op) (const struct usfs_client_request *, const char *)
+    int (*op) (const struct usfs_client_request *, const struct usfs_expected_entry *),
+    const int may_defer
 )
 {
     struct usfs_client * client = context->client;
     const struct usfs_in_hdr * request_header = context->header;
+    struct usfs_remove_in request = { 0 };
+    const char * name = NULL;
 
-    if (!is_payload_null_terminated (payload, payload_length))
-        return send_reply (context, EINVAL, NULL, 0);
+    int rc = parse_remove_request (payload, payload_length, &request, &name);
+    if (rc != 0)
+        return send_reply (context, rc, NULL, 0);
 
     if (op == NULL)
-        return send_reply (context, EROFS, NULL, 0);
+        return send_reply (context, ENOSYS, NULL, 0);
 
     struct path_buffer path = { 0 };
-    int rc = build_child_path (client, request_header->nodeid, payload, &path);
+    struct usfs_expected_entry expected = { 0 };
+    rc = prepare_expected_entry (client, request_header->nodeid, name, request.target, &path, &expected);
     if (rc != 0)
-        return send_reply (context, -rc, NULL, 0);
+        return send_reply (context, rc, NULL, 0);
 
-    rc = op (get_callback_request (), path.data);
+    if (may_defer)
+    {
+        struct hidden_entry_operation hidden = { 0 };
+        rc = hide_open_entry (client, request_header->nodeid, name, &expected, &hidden);
+        free (hidden.original_name);
+
+        if (rc < 0)
+            return send_reply (context, normalize_callback_error (rc), NULL, 0);
+
+        if (rc > 0)
+            return send_reply (context, 0, NULL, 0);
+    }
+
+    rc = op (get_callback_request (), &expected);
     if (rc != 0)
-        return send_reply (context, -rc, NULL, 0);
+        return send_reply (context, normalize_callback_error (rc), NULL, 0);
 
-    publish_removed_entry (client, request_header->nodeid, payload);
-
+    publish_removed_entry (client, request_header->nodeid, name);
     return send_reply (context, 0, NULL, 0);
 }
 
 static int handle_unlink_request (const struct request_context * context, const char * payload, const uint32_t payload_length)
 {
-    struct usfs_client * client = context->client;
-
-    if (!is_payload_null_terminated (payload, payload_length))
-        return send_reply (context, EINVAL, NULL, 0);
-
-    if (client->ops.unlink == NULL)
-        return send_reply (context, EROFS, NULL, 0);
-
-    struct path_buffer path = { 0 };
-    int rc = build_child_path (client, context->header->nodeid, payload, &path);
-    if (rc != 0)
-        return send_reply (context, -rc, NULL, 0);
-
-    struct hidden_entry_operation hidden = { 0 };
-
-    rc = hide_open_entry (client, context->header->nodeid, payload, path.data, &hidden);
-    free (hidden.original_name);
-
-    if (rc < 0)
-        return send_reply (context, normalize_callback_error (rc), NULL, 0);
-
-    if (rc > 0)
-        return send_reply (context, 0, NULL, 0);
-
-    return handle_remove_entry_request (context, payload, payload_length, client->ops.unlink);
+    return handle_remove_entry_request (context, payload, payload_length, context->client->ops.unlink, true);
 }
 
 static int handle_rmdir_request (const struct request_context * context, const char * payload, const uint32_t payload_length)
 {
-    struct usfs_client * client = context->client;
-
-    return handle_remove_entry_request (context, payload, payload_length, client->ops.rmdir);
+    return handle_remove_entry_request (context, payload, payload_length, context->client->ops.rmdir, false);
 }
 
 struct rename_operation
@@ -3255,6 +3322,8 @@ struct rename_operation
     const char * new_name;         // Borrowed destination name in the request payload.
     struct path_buffer old_path;   // Resolved source backend path.
     struct path_buffer new_path;   // Resolved destination backend path.
+    struct usfs_expected_entry source;      // AIX-selected source object and parent.
+    struct usfs_expected_entry destination; // AIX-selected destination or absence.
 };
 
 static int parse_rename_request (const char * payload, const uint32_t payload_length, struct rename_operation * operation)
@@ -3268,7 +3337,8 @@ static int parse_rename_request (const char * payload, const uint32_t payload_le
 
     operation->old_name = payload + sizeof (operation->request);
 
-    if (operation->request.oldnamelen > names_length)
+    if (operation->request.source <= USFS_ROOT_ID || (operation->request.destination != 0 && operation->request.destination <= USFS_ROOT_ID) ||
+        operation->request.oldnamelen > names_length)
         return EINVAL;
 
     if (!is_payload_null_terminated (operation->old_name, operation->request.oldnamelen))
@@ -3330,36 +3400,39 @@ static int rename_targets_same_object (struct usfs_client * client, const struct
 static int rename_with_hidden_destination (struct usfs_client * client, const struct rename_operation * operation)
 {
     struct hidden_entry_operation hidden = { 0 };
-    int rc = hide_open_entry (client, operation->request.newparent, operation->new_name, operation->new_path.data, &hidden);
+    int rc = hide_open_entry (client, operation->request.newparent, operation->new_name, &operation->destination, &hidden);
     if (rc < 0)
     {
         free (hidden.original_name);
         return rc;
     }
 
-    rc = client->ops.rename (get_callback_request (), operation->old_path.data, operation->new_path.data);
-    if (rc != 0)
+    struct usfs_expected_entry destination_after_hide = operation->destination;
+    if (rc > 0)
     {
-        if (hidden.alias != NULL)
+        destination_after_hide.exists = false;
+        memset (&destination_after_hide.object, 0, sizeof (destination_after_hide.object));
+    }
+
+    rc = client->ops.rename (get_callback_request (), &operation->source, &destination_after_hide);
+    if (rc != 0 && hidden.alias != NULL)
+    {
+        const int rollback_error = rollback_hidden_entry (client, &hidden);
+        if (rollback_error != 0)
         {
-            const int rollback_error = rollback_hidden_entry (client, operation->new_path.data, &hidden);
-            if (rollback_error != 0)
-            {
-                emit_diagnostic (
-                    client,
-                    "Failed to replace %s: error %d; failed to restore hidden destination %s: error %d\n",
-                    operation->new_path.data,
-                    normalize_callback_error (rc),
-                    hidden.path.data,
-                    normalize_callback_error (rollback_error)
-                );
-                rc = -EIO;
-            }
+            emit_diagnostic (
+                client,
+                "Failed to replace %s: error %d; failed to restore hidden destination %s: error %d\n",
+                operation->new_path.data,
+                normalize_callback_error (rc),
+                hidden.path.data,
+                normalize_callback_error (rollback_error)
+            );
+            rc = -EIO;
         }
     }
 
     free (hidden.original_name);
-
     return rc;
 }
 
@@ -3369,7 +3442,10 @@ static int rename_entry_and_reply (const struct request_context * context, const
     const struct usfs_in_hdr * request_header = context->header;
 
     if (rename_targets_same_object (client, operation))
-        return send_reply (context, 0, NULL, 0);
+    {
+        const int no_op_result = client->ops.rename (get_callback_request (), &operation->source, &operation->destination);
+        return send_reply (context, normalize_callback_error (no_op_result), NULL, 0);
+    }
 
     char * prepared_name = strdup (operation->new_name);
     if (prepared_name == NULL)
@@ -3406,15 +3482,22 @@ static int handle_rename_request (const struct request_context * context, const 
         return send_reply (context, rc, NULL, 0);
 
     if (client->ops.rename == NULL)
-        return send_reply (context, EROFS, NULL, 0);
+        return send_reply (context, ENOSYS, NULL, 0);
 
-    rc = build_child_path (client, operation.old_parent, operation.old_name, &operation.old_path);
+    rc = prepare_expected_entry (client, operation.old_parent, operation.old_name, operation.request.source, &operation.old_path, &operation.source);
     if (rc != 0)
-        return send_reply (context, -rc, NULL, 0);
+        return send_reply (context, rc, NULL, 0);
 
-    rc = build_child_path (client, operation.request.newparent, operation.new_name, &operation.new_path);
+    rc = prepare_expected_entry (
+        client,
+        operation.request.newparent,
+        operation.new_name,
+        operation.request.destination,
+        &operation.new_path,
+        &operation.destination
+    );
     if (rc != 0)
-        return send_reply (context, -rc, NULL, 0);
+        return send_reply (context, rc, NULL, 0);
 
     return rename_entry_and_reply (context, &operation);
 }
@@ -4249,10 +4332,13 @@ static int client_handle_has_path (const struct client_handle * handle, const st
 static int cleanup_hidden_alias (struct usfs_client * client, struct client_alias * alias, const int shutdown)
 {
     struct path_buffer path = { 0 };
-    int rc = build_child_path (client, alias->parent, alias->name, &path);
+    struct usfs_expected_entry expected = { 0 };
+    int rc = prepare_expected_entry (client, alias->parent, alias->name, alias->node->id, &path, &expected);
 
     if (rc == 0)
-        rc = client->ops.unlink != NULL ? client->ops.unlink (get_callback_request (), path.data) : -ENOSYS;
+        rc = client->ops.unlink != NULL ? client->ops.unlink (get_callback_request (), &expected) : -ENOSYS;
+    else
+        rc = -rc;
 
     if (rc != 0 && rc != -ENOENT)
     {

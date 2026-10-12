@@ -661,7 +661,8 @@ static int rename_request_valid (const unsigned char * body, const size_t body_l
     if (request_body->pad != 0)
         return false;
 
-    if (request_body->newparent == 0)
+    if (request_body->newparent == 0 || request_body->source <= USFS_ROOT_ID ||
+        (request_body->destination != 0 && request_body->destination <= USFS_ROOT_ID))
         return false;
 
     if (request_body->oldnamelen == 0)
@@ -783,9 +784,16 @@ static int request_body_valid (const uint16_t opcode, const unsigned char * body
 
             return usfs_forget_in_valid ((const struct usfs_forget_in *)body, UINT64_MAX);
         case USFS_OP_LOOKUP:
+            return terminated_field (body, body_length, USFS_MAX_NAME);
         case USFS_OP_UNLINK:
         case USFS_OP_RMDIR:
-            return terminated_field (body, body_length, USFS_MAX_NAME);
+            if (body_length <= sizeof (struct usfs_remove_in))
+                return false;
+
+            if (((const struct usfs_remove_in *)body)->target <= USFS_ROOT_ID)
+                return false;
+
+            return terminated_field (body + sizeof (struct usfs_remove_in), body_length - sizeof (struct usfs_remove_in), USFS_MAX_NAME);
         case USFS_OP_GETATTR:
             return body_length == sizeof (struct usfs_getattr_in);
         case USFS_OP_OPEN:
@@ -1364,7 +1372,7 @@ static size_t success_body (const struct usfs_in_hdr * request_header, unsigned 
             return success_read_body (request_header, body);
         case USFS_OP_UNLINK:
         case USFS_OP_RMDIR:
-            remove_node (request_header->nodeid, (const char *)(request_header + 1));
+            remove_node (request_header->nodeid, (const char *)((const struct usfs_remove_in *)(request_header + 1) + 1));
             return 0;
         case USFS_OP_RENAME:
             return success_rename_body (request_header);

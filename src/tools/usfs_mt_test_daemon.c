@@ -549,12 +549,25 @@ static int wait_namespace_release (const char * release_path)
     return 0;
 }
 
-static int mt_namespace_rename (const struct usfs_client_request * request, const char * old_path, const char * new_path)
+static int mt_namespace_rename (
+    const struct usfs_client_request * request,
+    const struct usfs_expected_entry * source,
+    const struct usfs_expected_entry * destination
+)
 {
     (void)request;
-    if (strcmp (old_path, "/old") || strcmp (new_path, "/new"))
+
+    if (strcmp (source->path, "/old") != 0 || strcmp (destination->path, "/new") != 0)
         return -EINVAL;
+
     pthread_mutex_lock (&state_lock);
+    if (namespace_moved || source->parent.nodeid != USFS_ROOT_NODE_ID || destination->parent.nodeid != USFS_ROOT_NODE_ID || !source->exists ||
+        !source->object.has_backend_identity || source->object.backend_ino != 2 || destination->exists)
+    {
+        pthread_mutex_unlock (&state_lock);
+        return -ESTALE;
+    }
+
     namespace_moved = 1;
     pthread_mutex_unlock (&state_lock);
     puts ("USFS_RENAME_COMMITTED");

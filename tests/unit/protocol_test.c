@@ -76,8 +76,9 @@ static void test_layout(struct tap_state *state)
     TAP_EQ_SIZE(state, offsetof(struct usfs_create_in, mode), 4, "create request final field offset");
     TAP_EQ_SIZE(state, sizeof(struct usfs_mkdir_in), 8, "mkdir request size");
     TAP_EQ_SIZE(state, offsetof(struct usfs_mkdir_in, pad), 4, "mkdir request final field offset");
-    TAP_EQ_SIZE(state, sizeof(struct usfs_rename_in), 16, "rename request size");
-    TAP_EQ_SIZE(state, offsetof(struct usfs_rename_in, pad), 12, "rename request final field offset");
+    TAP_EQ_SIZE (state, sizeof (struct usfs_remove_in), 8, "remove request size");
+    TAP_EQ_SIZE (state, sizeof (struct usfs_rename_in), 32, "rename request size");
+    TAP_EQ_SIZE (state, offsetof (struct usfs_rename_in, pad), 28, "rename request final field offset");
     TAP_EQ_SIZE(state, sizeof(struct usfs_symlink_in), 8, "symlink request size");
     TAP_EQ_SIZE(state, offsetof(struct usfs_symlink_in, pad), 4, "symlink request final field offset");
     TAP_EQ_SIZE(state, sizeof(struct usfs_link_in), 8, "link request size");
@@ -432,23 +433,23 @@ static void test_golden_headers(struct tap_state *state)
     struct usfs_in_hdr input;
     struct usfs_reply_header output;
     static const unsigned char input_le[40] = {
-        0x28,0,0,0, 11,0, 4,0, 8,7,6,5,4,3,2,1,
+        0x28,0,0,0, 12,0, 4,0, 8,7,6,5,4,3,2,1,
         0x18,0x17,0x16,0x15,0x14,0x13,0x12,0x11,
         0x24,0x23,0x22,0x21, 0x34,0x33,0x32,0x31,
         0x44,0x43,0x42,0x41, 0,0,0,0
     };
     static const unsigned char input_be[40] = {
-        0,0,0,0x28, 0,11, 0,4, 1,2,3,4,5,6,7,8,
+        0,0,0,0x28, 0,12, 0,4, 1,2,3,4,5,6,7,8,
         0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,
         0x21,0x22,0x23,0x24, 0x31,0x32,0x33,0x34,
         0x41,0x42,0x43,0x44, 0,0,0,0
     };
     static const unsigned char output_le[24] = {
-        0x18,0,0,0, 11,0, 4,0, 8,7,6,5,4,3,2,1,
+        0x18,0,0,0, 12,0, 4,0, 8,7,6,5,4,3,2,1,
         0x0d,0,0,0, 0,0,0,0
     };
     static const unsigned char output_be[24] = {
-        0,0,0,0x18, 0,11, 0,4, 1,2,3,4,5,6,7,8,
+        0,0,0,0x18, 0,12, 0,4, 1,2,3,4,5,6,7,8,
         0,0,0,0x0d, 0,0,0,0
     };
     const uint16_t endian = 1;
@@ -853,7 +854,7 @@ int main(void)
 {
     struct tap_state state;
 
-    tap_plan(&state, 282);
+    tap_plan(&state, 283);
     test_layout(&state);
     test_status(&state);
     test_arithmetic(&state);

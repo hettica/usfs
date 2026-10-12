@@ -6,11 +6,16 @@
 
 int gn_remove (struct vnode * removed_vnode, struct vnode * directory_vnode, char * entry_name, struct ucred * credentials)
 {
-    ignore_parameter removed_vnode;
+    if (directory_vnode == NULL || removed_vnode == NULL)
+        return ESTALE;
 
     struct usfs_mount_data * mount_data = _mount_of (directory_vnode);
-    if (mount_data == NULL)
-        return EIO;
+    struct usfs_node * target_node = _node_of (removed_vnode);
+    if (mount_data == NULL || target_node == NULL || target_node->nodeid <= USFS_ROOT_ID)
+        return ESTALE;
+
+    if (_mount_of (removed_vnode) != mount_data)
+        return EXDEV;
 
     struct usfs_complex_lock_guard namespace_guard __attribute__ ((cleanup (usfs_complex_synchronized_release))) =
         usfs_write_synchronized_acquire (&mount_data->namespace_lock);
@@ -25,7 +30,9 @@ int gn_remove (struct vnode * removed_vnode, struct vnode * directory_vnode, cha
 
     // AIX releases both lookup holds after this callback. Releasing removed_vnode here
     // would free it before that final logical-file-system release.
-    return _mutate_entry (directory_vnode, (uint16_t)USFS_OP_UNLINK, NULL, 0, entry_name, NULL, 0, credentials);
+    const struct usfs_remove_in request_body = { .target = target_node->nodeid };
+
+    return _mutate_entry (directory_vnode, (uint16_t)USFS_OP_UNLINK, &request_body, sizeof (request_body), entry_name, NULL, 0, credentials);
 }
 
 #endif

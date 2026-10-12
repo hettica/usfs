@@ -11,6 +11,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <pthread.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
@@ -27,7 +28,6 @@
 #define PROBE_SPARSE_OFFSET  4096
 
 static const char * backing_directory;
-
 static int resolve_backing_path (const char * path, char * resolved)
 {
     if (path == NULL)
@@ -39,6 +39,61 @@ static int resolve_backing_path (const char * path, char * resolved)
     const int length = snprintf (resolved, PROBE_PATH_CAPACITY, "%s%s", backing_directory, path);
 
     return length >= 0 && length < PROBE_PATH_CAPACITY ? 0 : -ENAMETOOLONG;
+}
+
+/* This test fixture owns its private backing tree during each callback. The
+ * production API requires a backend to supply its own atomicity guarantee. */
+static pthread_mutex_t backing_namespace_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int path_identity_matches (const struct stat * metadata, const struct usfs_object_identity * identity)
+{
+    return identity->has_backend_identity && (uint64_t)metadata->st_dev == identity->backend_dev &&
+           (uint64_t)metadata->st_ino == identity->backend_ino && (metadata->st_mode & S_IFMT) == identity->backend_type;
+}
+
+static int path_entry_matches (const struct usfs_expected_entry * expected)
+{
+    char parent_path[PROBE_PATH_CAPACITY];
+    const char * separator = strrchr (expected->path, '/');
+    if (separator == NULL)
+        return -ESTALE;
+
+    const size_t parent_length = (size_t)(separator - expected->path);
+    if (parent_length >= sizeof (parent_path))
+        return -ENAMETOOLONG;
+
+    if (parent_length == 0)
+        strcpy (parent_path, "/");
+    else
+    {
+        memcpy (parent_path, expected->path, parent_length);
+        parent_path[parent_length] = '\0';
+    }
+
+    char resolved_parent[PROBE_PATH_CAPACITY];
+    int rc = resolve_backing_path (parent_path, resolved_parent);
+    if (rc != 0)
+        return rc;
+
+    struct stat metadata = { 0 };
+    if (lstat (resolved_parent, &metadata) != 0 || !S_ISDIR (metadata.st_mode))
+        return -ESTALE;
+
+    if (expected->parent.nodeid != USFS_ROOT_NODE_ID && !path_identity_matches (&metadata, &expected->parent))
+        return -ESTALE;
+
+    char resolved_child[PROBE_PATH_CAPACITY];
+    rc = resolve_backing_path (expected->path, resolved_child);
+    if (rc != 0)
+        return rc;
+
+    if (lstat (resolved_child, &metadata) != 0)
+        return !expected->exists && errno == ENOENT ? 0 : -ESTALE;
+
+    if (!expected->exists)
+        return -ESTALE;
+
+    return path_identity_matches (&metadata, &expected->object) ? 0 : -ESTALE;
 }
 
 static int fault_is_enabled (const char * name)
@@ -88,11 +143,15 @@ static int path_create (const struct usfs_client_request * request, const char *
     if (rc != 0)
         return rc;
 
+    pthread_mutex_lock (&backing_namespace_lock);
     const int descriptor = open (resolved, file_info->open_flags | O_CREAT | O_EXCL, mode);
-    if (descriptor < 0)
-        return -errno;
+    const int error = errno;
+    if (descriptor >= 0)
+        close (descriptor);
+    pthread_mutex_unlock (&backing_namespace_lock);
 
-    close (descriptor);
+    if (descriptor < 0)
+        return -error;
     file_info->value = 0;
 
     return 0;
@@ -195,21 +254,34 @@ static int path_release (const struct usfs_client_request * request, const char 
     return rc;
 }
 
-static int path_unlink (const struct usfs_client_request * request, const char * path)
+static int path_unlink (const struct usfs_client_request * request, const struct usfs_expected_entry * expected)
 {
     (void)request;
     char resolved[PROBE_PATH_CAPACITY];
-    const int rc = resolve_backing_path (path, resolved);
+    int rc = resolve_backing_path (expected->path, resolved);
     if (rc != 0)
         return rc;
 
-    if (strstr (path, "/.fuse_hidden") != NULL && fault_is_enabled ("cleanup"))
+    pthread_mutex_lock (&backing_namespace_lock);
+    rc = path_entry_matches (expected);
+    if (rc != 0)
+    {
+        pthread_mutex_unlock (&backing_namespace_lock);
+        return rc;
+    }
+
+    if (strstr (expected->path, "/.fuse_hidden") != NULL && fault_is_enabled ("cleanup"))
+    {
+        pthread_mutex_unlock (&backing_namespace_lock);
         return -EACCES;
+    }
 
-    printf ("DELETE %s\n", path);
+    printf ("DELETE %s\n", expected->path);
     fflush (stdout);
+    rc = unlink (resolved) == 0 ? 0 : -errno;
+    pthread_mutex_unlock (&backing_namespace_lock);
 
-    return unlink (resolved) == 0 ? 0 : -errno;
+    return rc;
 }
 
 static int occupy_failed_rename_destination (const char * destination)
@@ -229,30 +301,42 @@ static int occupy_failed_rename_destination (const char * destination)
     return written ? -EIO : -ENOSPC;
 }
 
-static int path_rename (const struct usfs_client_request * request, const char * source, const char * destination)
+static int path_rename (
+    const struct usfs_client_request * request,
+    const struct usfs_expected_entry * source,
+    const struct usfs_expected_entry * destination
+)
 {
     (void)request;
-
     char old_path[PROBE_PATH_CAPACITY];
     char new_path[PROBE_PATH_CAPACITY];
-    int rc = resolve_backing_path (source, old_path);
+    int rc = resolve_backing_path (source->path, old_path);
     if (rc != 0)
         return rc;
 
-    rc = resolve_backing_path (destination, new_path);
+    rc = resolve_backing_path (destination->path, new_path);
     if (rc != 0)
         return rc;
 
-    if (strstr (destination, "/.fuse_hidden") != NULL && fault_is_enabled ("hide"))
-        return -EACCES;
+    pthread_mutex_lock (&backing_namespace_lock);
+    rc = path_entry_matches (source);
+    if (rc == 0)
+        rc = path_entry_matches (destination);
 
-    if (strstr (source, "/.fuse_hidden") != NULL && fault_is_enabled ("rollback"))
-        return -EACCES;
+    if (rc == 0 && strstr (destination->path, "/.fuse_hidden") != NULL && fault_is_enabled ("hide"))
+        rc = -EACCES;
 
-    if (strstr (source, "/source") != NULL && fault_is_enabled ("source"))
-        return occupy_failed_rename_destination (new_path);
+    if (rc == 0 && strstr (source->path, "/.fuse_hidden") != NULL && fault_is_enabled ("rollback"))
+        rc = -EACCES;
 
-    return rename (old_path, new_path) == 0 ? 0 : -errno;
+    if (rc == 0 && strstr (source->path, "/source") != NULL && fault_is_enabled ("source"))
+        rc = occupy_failed_rename_destination (new_path);
+
+    if (rc == 0)
+        rc = rename (old_path, new_path) == 0 ? 0 : -errno;
+
+    pthread_mutex_unlock (&backing_namespace_lock);
+    return rc;
 }
 
 static int path_mkdir (const struct usfs_client_request * request, const char * path, mode_t mode)
@@ -263,18 +347,29 @@ static int path_mkdir (const struct usfs_client_request * request, const char * 
     if (rc != 0)
         return rc;
 
-    return mkdir (resolved, mode) == 0 ? 0 : -errno;
+    pthread_mutex_lock (&backing_namespace_lock);
+    const int result = mkdir (resolved, mode);
+    const int error = errno;
+    pthread_mutex_unlock (&backing_namespace_lock);
+
+    return result == 0 ? 0 : -error;
 }
 
-static int path_rmdir (const struct usfs_client_request * request, const char * path)
+static int path_rmdir (const struct usfs_client_request * request, const struct usfs_expected_entry * expected)
 {
     (void)request;
     char resolved[PROBE_PATH_CAPACITY];
-    const int rc = resolve_backing_path (path, resolved);
+    int rc = resolve_backing_path (expected->path, resolved);
     if (rc != 0)
         return rc;
 
-    return rmdir (resolved) == 0 ? 0 : -errno;
+    pthread_mutex_lock (&backing_namespace_lock);
+    rc = path_entry_matches (expected);
+    if (rc == 0)
+        rc = rmdir (resolved) == 0 ? 0 : -errno;
+    pthread_mutex_unlock (&backing_namespace_lock);
+
+    return rc;
 }
 
 static int path_link (const struct usfs_client_request * request, const char * source, const char * destination)
@@ -290,7 +385,12 @@ static int path_link (const struct usfs_client_request * request, const char * s
     if (rc != 0)
         return rc;
 
-    return link (old_path, new_path) == 0 ? 0 : -errno;
+    pthread_mutex_lock (&backing_namespace_lock);
+    const int result = link (old_path, new_path);
+    const int error = errno;
+    pthread_mutex_unlock (&backing_namespace_lock);
+
+    return result == 0 ? 0 : -error;
 }
 
 static int path_chmod (const struct usfs_client_request * request, const char * path, mode_t mode, struct usfs_open_file * file_info)

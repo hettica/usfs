@@ -23,12 +23,19 @@ int gn_rename (
     struct ucred * credentials
 )
 {
-    ignore_parameter source_vnode;
-    ignore_parameter destination_vnode;
+    if (source_vnode == NULL || source_directory_vnode == NULL || destination_directory_vnode == NULL)
+        return ESTALE;
 
     struct usfs_mount_data * mount = _mount_of (source_directory_vnode);
-    if (mount == NULL)
-        return EIO;
+    struct usfs_node * source_node = _node_of (source_vnode);
+    struct usfs_node * destination_node = destination_vnode != NULL ? _node_of (destination_vnode) : NULL;
+    if (mount == NULL || source_node == NULL || source_node->nodeid <= USFS_ROOT_ID ||
+        (destination_vnode != NULL && (destination_node == NULL || destination_node->nodeid <= USFS_ROOT_ID)))
+        return ESTALE;
+
+    if (_mount_of (source_vnode) != mount || _mount_of (destination_directory_vnode) != mount ||
+        (destination_vnode != NULL && _mount_of (destination_vnode) != mount))
+        return EXDEV;
 
     struct usfs_complex_lock_guard guard __attribute__ ((cleanup (usfs_complex_synchronized_release))) =
         usfs_write_synchronized_acquire (&mount->namespace_lock);
@@ -46,7 +53,7 @@ int gn_rename (
 
 
     const struct usfs_node * destdir = _node_of (destination_directory_vnode);
-    if (destdir == NULL)
+    if (destdir == NULL || destdir->nodeid == 0)
         return EIO;
 
     if (old_name == NULL || old_name[0] == '\0' || new_name == NULL || new_name[0] == '\0')
@@ -60,6 +67,8 @@ int gn_rename (
 
     struct usfs_rename_in request_body = { 0 };
     request_body.newparent = destdir->nodeid;
+    request_body.source = source_node->nodeid;
+    request_body.destination = destination_node != NULL ? destination_node->nodeid : 0;
     request_body.oldnamelen = old_name_len;
 
     // The old name travels in the name slot and the new one in the payload,

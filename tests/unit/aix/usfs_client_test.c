@@ -1214,11 +1214,15 @@ static int ns_getattr (const struct usfs_client_request * callback_request, cons
     return 0;
 }
 
-static int ns_rename (const struct usfs_client_request * callback_request, const char * oldpath, const char * newpath)
+static int ns_rename (
+    const struct usfs_client_request * callback_request,
+    const struct usfs_expected_entry * source,
+    const struct usfs_expected_entry * destination
+)
 {
     (void)callback_request;
     pthread_mutex_lock (&ns_test_lock);
-    if (strcmp (oldpath, "/old") || strcmp (newpath, "/new"))
+    if (strcmp (source->path, "/old") || strcmp (destination->path, "/new"))
         ++ns_test.bad_paths;
     ns_test.moved = ns_test.rename_entered = 1;
     ++ns_test.writer_events;
@@ -1232,6 +1236,7 @@ struct ns_job
 {
     struct usfs_client * f;
     uint64_t id;
+    uint64_t source_id;
     int rename;
 };
 
@@ -1265,6 +1270,7 @@ static void * ns_dispatch (void * argument)
         struct usfs_rename_in rename = { 0 };
         rename.newparent = USFS_ROOT_ID;
         rename.oldnamelen = 4;
+        rename.source = job->source_id;
         memcpy (message + size, &rename, sizeof (rename));
         size += sizeof (rename);
         memcpy (message + size, "old\0new", 8);
@@ -1304,9 +1310,9 @@ static void test_namespace_transactions (struct tap_state * tap)
         parent = find_or_create_node (f, USFS_ROOT_ID, "old", NULL);
         child = find_or_create_node (f, parent->id, "file", NULL);
         other = find_or_create_node (f, USFS_ROOT_ID, "independent", NULL);
-        rename = (struct ns_job){ f, USFS_ROOT_ID, 1 };
-        read = (struct ns_job){ f, child->id, 0 };
-        independent = (struct ns_job){ f, other->id, 0 };
+        rename = (struct ns_job){ .f = f, .id = USFS_ROOT_ID, .source_id = parent->id, .rename = 1 };
+        read = (struct ns_job){ .f = f, .id = child->id };
+        independent = (struct ns_job){ .f = f, .id = other->id };
         memset (&ns_test, 0, sizeof (ns_test));
         ns_test.active = 1;
         ns_test.block_read = scenario == 1 || scenario == 3;
@@ -1565,11 +1571,31 @@ static void test_append_transactions (struct tap_state * tap)
     }
 }
 
+static void handle_test_remove_request (const struct request_context * context, const uint64_t target, const char * name, const int directory)
+{
+    const size_t name_length = strlen (name) + 1;
+    char payload[sizeof (struct usfs_remove_in) + USFS_MAX_NAME + 1];
+    const struct usfs_remove_in removal = { .target = target };
+
+    if (name_length > USFS_MAX_NAME + 1)
+        abort ();
+
+    memcpy (payload, &removal, sizeof (removal));
+    memcpy (payload + sizeof (removal), name, name_length);
+
+    if (directory)
+        handle_rmdir_request (context, payload, (uint32_t)(sizeof (removal) + name_length));
+    else
+        handle_unlink_request (context, payload, (uint32_t)(sizeof (removal) + name_length));
+}
+
 static int removal_error;
-static int identity_remove (const struct usfs_client_request * callback_request, const char * path)
+static unsigned identity_remove_calls;
+static int identity_remove (const struct usfs_client_request * callback_request, const struct usfs_expected_entry * expected)
 {
     (void)callback_request;
-    return strcmp (path, "/entry") == 0 ? -removal_error : -EINVAL;
+    identity_remove_calls++;
+    return strcmp (expected->path, "/entry") == 0 ? -removal_error : -EINVAL;
 }
 
 static void test_detached_identity (struct tap_state * tap)
@@ -1597,13 +1623,13 @@ static void test_detached_identity (struct tap_state * tap)
         if (old == NULL)
             abort ();
         removal_error = EBUSY;
-        handle_unlink_request (&context, "entry", 6);
+        handle_test_remove_request (&context, old->id, "entry", false);
         valid = captured_reply.error == EBUSY && find_child_node (f, USFS_ROOT_ID, "entry") == old;
         removal_error = 0;
         if (directory)
-            handle_rmdir_request (&context, "entry", 6);
+            handle_test_remove_request (&context, old->id, "entry", true);
         else
-            handle_unlink_request (&context, "entry", 6);
+            handle_test_remove_request (&context, old->id, "entry", false);
         valid &= captured_reply.error == 0 && find_child_node (f, USFS_ROOT_ID, "entry") == NULL && find_node_by_id (f, old->id) == old;
         replacement = find_or_create_node (f, USFS_ROOT_ID, "entry", NULL);
         valid &= replacement != NULL && replacement != old && replacement->id != old->id && find_node_by_id (f, old->id) == old &&
@@ -1616,6 +1642,182 @@ static void test_detached_identity (struct tap_state * tap)
         );
         (last_native_result = usfs_client_destroy (&f));
     }
+}
+
+static void test_selected_remove_identity (struct tap_state * tap)
+{
+    for (unsigned directory = 0; directory < 2; directory++)
+    {
+        struct usfs_operations operations = { .unlink = identity_remove, .rmdir = identity_remove };
+        struct usfs_client * client = new_test_client (&operations, sizeof (operations), NULL);
+        if (client == NULL)
+            abort ();
+
+        client->fd = 73;
+        struct client_node * target = find_or_create_node (client, USFS_ROOT_ID, "entry", NULL);
+        struct client_node * other = find_or_create_node (client, USFS_ROOT_ID, "other", NULL);
+        if (target == NULL || other == NULL)
+            abort ();
+
+        struct usfs_in_hdr header = { .nodeid = USFS_ROOT_ID };
+        struct request_context context = { .client = client, .header = &header };
+        identity_remove_calls = 0;
+        removal_error = 0;
+
+        if (directory)
+            handle_rmdir_request (&context, "entry", sizeof ("entry"));
+        else
+            handle_unlink_request (&context, "entry", sizeof ("entry"));
+        tap_ok (
+            tap,
+            captured_reply.error == EINVAL && identity_remove_calls == 0,
+            directory ? "rmdir rejects a request without its selected ID" : "unlink rejects a request without its selected ID"
+        );
+
+        handle_test_remove_request (&context, 0, "entry", directory);
+        tap_ok (
+            tap,
+            captured_reply.error == EINVAL && identity_remove_calls == 0 && find_child_node (client, USFS_ROOT_ID, "entry") == target,
+            directory ? "rmdir rejects a zero selected target" : "unlink rejects a zero selected target"
+        );
+
+        handle_test_remove_request (&context, other->id, "entry", directory);
+        tap_ok (
+            tap,
+            captured_reply.error == ESTALE && identity_remove_calls == 0 && find_child_node (client, USFS_ROOT_ID, "entry") == target,
+            directory ? "rmdir rejects another object's selected ID" : "unlink rejects another object's selected ID"
+        );
+
+        handle_test_remove_request (&context, target->id, "entry", directory);
+        tap_ok (
+            tap,
+            captured_reply.error == 0 && identity_remove_calls == 1 && find_child_node (client, USFS_ROOT_ID, "entry") == NULL,
+            directory ? "rmdir calls backend only for the selected target" : "unlink calls backend only for the selected target"
+        );
+
+        (last_native_result = usfs_client_destroy (&client));
+    }
+}
+
+static int selected_rename_error;
+static unsigned selected_rename_calls;
+
+static int selected_rename (
+    const struct usfs_client_request * request,
+    const struct usfs_expected_entry * source,
+    const struct usfs_expected_entry * destination
+)
+{
+    (void)request;
+    (void)source;
+    (void)destination;
+    selected_rename_calls++;
+    return -selected_rename_error;
+}
+
+static void test_selected_rename_identity (struct tap_state * tap)
+{
+    struct usfs_operations operations = { .rename = selected_rename };
+    struct usfs_client * client = new_test_client (&operations, sizeof (operations), NULL);
+    if (client == NULL)
+        abort ();
+
+    client->fd = 73;
+    struct client_node * source = find_or_create_node (client, USFS_ROOT_ID, "source", NULL);
+    struct client_node * destination = find_or_create_node (client, USFS_ROOT_ID, "target", NULL);
+    if (source == NULL || destination == NULL)
+        abort ();
+
+    struct usfs_in_hdr header = { .nodeid = USFS_ROOT_ID };
+    struct request_context context = { .client = client, .header = &header };
+    struct usfs_rename_in rename = { .newparent = USFS_ROOT_ID,
+                                     .source = source->id,
+                                     .destination = destination->id,
+                                     .oldnamelen = sizeof ("source") };
+    char payload[sizeof (rename) + sizeof ("source\0target")];
+    memcpy (payload + sizeof (rename), "source\0target", sizeof ("source\0target"));
+    selected_rename_calls = 0;
+
+    rename.source = destination->id;
+    memcpy (payload, &rename, sizeof (rename));
+    handle_rename_request (&context, payload, sizeof (payload));
+    tap_ok (
+        tap,
+        captured_reply.error == ESTALE && selected_rename_calls == 0,
+        "rename rejects a source ID from another object before the backend callback"
+    );
+
+    rename.source = source->id;
+    rename.destination = 0;
+    memcpy (payload, &rename, sizeof (rename));
+    handle_rename_request (&context, payload, sizeof (payload));
+    tap_ok (tap, captured_reply.error == ESTALE && selected_rename_calls == 0, "rename rejects expected absence when the destination is present");
+
+    rename.destination = source->id;
+    memcpy (payload, &rename, sizeof (rename));
+    handle_rename_request (&context, payload, sizeof (payload));
+    tap_ok (tap, captured_reply.error == ESTALE && selected_rename_calls == 0, "rename rejects a destination ID from another object");
+
+    rename.destination = destination->id;
+    memcpy (payload, &rename, sizeof (rename));
+    selected_rename_error = ESTALE;
+    handle_rename_request (&context, payload, sizeof (payload));
+    tap_ok (
+        tap,
+        captured_reply.error == ESTALE && selected_rename_calls == 1 && find_child_node (client, USFS_ROOT_ID, "source") == source &&
+            find_child_node (client, USFS_ROOT_ID, "target") == destination,
+        "backend rejection leaves both client aliases unchanged"
+    );
+
+    selected_rename_error = 0;
+    handle_rename_request (&context, payload, sizeof (payload));
+    tap_ok (
+        tap,
+        captured_reply.error == 0 && selected_rename_calls == 2 && find_child_node (client, USFS_ROOT_ID, "target") == source &&
+            find_child_node (client, USFS_ROOT_ID, "source") == NULL,
+        "rename publishes only after the conditional backend callback succeeds"
+    );
+
+    rename.source = source->id;
+    rename.destination = destination->id;
+    rename.oldnamelen = sizeof ("target");
+    char absent_payload[sizeof (rename) + sizeof ("target\0new")];
+    memcpy (absent_payload, &rename, sizeof (rename));
+    memcpy (absent_payload + sizeof (rename), "target\0new", sizeof ("target\0new"));
+    handle_rename_request (&context, absent_payload, sizeof (absent_payload));
+    tap_ok (
+        tap,
+        captured_reply.error == ESTALE && selected_rename_calls == 2,
+        "rename rejects a selected destination object when the name is absent"
+    );
+
+    rename.source = 0;
+    memcpy (absent_payload, &rename, sizeof (rename));
+    handle_rename_request (&context, absent_payload, sizeof (absent_payload));
+    tap_ok (tap, captured_reply.error == EINVAL && selected_rename_calls == 2, "rename rejects a missing selected source ID");
+
+    rename.source = source->id;
+    rename.destination = source->id;
+    rename.oldnamelen = sizeof ("target");
+    char same_payload[sizeof (rename) + sizeof ("target\0target")];
+    memcpy (same_payload, &rename, sizeof (rename));
+    memcpy (same_payload + sizeof (rename), "target\0target", sizeof ("target\0target"));
+    handle_rename_request (&context, same_payload, sizeof (same_payload));
+    tap_ok (
+        tap,
+        captured_reply.error == 0 && selected_rename_calls == 3 && find_child_node (client, USFS_ROOT_ID, "target") == source,
+        "same-object rename still asks the backend to validate the selected object"
+    );
+
+    client->ops.rename = NULL;
+    handle_rename_request (&context, same_payload, sizeof (same_payload));
+    tap_ok (
+        tap,
+        captured_reply.error == ENOSYS && selected_rename_calls == 3 && find_child_node (client, USFS_ROOT_ID, "target") == source,
+        "missing conditional rename callback reports unsupported without changing an alias"
+    );
+
+    (last_native_result = usfs_client_destroy (&client));
 }
 
 static unsigned metadata_calls;
@@ -1664,7 +1866,7 @@ static void test_detached_metadata (struct tap_state * tap)
         abort ();
     in.nodeid = USFS_ROOT_ID;
     removal_error = 0;
-    handle_unlink_request (&context, "entry", 6);
+    handle_test_remove_request (&context, old->id, "entry", false);
     if (find_or_create_node (f, USFS_ROOT_ID, "entry", NULL) == NULL)
         abort ();
     in.nodeid = old->id;
@@ -1699,10 +1901,14 @@ static int parent_getattr (const struct usfs_client_request * callback_request, 
     return 0;
 }
 
-static int parent_rename (const struct usfs_client_request * callback_request, const char * from, const char * to)
+static int parent_rename (
+    const struct usfs_client_request * callback_request,
+    const struct usfs_expected_entry * source,
+    const struct usfs_expected_entry * destination
+)
 {
     (void)callback_request;
-    return strcmp (from, "/a/child") == 0 && strcmp (to, "/b/child") == 0 ? 0 : -EINVAL;
+    return strcmp (source->path, "/a/child") == 0 && strcmp (destination->path, "/b/child") == 0 ? 0 : -EINVAL;
 }
 
 static void test_parent_identity (struct tap_state * tap)
@@ -1738,6 +1944,7 @@ static void test_parent_identity (struct tap_state * tap)
     tap_ok (tap, captured_reply.error == 0 && captured_entry.nodeid == a->id, "dot-dot returns the existing canonical parent identity");
     in.nodeid = a->id;
     rename.newparent = b->id;
+    rename.source = child->id;
     rename.oldnamelen = 6;
     memcpy (payload, &rename, sizeof (rename));
     memcpy (payload + sizeof (rename), "child\0child", 12);
@@ -1816,20 +2023,24 @@ static int hardlink_link (const struct usfs_client_request * callback_request, c
     return 0;
 }
 
-static int hardlink_unlink (const struct usfs_client_request * callback_request, const char * path)
+static int hardlink_unlink (const struct usfs_client_request * callback_request, const struct usfs_expected_entry * expected)
 {
     (void)callback_request;
-    unsigned bit = strcmp (path, "/a") == 0 ? 1 : strcmp (path, "/b") == 0 ? 2 : 4;
+    unsigned bit = strcmp (expected->path, "/a") == 0 ? 1 : strcmp (expected->path, "/b") == 0 ? 2 : 4;
     if ((hardlink_names & bit) == 0)
         return -ENOENT;
     hardlink_names &= ~bit;
     return 0;
 }
 
-static int hardlink_rename (const struct usfs_client_request * callback_request, const char * from, const char * to)
+static int hardlink_rename (
+    const struct usfs_client_request * callback_request,
+    const struct usfs_expected_entry * source,
+    const struct usfs_expected_entry * destination
+)
 {
     (void)callback_request;
-    return strcmp (from, "/a") == 0 && strcmp (to, "/b") == 0 ? 0 : -EINVAL;
+    return strcmp (source->path, "/a") == 0 && strcmp (destination->path, "/b") == 0 ? 0 : -EINVAL;
 }
 
 static uint64_t hardlink_lookup (struct usfs_client * f, const char * name)
@@ -1893,6 +2104,8 @@ static void test_hardlink_identity (struct tap_state * tap)
         "LINK publishes an alias of the existing object before replying"
     );
     rename.newparent = USFS_ROOT_ID;
+    rename.source = first;
+    rename.destination = first;
     rename.oldnamelen = 2;
     memcpy (payload, &rename, sizeof (rename));
     memcpy (payload + sizeof (rename), "a\0b", 4);
@@ -1901,15 +2114,15 @@ static void test_hardlink_identity (struct tap_state * tap)
     a = find_child_node (f, USFS_ROOT_ID, "a");
     b = find_child_node (f, USFS_ROOT_ID, "b");
     tap_ok (tap, captured_reply.error == 0 && a != NULL && a == b, "rename between aliases of the same object preserves both names");
-    handle_unlink_request (&context, "a", 2);
+    handle_test_remove_request (&context, first, "a", false);
     tap_ok (
         tap,
         captured_reply.error == 0 && hardlink_lookup (f, "b") == first && build_node_path (f, first, path, sizeof (path)) == 0 &&
             strcmp (path, "/a") != 0,
         "removing one alias preserves identity and selects a remaining path"
     );
-    handle_unlink_request (&context, "b", 2);
-    handle_unlink_request (&context, "c", 2);
+    handle_test_remove_request (&context, first, "b", false);
+    handle_test_remove_request (&context, first, "c", false);
     reused = hardlink_lookup (f, "reused");
     tap_ok (
         tap,
@@ -1933,7 +2146,7 @@ static void test_hardlink_identity (struct tap_state * tap)
     context.client = f;
     hardlink_names = 3;
     first = hardlink_lookup (f, "a");
-    handle_unlink_request (&context, "a", 2);
+    handle_test_remove_request (&context, first, "a", false);
     second = hardlink_lookup (f, "b");
     tap_ok (tap, first != 0 && first == second, "an unobserved surviving hard link retains the object's identity generation");
     (last_native_result = usfs_client_destroy (&f));
@@ -2042,6 +2255,51 @@ static size_t memfs_buffer_bytes (void)
 #undef realloc
 #undef strdup
 #undef calloc
+
+static struct usfs_expected_entry memfs_test_expected (const char * path)
+{
+    struct usfs_expected_entry expected = { .path = path };
+    struct mem_inode * parent = NULL;
+    const char * name = NULL;
+    struct mem_inode * inode = resolve (path, &parent, &name);
+
+    if (parent == NULL)
+        abort ();
+
+    expected.parent.nodeid = parent == g_root ? USFS_ROOT_NODE_ID : 2;
+    expected.parent.backend_ino = parent->ino;
+    expected.parent.backend_type = parent->mode & S_IFMT;
+    expected.parent.has_backend_identity = true;
+
+    if (inode != NULL)
+    {
+        expected.exists = true;
+        expected.object.nodeid = 2;
+        expected.object.backend_ino = inode->ino;
+        expected.object.backend_type = inode->mode & S_IFMT;
+        expected.object.has_backend_identity = true;
+    }
+
+    return expected;
+}
+
+static int memfs_test_remove (const char * path, const int directory)
+{
+    const struct usfs_expected_entry expected = memfs_test_expected (path);
+
+    if (directory)
+        return remove_directory (get_callback_request (), &expected);
+
+    return memfs_unlink (get_callback_request (), &expected);
+}
+
+static int memfs_test_move (const char * source_path, const char * destination_path)
+{
+    const struct usfs_expected_entry source = memfs_test_expected (source_path);
+    const struct usfs_expected_entry destination = memfs_test_expected (destination_path);
+
+    return memfs_rename (get_callback_request (), &source, &destination);
+}
 
 static void memfs_fixture (void)
 {
@@ -2168,10 +2426,10 @@ static void test_memfs_buffer_capacity (struct tap_state * tap)
     valid &= memfs_write (get_callback_request (), "/a", bytes, 8192, 0, &a) == -ENOMEM && memfs_buffer_bytes () == 4096 && g_allocated == 4096 &&
              g_used == 3 && memfs_read (get_callback_request (), "/a", readback, 3, 0, &a) == 3 && memcmp (readback, "abc", 3) == 0;
     memfs_fail_at = 0;
-    valid &= memfs_link (get_callback_request (), "/a", "/alias") == 0 && memfs_buffer_bytes () == 4096 &&
-             memfs_unlink (get_callback_request (), "/a") == 0 && memfs_unlink (get_callback_request (), "/alias") == 0 &&
-             memfs_buffer_bytes () == 4096 && memfs_read (get_callback_request (), NULL, readback, 3, 0, &a) == 3 &&
-             memfs_release (get_callback_request (), NULL, &a) == 0 && memfs_buffer_bytes () == 0 && g_allocated == 0;
+    valid &= memfs_link (get_callback_request (), "/a", "/alias") == 0 && memfs_buffer_bytes () == 4096 && memfs_test_remove ("/a", false) == 0 &&
+             memfs_test_remove ("/alias", false) == 0 && memfs_buffer_bytes () == 4096 &&
+             memfs_read (get_callback_request (), NULL, readback, 3, 0, &a) == 3 && memfs_release (get_callback_request (), NULL, &a) == 0 &&
+             memfs_buffer_bytes () == 0 && g_allocated == 0;
     valid &= memfs_fixture_clean ();
     g_max = saved_max;
     tap_ok (tap, valid, "failed growth preserves data and accounting; aliases and unlinked handles retain one charged buffer");
@@ -2225,12 +2483,11 @@ static void test_memfs_reservations (struct tap_state * tap)
             g_root->mtime.tv_sec = 123;
             memfs_calls = 0;
             memfs_fail_at = fault;
-            valid = memfs_rename (get_callback_request (), "/source", "/target") == -ENOMEM && memfs_calls == fault && memfs_live == before &&
-                    g_inode_count == 3 && resolve ("/source", NULL, NULL) == src && resolve ("/target", NULL, NULL) == dst &&
-                    src->nlink == (directory ? 1 : 2) && dst->nlink == 1 && src->open_count == 1 && dst->open_count == 1 &&
-                    g_root->mtime.tv_sec == 123;
+            valid = memfs_test_move ("/source", "/target") == -ENOMEM && memfs_calls == fault && memfs_live == before && g_inode_count == 3 &&
+                    resolve ("/source", NULL, NULL) == src && resolve ("/target", NULL, NULL) == dst && src->nlink == (directory ? 1 : 2) &&
+                    dst->nlink == 1 && src->open_count == 1 && dst->open_count == 1 && g_root->mtime.tv_sec == 123;
             memfs_fail_at = 0;
-            valid &= memfs_rename (get_callback_request (), "/source", "/target") == 0 && resolve ("/source", NULL, NULL) == NULL &&
+            valid &= memfs_test_move ("/source", "/target") == 0 && resolve ("/source", NULL, NULL) == NULL &&
                      resolve ("/target", NULL, NULL) == src && src->nlink == (directory ? 1 : 2) && dst->nlink == 0 && src->open_count == 1 &&
                      dst->open_count == 1;
             if (!directory)
@@ -3255,8 +3512,8 @@ static void test_identity_reclamation (struct tap_state * tap)
         f->fd = 73;
         node = find_or_create_node (f, 1, "independent", NULL);
         id = node->id;
-        read = (struct ns_job){ f, id, 0 };
-        forget = (struct ns_job){ f, id, 2 };
+        read = (struct ns_job){ .f = f, .id = id };
+        forget = (struct ns_job){ .f = f, .id = id, .rename = 2 };
         memset (&ns_test, 0, sizeof (ns_test));
         ns_test.active = ns_test.block_read = 1;
         ns_start (&reader, &read);
@@ -3281,8 +3538,8 @@ static void test_identity_reclamation (struct tap_state * tap)
         f->fd = 73;
         node = find_or_create_node (f, 1, "independent", NULL);
         id = node->id;
-        read = (struct ns_job){ f, 1, 3 };
-        forget = (struct ns_job){ f, id, 2 };
+        read = (struct ns_job){ .f = f, .id = 1, .rename = 3 };
+        forget = (struct ns_job){ .f = f, .id = id, .rename = 2 };
         memset (&ns_test, 0, sizeof (ns_test));
         ns_test.active = ns_test.block_reply = 1;
         ns_start (&reader, &read);
@@ -3760,8 +4017,7 @@ static void test_fid_vget_reconstruction (struct tap_state * tap)
     tap_ok (tap, valid, "VGET rejects a path whose exported token differs from the request");
 
     valid = identity_forget (client, second_nodeid, 2, sizeof (struct usfs_forget_in)) == 0 && identity_nodes (client) == 0;
-    valid &= memfs_unlink (get_callback_request (), "/dir/file") == 0 && memfs_unlink (get_callback_request (), "/alias") == 0 &&
-             remove_directory (get_callback_request (), "/dir") == 0;
+    valid &= memfs_test_remove ("/dir/file", false) == 0 && memfs_test_remove ("/alias", false) == 0 && memfs_test_remove ("/dir", true) == 0;
     (last_native_result = usfs_client_destroy (&client));
     valid &= memfs_fixture_clean ();
     tap_ok (tap, valid, "identity reconstruction leaves backend and client resources reclaimable");
@@ -3791,7 +4047,7 @@ static void test_fid_detached_alias (struct tap_state * tap)
         abort ();
 
     const uint64_t original_nodeid = node->id;
-    if (memfs_unlink (get_callback_request (), "/known") != 0)
+    if (memfs_test_remove ("/known", false) != 0)
         abort ();
 
     publish_removed_entry (client, USFS_ROOT_ID, "known");
@@ -3805,7 +4061,7 @@ static void test_fid_detached_alias (struct tap_state * tap)
             find_child_node (client, USFS_ROOT_ID, "hidden") == node;
     tap_ok (tap, valid, "VGET resolves an untracked hard link to the retained canonical node");
 
-    if (memfs_unlink (get_callback_request (), "/hidden") != 0)
+    if (memfs_test_remove ("/hidden", false) != 0)
         abort ();
 
     publish_removed_entry (client, USFS_ROOT_ID, "hidden");
@@ -4220,7 +4476,7 @@ static void test_pager_tokens (struct tap_state * tap)
 int main (void)
 {
     struct tap_state tap;
-    tap_plan (&tap, 278);
+    tap_plan (&tap, 295);
     test_worker_capacity_notifications (&tap);
     test_pager_tokens (&tap);
     test_native_api_contract (&tap);
@@ -4243,6 +4499,8 @@ int main (void)
     test_create_flags (&tap);
     test_namespace_transactions (&tap);
     test_detached_identity (&tap);
+    test_selected_remove_identity (&tap);
+    test_selected_rename_identity (&tap);
     test_detached_metadata (&tap);
     test_parent_identity (&tap);
     test_append_transactions (&tap);

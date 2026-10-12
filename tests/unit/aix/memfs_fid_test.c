@@ -100,12 +100,52 @@ static void test_initial_identities (struct tap_state * tap, struct fid_test_fix
     );
 }
 
+static struct usfs_expected_entry memfs_test_entry (const char * path)
+{
+    struct usfs_expected_entry expected = { .path = path };
+    struct mem_inode * parent = NULL;
+    const char * name = NULL;
+    struct mem_inode * inode = resolve (path, &parent, &name);
+
+    if (parent == NULL)
+        abort ();
+
+    expected.parent.nodeid = parent == g_root ? USFS_ROOT_NODE_ID : 2;
+    expected.parent.backend_ino = parent->ino;
+    expected.parent.backend_type = parent->mode & S_IFMT;
+    expected.parent.has_backend_identity = true;
+
+    if (inode != NULL)
+    {
+        expected.exists = true;
+        expected.object.nodeid = 2;
+        expected.object.backend_ino = inode->ino;
+        expected.object.backend_type = inode->mode & S_IFMT;
+        expected.object.has_backend_identity = true;
+    }
+
+    return expected;
+}
+
+static int memfs_test_unlink (const char * path)
+{
+    const struct usfs_expected_entry expected = memfs_test_entry (path);
+    return filesystem_operations.unlink (NULL, &expected);
+}
+
+static int memfs_test_rename (const char * source_path, const char * destination_path)
+{
+    const struct usfs_expected_entry source = memfs_test_entry (source_path);
+    const struct usfs_expected_entry destination = memfs_test_entry (destination_path);
+    return filesystem_operations.rename (NULL, &source, &destination);
+}
+
 static void test_rename_and_hardlink (struct tap_state * tap, const struct fid_test_fixture * fixture)
 {
     uint64_t detached_token = 0;
     char short_path[2] = { 0 };
 
-    tap_ok (tap, filesystem_operations.rename (NULL, "/before", "/after") == 0, "parent directory rename succeeds");
+    tap_ok (tap, memfs_test_rename ("/before", "/after") == 0, "parent directory rename succeeds");
 
     tap_ok (
         tap,
@@ -116,7 +156,7 @@ static void test_rename_and_hardlink (struct tap_state * tap, const struct fid_t
 
     tap_ok (
         tap,
-        filesystem_operations.link (NULL, "/after/file", "/after/alias") == 0 && filesystem_operations.unlink (NULL, "/after/file") == 0,
+        filesystem_operations.link (NULL, "/after/file", "/after/alias") == 0 && memfs_test_unlink ("/after/file") == 0,
         "removing the original name leaves a surviving hard link"
     );
 
@@ -142,7 +182,7 @@ static void test_retirement_and_replacement (struct tap_state * tap, struct fid_
 
     tap_ok (
         tap,
-        filesystem_operations.unlink (NULL, "/after/alias") == 0 && find_live_inode_by_id (fixture->file_token) != NULL &&
+        memfs_test_unlink ("/after/alias") == 0 && find_live_inode_by_id (fixture->file_token) != NULL &&
             filesystem_operations.resolve_id (NULL, fixture->file_token, short_path, sizeof (short_path)) == -ESTALE &&
             filesystem_operations.export_id (NULL, NULL, 0, fixture->file_token, S_IFREG, &detached_token) == -ESTALE,
         "final unlink makes a still-open inode's token stale"
@@ -168,6 +208,41 @@ static void test_retirement_and_replacement (struct tap_state * tap, struct fid_
             filesystem_operations.release (NULL, "/after/alias", &fixture->replacement_handle) == 0,
         "the replacement remains independently resolvable"
     );
+}
+
+static void test_conditional_namespace_mutations (struct tap_state * tap, const struct fid_test_fixture * fixture)
+{
+    struct usfs_expected_entry selected = memfs_test_entry ("/after/alias");
+    struct usfs_open_file new_handle = { .open_flags = O_RDWR };
+
+    selected.object.backend_ino = fixture->file_token;
+    tap_ok (
+        tap,
+        filesystem_operations.unlink (NULL, &selected) == -ESTALE && token_resolves_to (fixture->replacement_token, "/after/alias"),
+        "stale selected inode cannot unlink a replacement at its former name"
+    );
+
+    selected = memfs_test_entry ("/after/alias");
+    selected.parent.backend_ino++;
+    tap_ok (
+        tap,
+        filesystem_operations.unlink (NULL, &selected) == -ESTALE && token_resolves_to (fixture->replacement_token, "/after/alias"),
+        "stale selected parent cannot remove its child"
+    );
+
+    const struct usfs_expected_entry source = memfs_test_entry ("/after/alias");
+    const struct usfs_expected_entry destination = memfs_test_entry ("/after/new");
+    if (filesystem_operations.create (NULL, "/after/new", 0644, &new_handle) != 0)
+        abort ();
+
+    tap_ok (
+        tap,
+        filesystem_operations.rename (NULL, &source, &destination) == -ESTALE && token_resolves_to (fixture->replacement_token, "/after/alias") &&
+            memfs_test_entry ("/after/new").exists,
+        "destination created after selection is never overwritten by rename"
+    );
+
+    (void)filesystem_operations.release (NULL, "/after/new", &new_handle);
 }
 
 static void test_token_exhaustion (struct tap_state * tap, const struct fid_test_fixture * fixture)
@@ -199,7 +274,7 @@ int main (void)
     struct tap_state tap;
     struct fid_test_fixture fixture = { 0 };
 
-    tap_plan (&tap, 15);
+    tap_plan (&tap, 18);
 
     g_root = inode_new (S_IFDIR | 0755, getuid (), getgid ());
     if (g_root == NULL)
@@ -216,6 +291,7 @@ int main (void)
     test_initial_identities (&tap, &fixture);
     test_rename_and_hardlink (&tap, &fixture);
     test_retirement_and_replacement (&tap, &fixture);
+    test_conditional_namespace_mutations (&tap, &fixture);
     test_token_exhaustion (&tap, &fixture);
 
     return tap_finish (&tap);

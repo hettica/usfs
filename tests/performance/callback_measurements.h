@@ -85,26 +85,30 @@ static int measured_mkdir (const struct usfs_client_request * request, const cha
     return result;
 }
 
-static int measured_rmdir (const struct usfs_client_request * request, const char * path)
+static int measured_rmdir (const struct usfs_client_request * request, const struct usfs_expected_entry * expected)
 {
     struct callback_scope scope = begin_callback (CALLBACK_RMDIR);
-    const int result = remove_directory (request, path);
+    const int result = remove_directory (request, expected);
     finish_callback (&scope, CALLBACK_RMDIR, result, 0);
     return result;
 }
 
-static int measured_unlink (const struct usfs_client_request * request, const char * path)
+static int measured_unlink (const struct usfs_client_request * request, const struct usfs_expected_entry * expected)
 {
     struct callback_scope scope = begin_callback (CALLBACK_UNLINK);
-    const int result = memfs_unlink (request, path);
+    const int result = memfs_unlink (request, expected);
     finish_callback (&scope, CALLBACK_UNLINK, result, 0);
     return result;
 }
 
-static int measured_rename (const struct usfs_client_request * request, const char * from, const char * to)
+static int measured_rename (
+    const struct usfs_client_request * request,
+    const struct usfs_expected_entry * source,
+    const struct usfs_expected_entry * destination
+)
 {
     struct callback_scope scope = begin_callback (CALLBACK_RENAME);
-    const int result = memfs_rename (request, from, to);
+    const int result = memfs_rename (request, source, destination);
     finish_callback (&scope, CALLBACK_RENAME, result, 0);
     return result;
 }

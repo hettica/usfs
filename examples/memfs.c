@@ -1224,12 +1224,37 @@ static int create_hard_link_locked (const char * source_path, const char * desti
     return add_directory_entry (destination_directory_inode, destination_entry_name, source_inode);
 }
 
-static int remove_file_locked (const char * path)
+/* All checks and the mutation run under g_memfs_lock. Inode numbers are
+ * never reused within a mount, including while an AIX vnode is retained. */
+static int expected_inode_matches (const struct mem_inode * inode, const struct usfs_object_identity * identity)
 {
+    if (identity->nodeid == USFS_ROOT_NODE_ID)
+        return inode == g_root;
+
+    return inode != NULL && identity->has_backend_identity && inode->ino == identity->backend_ino && (inode->mode & S_IFMT) == identity->backend_type;
+}
+
+static int expected_entry_matches (const struct usfs_expected_entry * expected, const struct mem_inode * parent, const struct mem_inode * inode)
+{
+    if (!expected_inode_matches (parent, &expected->parent))
+        return false;
+
+    if (!expected->exists)
+        return inode == NULL;
+
+    return expected_inode_matches (inode, &expected->object);
+}
+
+static int remove_file_locked (const struct usfs_expected_entry * expected)
+{
+    const char * path = expected->path;
     struct mem_inode * parent_inode;
     const char * entry_name;
     struct mem_inode * inode = resolve (path, &parent_inode, &entry_name);
     struct mem_dirent * directory_entry;
+
+    if (!expected_entry_matches (expected, parent_inode, inode))
+        return -ESTALE;
 
     if (inode == NULL)
         return -ENOENT;
@@ -1252,12 +1277,16 @@ static int remove_file_locked (const char * path)
     return 0;
 }
 
-static int remove_directory_locked (const char * path)
+static int remove_directory_locked (const struct usfs_expected_entry * expected)
 {
+    const char * path = expected->path;
     struct mem_inode * parent_inode;
     const char * entry_name;
     struct mem_inode * inode = resolve (path, &parent_inode, &entry_name);
     struct mem_dirent * directory_entry;
+
+    if (!expected_entry_matches (expected, parent_inode, inode))
+        return -ESTALE;
 
     if (inode == NULL)
         return -ENOENT;
@@ -1316,8 +1345,14 @@ static int validate_rename_destination (
     return 0;
 }
 
-static int rename_entry_locked (const char * source_path, const char * destination_path, const unsigned int flags)
+static int rename_entry_locked (
+    const struct usfs_expected_entry * source_entry,
+    const struct usfs_expected_entry * destination_entry_expectation,
+    const unsigned int flags
+)
 {
+    const char * source_path = source_entry->path;
+    const char * destination_path = destination_entry_expectation->path;
     char source_entry_name[MEMFS_NAME_MAX + 1];
     char destination_entry_name[MEMFS_NAME_MAX + 1];
     struct mem_inode * source_directory_inode;
@@ -1334,6 +1369,9 @@ static int rename_entry_locked (const char * source_path, const char * destinati
     /* resolve reports the final name out of one static buffer, so each name
        has to be copied before the next call overwrites it. */
     source_inode = resolve (source_path, &source_directory_inode, &entry_name);
+    if (!expected_entry_matches (source_entry, source_directory_inode, source_inode))
+        return -ESTALE;
+
     if (source_inode == NULL)
         return -ENOENT;
 
@@ -1346,6 +1384,9 @@ static int rename_entry_locked (const char * source_path, const char * destinati
     strcpy (source_entry_name, entry_name);
 
     destination_inode = resolve (destination_path, &destination_directory_inode, &entry_name);
+    if (!expected_entry_matches (destination_entry_expectation, destination_directory_inode, destination_inode))
+        return -ESTALE;
+
     if (destination_directory_inode == NULL)
         return -ENOENT;
 
@@ -1774,22 +1815,26 @@ static int memfs_link (const struct usfs_client_request * request, const char * 
     MEMFS_LOCKED_CALL (create_hard_link_locked (from, to));
 }
 
-static int memfs_unlink (const struct usfs_client_request * request, const char * path)
+static int memfs_unlink (const struct usfs_client_request * request, const struct usfs_expected_entry * expected)
 {
     (void)request;
-    MEMFS_LOCKED_CALL (remove_file_locked (path));
+    MEMFS_LOCKED_CALL (remove_file_locked (expected));
 }
 
-static int remove_directory (const struct usfs_client_request * request, const char * path)
+static int remove_directory (const struct usfs_client_request * request, const struct usfs_expected_entry * expected)
 {
     (void)request;
-    MEMFS_LOCKED_CALL (remove_directory_locked (path));
+    MEMFS_LOCKED_CALL (remove_directory_locked (expected));
 }
 
-static int memfs_rename (const struct usfs_client_request * request, const char * source_path, const char * destination_path)
+static int memfs_rename (
+    const struct usfs_client_request * request,
+    const struct usfs_expected_entry * source,
+    const struct usfs_expected_entry * destination
+)
 {
     (void)request;
-    MEMFS_LOCKED_CALL (rename_entry_locked (source_path, destination_path, 0));
+    MEMFS_LOCKED_CALL (rename_entry_locked (source, destination, 0));
 }
 
 static ssize_t memfs_write (

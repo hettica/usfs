@@ -18,7 +18,8 @@
 extern "C" {
 #endif
 
-#define USFS_CLIENT_API_VERSION     3u
+#define USFS_CLIENT_API_VERSION     4u
+#define USFS_ROOT_NODE_ID           1u
 #define USFS_CLIENT_DEFAULT_WORKERS 10u
 #define USFS_CLIENT_MAX_WORKERS     64u
 #define USFS_TIME_NOW               (-2L)
@@ -94,6 +95,17 @@ struct usfs_object_identity
     int has_backend_identity; // Whether the cached backend fields are valid.
 };
 
+/* A namespace mutation must compare the parent and named object together
+ * with the mutation. The backend must reject a mismatch without side effects.
+ * When exists is zero, the name must still be absent. */
+struct usfs_expected_entry
+{
+    const char * path;                  // Borrowed path for this directory entry.
+    struct usfs_object_identity parent; // Expected containing directory.
+    struct usfs_object_identity object; // Expected child when exists is true.
+    int exists;                         // One for an existing child; zero for absence.
+};
+
 struct usfs_behavior
 {
     enum usfs_remove_policy remove_policy; // Defer removal of open objects, or remove immediately.
@@ -166,9 +178,12 @@ struct usfs_operations
        struct usfs_open_file *); // Update access and modification timestamps.
 
     int (*mkdir) (const struct usfs_client_request *, const char *, mode_t);                           // Create a directory.
-    int (*rmdir) (const struct usfs_client_request *, const char *);                                   // Remove an empty directory.
-    int (*unlink) (const struct usfs_client_request *, const char *);                                  // Remove a file name.
-    int (*rename) (const struct usfs_client_request *, const char *, const char *);                    // Move or replace a name.
+    int (*rmdir) (const struct usfs_client_request *, const struct usfs_expected_entry *);  // Atomically remove the selected empty directory.
+    int (*unlink) (const struct usfs_client_request *, const struct usfs_expected_entry *); // Atomically remove the selected file name.
+    int (*rename
+    ) (const struct usfs_client_request *,
+       const struct usfs_expected_entry *,
+       const struct usfs_expected_entry *); // Atomically move the selected source to the expected destination.
     int (*link) (const struct usfs_client_request *, const char *, const char *);                      // Add a hard-link name.
     int (*symlink) (const struct usfs_client_request *, const char *, const char *);                   // Create a symbolic link.
     int (*create) (const struct usfs_client_request *, const char *, mode_t, struct usfs_open_file *); // Create and open a regular file.

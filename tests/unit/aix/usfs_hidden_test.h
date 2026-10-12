@@ -112,9 +112,16 @@ static int hidden_open (const struct usfs_client_request * callback_request, con
     return 0;
 }
 
-static int hidden_rename (const struct usfs_client_request * callback_request, const char * source, const char * destination)
+static int hidden_rename (
+    const struct usfs_client_request * callback_request,
+    const struct usfs_expected_entry * source_entry,
+    const struct usfs_expected_entry * destination_entry
+)
 {
     (void)callback_request;
+
+    const char * source = source_entry->path;
+    const char * destination = destination_entry->path;
 
     hidden_fixture.rename_calls++;
     if (strstr (destination, "/.fuse_hidden") != NULL && hidden_fixture.hide_error != 0)
@@ -149,9 +156,11 @@ static int hidden_rename (const struct usfs_client_request * callback_request, c
     return 0;
 }
 
-static int hidden_unlink (const struct usfs_client_request * callback_request, const char * path)
+static int hidden_unlink (const struct usfs_client_request * callback_request, const struct usfs_expected_entry * expected)
 {
     (void)callback_request;
+    const char * path = expected->path;
+
     hidden_fixture.delete_calls++;
     hidden_fixture.delete_sequence = ++hidden_fixture.sequence;
 
@@ -271,7 +280,15 @@ static int unlink_hidden_fixture (struct usfs_client * client)
     struct request_context context = { client, &request };
 
     request.nodeid = USFS_ROOT_ID;
-    handle_unlink_request (&context, "file", sizeof ("file"));
+    struct client_node * node = find_child_node (client, USFS_ROOT_ID, "file");
+    if (node == NULL)
+        abort ();
+
+    const struct usfs_remove_in removal = { .target = node->id };
+    char payload[sizeof (removal) + sizeof ("file")];
+    memcpy (payload, &removal, sizeof (removal));
+    memcpy (payload + sizeof (removal), "file", sizeof ("file"));
+    handle_unlink_request (&context, payload, sizeof (payload));
 
     return captured_reply.error;
 }
@@ -683,7 +700,7 @@ static void test_hidden_preparation_failures (struct tap_state * tap)
     client->ops.unlink = NULL;
     tap_ok (
         tap,
-        unlink_hidden_fixture (client) == EROFS && hidden_fixture.rename_calls == 0,
+        unlink_hidden_fixture (client) == ENOSYS && hidden_fixture.rename_calls == 0,
         "missing cleanup callback leaves an open entry untouched"
     );
     (last_native_result = usfs_client_destroy (&client));
@@ -715,6 +732,13 @@ static void * dispatch_hidden_job (void * argument)
 
     if (job->opcode == USFS_OP_UNLINK)
     {
+        struct client_node * node = find_child_node (job->client, USFS_ROOT_ID, "file");
+        if (node == NULL)
+            abort ();
+
+        const struct usfs_remove_in removal = { .target = node->id };
+        memcpy (message + length, &removal, sizeof (removal));
+        length += sizeof (removal);
         memcpy (message + length, "file", sizeof ("file"));
         length += sizeof ("file");
     }
@@ -734,7 +758,15 @@ static void * dispatch_hidden_job (void * argument)
     }
     else
     {
-        const struct usfs_rename_in rename_request = { .newparent = USFS_ROOT_ID, .oldnamelen = sizeof ("source") };
+        struct client_node * source = find_child_node (job->client, USFS_ROOT_ID, "source");
+        struct client_node * destination = find_child_node (job->client, USFS_ROOT_ID, "file");
+        if (source == NULL || destination == NULL)
+            abort ();
+
+        const struct usfs_rename_in rename_request = { .newparent = USFS_ROOT_ID,
+                                                       .source = source->id,
+                                                       .destination = destination->id,
+                                                       .oldnamelen = sizeof ("source") };
 
         memcpy (message + length, &rename_request, sizeof (rename_request));
         length += sizeof (rename_request);

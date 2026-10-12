@@ -51,7 +51,7 @@
  * the high 39 bits identify a snapshot, and the low 24 bits give its next
  * entry index. Zero starts a new snapshot. */
 /* Version 9 adds mount-scoped file identifiers and vnode reconstruction. */
-#define USFS_PROTOCOL_VERSION 11u
+#define USFS_PROTOCOL_VERSION 12u
 
 #define USFS_DIRECTORY_CURSOR_INDEX_BITS 24u
 #define USFS_DIRECTORY_CURSOR_INDEX_MASK ((1ull << USFS_DIRECTORY_CURSOR_INDEX_BITS) - 1ull)
@@ -90,8 +90,8 @@ enum usfs_opcode
      * mounted read only and the kernel refuses these without asking. */
     USFS_OP_CREATE = 9,       /* hdr(parent) + usfs_create_in + name;   out: usfs_create_out */
     USFS_OP_MKDIR = 10,       /* hdr(parent) + usfs_mkdir_in + name;    out: hdr only        */
-    USFS_OP_UNLINK = 11,      /* hdr(parent) + name;                    out: hdr only        */
-    USFS_OP_RMDIR = 12,       /* hdr(parent) + name;                    out: hdr only        */
+    USFS_OP_UNLINK = 11,      /* hdr(parent) + usfs_remove_in + name;   out: hdr only        */
+    USFS_OP_RMDIR = 12,       /* hdr(parent) + usfs_remove_in + name;   out: hdr only        */
     USFS_OP_RENAME = 13,      /* hdr(srcdir) + usfs_rename_in + 2 names;  out: hdr only      */
     USFS_OP_SYMLINK = 14,     /* hdr(parent) + usfs_symlink_in + 2 names; out: hdr only       */
     USFS_OP_LINK = 15,        /* hdr(nodeid) + usfs_link_in + name;     out: hdr only        */
@@ -228,12 +228,18 @@ struct usfs_mkdir_in
     uint32_t pad;
 };
 
-/* UNLINK, RMDIR: no body; the NUL-terminated entry name follows the header,
- * and hdr.nodeid is the containing directory. */
+/* UNLINK, RMDIR: target is the vnode selected by AIX. The containing
+ * directory is in the header; the NUL-terminated name follows this body. */
+struct usfs_remove_in
+{
+    uint64_t target;
+};
 
 struct usfs_rename_in
 {
-    uint64_t newparent;  /* destination directory */
+    uint64_t newparent;   /* destination directory */
+    uint64_t source;      /* source vnode selected by AIX */
+    uint64_t destination; /* selected destination vnode, or zero if absent */
     uint32_t oldnamelen; /* bytes of the first name incl. its NUL */
     uint32_t pad;
     /* then: oldname NUL, newname NUL */

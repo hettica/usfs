@@ -54,7 +54,9 @@ umount /mnt/usfs-mirror
 ```
 The package installs `/usr/lib/libusfs.a`, `/usr/include/usfs/usfs.h`, and
 `usfs.pc`. The public header documents requests, callbacks, options and
-lifecycle contracts; the examples demonstrate their use.
+lifecycle contracts; the examples demonstrate their use. Mutable backends
+must implement [conditional namespace mutations](docs/namespace-mutations.md)
+atomically.
 
 In-place upgrades and replacement installs are rejected. To reinstall, unmount
 all USFS filesystems, stop the daemons, and prevent new device opens. Then run
