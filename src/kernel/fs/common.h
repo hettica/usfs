@@ -7,7 +7,7 @@
 static int flush_connection_cache (const struct usfs_connection *);
 static int flush_cached_pages (struct vnode *, int, uint64_t, uint64_t, int);
 static int resize_cached_file (struct vnode *, const struct usfs_setattr_in *, uint64_t, struct ucred *);
-static void dispose_cache_resources (struct usfs_node *, struct usfs_mount_data *);
+static int dispose_cache_resources (struct usfs_node *, struct usfs_mount_data *);
 
 
 static uint32_t gnode_lock_occurrences[USFS_LOCK_OCCURRENCE_WORDS];

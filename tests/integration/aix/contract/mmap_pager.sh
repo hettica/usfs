@@ -28,6 +28,8 @@ PROBE_PID=0
 PROBE_OUT=
 PROBE_RC=
 BACKGROUND_SYNC_TIMEOUT_SECONDS=10
+PAGER_READ_OPCODE=28
+PAGER_WRITE_OPCODE=29
 
 is_mounted()
 {
@@ -154,7 +156,7 @@ tap_plan 30
 read_matrix_failure=0
 for action in wrong-version wrong-opcode wrong-unique truncated oversized \
               invalid-read-count; do
-    printf 'USFS-SCENARIO 1\nREAD %s\n' "$action" >"$SCENARIO"
+    printf 'USFS-SCENARIO 1\nPAGER_READ %s\n' "$action" >"$SCENARIO"
     start_daemon 8192 || read_matrix_failure=1
     spawn_probe /usr/sbin/usfs_io_probe mmap-touch-read \
         "$MOUNT/file" 4096 0 17
@@ -168,7 +170,7 @@ done
 recovery_works || read_matrix_failure=1
 tap_ok "$read_matrix_failure" "malformed page-in replies fault locally and fresh channels recover"
 
-printf 'USFS-SCENARIO 1\nREAD error 5\n' >"$SCENARIO"
+printf 'USFS-SCENARIO 1\nPAGER_READ error 5\n' >"$SCENARIO"
 read_error_failure=0
 start_daemon 8192 || read_error_failure=1
 spawn_probe /usr/sbin/usfs_io_probe mmap-touch-read "$MOUNT/file" 4096 0 0
@@ -181,7 +183,7 @@ tap_ok "$read_error_failure" "daemon page-in errors become process-local mapping
 write_matrix_failure=0
 for action in wrong-version wrong-unique truncated oversized wrong-body \
               short-body invalid-write-count invalid-write-offset short-write; do
-    printf 'USFS-SCENARIO 1\nWRITE %s\n' "$action" >"$SCENARIO"
+    printf 'USFS-SCENARIO 1\nPAGER_WRITE %s\n' "$action" >"$SCENARIO"
     start_daemon 8192 || write_matrix_failure=1
     spawn_probe /usr/sbin/usfs_io_probe mmap-write-shared \
         "$MOUNT/file" 4096 0
@@ -192,7 +194,7 @@ for action in wrong-version wrong-unique truncated oversized wrong-body \
     }
     stop_daemon
 done
-printf 'USFS-SCENARIO 1\nWRITE error 5\n' >"$SCENARIO"
+printf 'USFS-SCENARIO 1\nPAGER_WRITE error 5\n' >"$SCENARIO"
 start_daemon 8192 || write_matrix_failure=1
 spawn_probe /usr/sbin/usfs_io_probe mmap-write-shared \
     "$MOUNT/file" 4096 0
@@ -210,11 +212,11 @@ spawn_probe /usr/sbin/usfs_io_probe mmap-touch-read \
 wait_probe || high_failure=1
 echo "$PROBE_OUT" | grep -q 'result=0 errno=0 signal=0 value=123' || \
     high_failure=1
-grep -q '^DETAIL 4 4294967296 4096$' "$REQUESTS" 2>/dev/null || \
+grep -q "^DETAIL $PAGER_READ_OPCODE 4294967296 4096\$" "$REQUESTS" 2>/dev/null || \
     high_failure=1
 [ "$high_failure" -eq 0 ] || {
     tap_diag "high offset probe: $PROBE_OUT"
-    tap_diag "high offset requests: $(grep '^DETAIL 4 ' "$REQUESTS" 2>/dev/null)"
+    tap_diag "high offset requests: $(grep "^DETAIL $PAGER_READ_OPCODE " "$REQUESTS" 2>/dev/null)"
 }
 stop_daemon
 tap_ok "$high_failure" "pager preserves page-aligned offsets above 4 GiB"
@@ -241,7 +243,7 @@ echo "$PROBE_OUT" | grep -q 'result=0 errno=0 signal=0 value=132' || \
 stop_daemon
 tap_ok "$huge_failure" "one-gigabyte sparse mapping faults only the addressed page"
 
-printf 'USFS-SCENARIO 1\nREAD reordered\n' >"$SCENARIO"
+printf 'USFS-SCENARIO 1\nPAGER_READ reordered\n' >"$SCENARIO"
 concurrent_failure=0
 start_daemon 65536 || concurrent_failure=1
 probe_pids=""
@@ -268,7 +270,7 @@ done
 stop_daemon
 tap_ok "$concurrent_failure" "eight processes fault distinct pages concurrently"
 
-printf 'USFS-SCENARIO 1\nREAD hold 30000 1\n' >"$SCENARIO"
+printf 'USFS-SCENARIO 1\nPAGER_READ hold 30000 1\n' >"$SCENARIO"
 disconnect_read_failure=0
 start_daemon 8192 || disconnect_read_failure=1
 spawn_probe /usr/sbin/usfs_io_probe mmap-touch-read "$MOUNT/file" 4096 0 0
@@ -281,7 +283,7 @@ stop_daemon
 recovery_works || disconnect_read_failure=1
 tap_ok "$disconnect_read_failure" "daemon death releases a delivered page-in waiter"
 
-printf 'USFS-SCENARIO 1\nWRITE hold 30000 1\n' >"$SCENARIO"
+printf 'USFS-SCENARIO 1\nPAGER_WRITE hold 30000 1\n' >"$SCENARIO"
 disconnect_write_failure=0
 start_daemon 8192 || disconnect_write_failure=1
 spawn_probe /usr/sbin/usfs_io_probe mmap-write-shared "$MOUNT/file" 4096 0
@@ -294,7 +296,7 @@ stop_daemon
 recovery_works || disconnect_write_failure=1
 tap_ok "$disconnect_write_failure" "daemon death releases a dirty-page writeback waiter"
 
-printf 'USFS-SCENARIO 1\nREAD hold 30000 1\n' >"$SCENARIO"
+printf 'USFS-SCENARIO 1\nPAGER_READ hold 30000 1\n' >"$SCENARIO"
 cancel_failure=0
 start_daemon 8192 || cancel_failure=1
 spawn_probe_direct /usr/sbin/usfs_io_probe mmap-touch-read \
@@ -391,14 +393,14 @@ for kind in file range filesystem range-zero range-zero-eof range-zero-nocache r
     # Dirty-page WRITE must arrive before the durability barrier. Pager I/O
     # carries no originating process; the explicit barrier carries the probe.
     # A background SYNCFS before any dirtying is not that durability barrier.
-    awk -v probe="$sync_probe_pid" '$1 == 17 { write_seen=1; if ($7 != 0) bad=1 }
+    awk -v probe="$sync_probe_pid" -v pager_write_opcode="$PAGER_WRITE_OPCODE" '$1 == pager_write_opcode { write_seen=1; if ($7 != 0) bad=1 }
          ($1 == 19 || $1 == 20) && $7 == probe { if (!write_seen) bad=1; barrier=1 }
          END { exit (!write_seen || !barrier || bad) }' "$REQUESTS" || sync_failure=1
     case "$kind" in
         range-zero*)
             # A later full fsync or unmap must not hide omitted pages in the
             # zero-length range: both dirty pages must precede its first barrier.
-            awk -v probe="$sync_probe_pid" '$1 == "DETAIL" && $2 == 17 && !barrier {
+            awk -v probe="$sync_probe_pid" -v pager_write_opcode="$PAGER_WRITE_OPCODE" '$1 == "DETAIL" && $2 == pager_write_opcode && !barrier {
                      if ($3 == 0 && $4 >= 4096) first_page=1
                      if ($3 <= 4096 && $3 + $4 >= 8192) second_page=1
                  }
@@ -418,7 +420,7 @@ for kind in file range filesystem range-zero range-zero-eof range-zero-nocache r
     tap_ok "$sync_failure" "$kind sync submits mapped dirt before its barrier without preceding msync"
 
     sync_failure=0
-    printf 'USFS-SCENARIO 1\nWRITE error 5\n' >"$SCENARIO"
+    printf 'USFS-SCENARIO 1\nPAGER_WRITE error 5\n' >"$SCENARIO"
     start_daemon 8192 || sync_failure=1
     /usr/sbin/sync >"$BASE/pre-probe-sync.log" 2>&1 || sync_failure=1
     usfs_wait_until "background sync before $kind error probe" "$BACKGROUND_SYNC_TIMEOUT_SECONDS" background_sync_recorded || sync_failure=1

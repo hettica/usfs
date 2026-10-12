@@ -142,19 +142,19 @@ static int exchange_pager_request (
     return 0;
 }
 
-static int request_pager_read (const struct pager_transfer * transfer, const uint64_t file_handle)
+static int request_pager_read (const struct pager_transfer * transfer, const uint64_t pager_token)
 {
     if (!usfs_pager_count_valid (transfer->page_data, transfer->byte_count))
         return EINVAL;
 
-    struct usfs_read_in request_body;
+    struct usfs_pager_read_in request_body;
 
     memset (&request_body, 0, sizeof (request_body));
-    request_body.fh = file_handle;
+    request_body.token = pager_token;
     request_body.offset = transfer->offset;
     request_body.size = transfer->byte_count;
 
-    const struct usfs_request_allocation_spec request_spec = { .opcode = (uint16_t)USFS_OP_READ,
+    const struct usfs_request_allocation_spec request_spec = { .opcode = (uint16_t)USFS_OP_PAGER_READ,
                                                                .node_id = transfer->node->nodeid,
                                                                .opcode_specific_body = { .bytes = &request_body, .length = sizeof (request_body) },
                                                                .max_allowed_reply_buffer_size = transfer->byte_count };
@@ -170,7 +170,7 @@ static int request_pager_read (const struct pager_transfer * transfer, const uin
     return rc;
 }
 
-static int request_pager_write (const struct pager_transfer * transfer, const uint64_t file_handle)
+static int request_pager_write (const struct pager_transfer * transfer, const uint64_t pager_token)
 {
     if (!transfer->mount_data->writable)
         return EROFS;
@@ -178,14 +178,14 @@ static int request_pager_write (const struct pager_transfer * transfer, const ui
     if (!usfs_pager_count_valid (transfer->page_data, transfer->byte_count))
         return EINVAL;
 
-    struct usfs_write_in request_body;
+    struct usfs_pager_write_in request_body;
 
     memset (&request_body, 0, sizeof (request_body));
-    request_body.fh = file_handle;
+    request_body.token = pager_token;
     request_body.offset = transfer->offset;
     request_body.size = transfer->byte_count;
 
-    const struct usfs_request_allocation_spec request_spec = { .opcode = (uint16_t)USFS_OP_WRITE,
+    const struct usfs_request_allocation_spec request_spec = { .opcode = (uint16_t)USFS_OP_PAGER_WRITE,
                                                                .node_id = transfer->node->nodeid,
                                                                .opcode_specific_body = { .bytes = &request_body, .length = sizeof (request_body) },
                                                                .opcode_specific_payload = { .bytes = transfer->page_data,
@@ -201,28 +201,28 @@ static int request_pager_write (const struct pager_transfer * transfer, const ui
     return consume_write_reply (request, transfer->byte_count, transfer->offset);
 }
 
-static int read_pager_data (const struct pager_transfer * transfer, const uint64_t file_handle)
+static int read_pager_data (const struct pager_transfer * transfer, const uint64_t pager_token)
 {
     trace_transfer_entry (USFS_PAGER_READ_DIRECTION, transfer);
 
-    const int rc = request_pager_read (transfer, file_handle);
+    const int rc = request_pager_read (transfer, pager_token);
 
     return trace_transfer_result (USFS_PAGER_READ_DIRECTION, transfer, rc);
 }
 
-static int write_pager_data (const struct pager_transfer * transfer, const uint64_t file_handle)
+static int write_pager_data (const struct pager_transfer * transfer, const uint64_t pager_token)
 {
     trace_transfer_entry (USFS_PAGER_WRITE_DIRECTION, transfer);
 
-    const int rc = request_pager_write (transfer, file_handle);
+    const int rc = request_pager_write (transfer, pager_token);
 
     return trace_transfer_result (USFS_PAGER_WRITE_DIRECTION, transfer, rc);
 }
 
 struct usfs_pager_reference
 {
-    struct vnode * file_vnode;           // Vnode that owns the retained open state.
-    struct usfs_open_state * open_state; // Open state retained until every submitted buffer completes.
+    struct vnode * file_vnode; // Vnode retained until the submitted buffer completes.
+    int retained;              // Whether file_vnode has an additional reference.
 };
 
 static uint32_t calculate_transfer_count (const uint64_t file_size, const uint64_t offset, const uint32_t requested_count)
@@ -232,7 +232,7 @@ static uint32_t calculate_transfer_count (const uint64_t file_size, const uint64
     return requested_count > remaining ? (uint32_t)remaining : requested_count;
 }
 
-static int read_pager_buffer (struct pager_transfer transfer, struct usfs_open_state ** retained_state)
+static int read_pager_buffer (struct pager_transfer transfer, const uint64_t pager_token)
 {
     const uint64_t file_size = get_cache_size (transfer.node);
     if (transfer.offset >= file_size)
@@ -242,11 +242,7 @@ static int read_pager_buffer (struct pager_transfer transfer, struct usfs_open_s
 
     transfer.byte_count = calculate_transfer_count (file_size, transfer.offset, requested_count);
 
-    int rc = borrow_cache_handle (transfer.node, false, retained_state);
-    if (rc != 0)
-        return rc;
-
-    rc = read_pager_data (&transfer, (*retained_state)->fh);
+    const int rc = read_pager_data (&transfer, pager_token);
     if (rc != 0)
         return rc;
 
@@ -256,7 +252,7 @@ static int read_pager_buffer (struct pager_transfer transfer, struct usfs_open_s
     return 0;
 }
 
-static int write_buffer_to_backend (struct pager_transfer transfer, struct usfs_open_state ** retained_state)
+static int write_buffer_to_backend (struct pager_transfer transfer, const uint64_t pager_token)
 {
     const uint64_t file_size = get_cache_size (transfer.node);
     if (transfer.offset >= file_size)
@@ -264,20 +260,16 @@ static int write_buffer_to_backend (struct pager_transfer transfer, struct usfs_
 
     transfer.byte_count = calculate_transfer_count (file_size, transfer.offset, transfer.byte_count);
 
-    const int rc = borrow_cache_handle (transfer.node, true, retained_state);
-    if (rc != 0)
-        return rc;
-
-    return write_pager_data (&transfer, (*retained_state)->fh);
+    return write_pager_data (&transfer, pager_token);
 }
 
-static int write_pager_buffer (const struct pager_transfer * transfer, struct usfs_open_state ** retained_state)
+static int write_pager_buffer (const struct pager_transfer * transfer, const uint64_t pager_token)
 {
     int rc = 0;
 
     write_synchronized_with (transfer->node->pageout_lock)
     {
-        rc = write_buffer_to_backend (*transfer, retained_state);
+        rc = write_buffer_to_backend (*transfer, pager_token);
     }
 
     record_writeback_error (transfer->node, rc);
@@ -289,7 +281,8 @@ static int resolve_buffer_transfer_target (
     const struct buf * buffer,
     struct vnode ** file_vnode,
     struct usfs_mount_data ** mount_data,
-    struct usfs_node ** node
+    struct usfs_node ** node,
+    uint64_t * pager_token
 )
 {
     if (buffer == NULL)
@@ -298,27 +291,30 @@ static int resolve_buffer_transfer_target (
     if (buffer->b_vp == NULL)
         return EIO;
 
-    struct gnode * gnode = (struct gnode *)buffer->b_vp;
-    struct vnode * resolved_vnode = gnode->gn_vnode;
-    if (resolved_vnode == NULL)
-        return EIO;
+    int rc = EIO;
 
-    if (resolved_vnode->v_gnode != gnode)
-        return EIO;
+    write_synchronized_with (global_lock)
+    {
+        struct gnode * gnode = (struct gnode *)buffer->b_vp;
+        struct vnode * resolved_vnode = gnode->gn_vnode;
+        if (resolved_vnode == NULL || resolved_vnode->v_gnode != gnode)
+            return EIO;
 
-    struct usfs_mount_data * resolved_mount_data = _mount_of (resolved_vnode);
-    struct usfs_node * resolved_node = _node_of (resolved_vnode);
-    if (resolved_mount_data == NULL)
-        return EIO;
+        struct usfs_mount_data * resolved_mount_data = _mount_of (resolved_vnode);
+        struct usfs_node * resolved_node = _node_of (resolved_vnode);
+        if (resolved_mount_data == NULL || resolved_node == NULL)
+            return EIO;
 
-    if (resolved_node == NULL)
-        return EIO;
+        rc = retain_pager_vnode_locked (resolved_node, pager_token);
+        if (rc != 0)
+            return rc;
 
-    *file_vnode = resolved_vnode;
-    *mount_data = resolved_mount_data;
-    *node = resolved_node;
+        *file_vnode = resolved_vnode;
+        *mount_data = resolved_mount_data;
+        *node = resolved_node;
+    }
 
-    return 0;
+    return rc;
 }
 
 static int validate_buffer_transfer_request (const struct buf * buffer, uint64_t * offset, uint32_t * byte_count)
@@ -347,9 +343,13 @@ static int transfer_pager_buffer (const struct buf * buffer, struct usfs_pager_r
     struct usfs_node * node;
     memset (reference, 0, sizeof (*reference));
 
-    int rc = resolve_buffer_transfer_target (buffer, &file_vnode, &mount_data, &node);
+    uint64_t pager_token = 0;
+    int rc = resolve_buffer_transfer_target (buffer, &file_vnode, &mount_data, &node, &pager_token);
     if (rc != 0)
         return rc;
+
+    reference->file_vnode = file_vnode;
+    reference->retained = true;
 
     uint64_t offset;
     uint32_t byte_count;
@@ -358,7 +358,6 @@ static int transfer_pager_buffer (const struct buf * buffer, struct usfs_pager_r
     if (rc != 0)
         return rc;
 
-    struct usfs_open_state * open_state = NULL;
     const struct pager_transfer transfer = { .mount_data = mount_data,
                                              .node = node,
                                              .page_data = vm_att (buffer->b_xmemd.subspace_id, buffer->b_baddr),
@@ -366,13 +365,11 @@ static int transfer_pager_buffer (const struct buf * buffer, struct usfs_pager_r
                                              .offset = offset };
 
     if ((buffer->b_flags & B_READ) != 0)
-        rc = read_pager_buffer (transfer, &open_state);
+        rc = read_pager_buffer (transfer, pager_token);
     else
-        rc = write_pager_buffer (&transfer, &open_state);
+        rc = write_pager_buffer (&transfer, pager_token);
 
     vm_det (transfer.page_data);
-    reference->file_vnode = file_vnode;
-    reference->open_state = open_state;
 
     return rc;
 }
@@ -418,10 +415,10 @@ static void release_retained_references (const struct usfs_pager_reference * ref
 
     for (unsigned reference_index = 0; reference_index < reference_count; ++reference_index)
     {
-        if (references[reference_index].open_state == NULL)
+        if (!references[reference_index].retained)
             continue;
 
-        usfs_put_open_reference (references[reference_index].file_vnode, references[reference_index].open_state, true, NULL);
+        VNOP_RELE (references[reference_index].file_vnode);
     }
 
     vm_thrpgio_pop (&context);

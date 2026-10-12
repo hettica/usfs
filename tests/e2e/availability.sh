@@ -222,7 +222,7 @@ recovery_works || recovery_failure=1
 tap_ok "$recovery_failure" "fresh daemon channel recovers after timeout quarantine"
 
 pager_failure=0
-printf 'USFS-SCENARIO 1\nREAD hold 30000 1\n' >"$SCENARIO"
+printf 'USFS-SCENARIO 1\nPAGER_READ hold 30000 1\n' >"$SCENARIO"
 start_daemon 8192 || pager_failure=1
 "$CHUSFS" -l usfs0 \
     -a request_timeout_ms=5000 \

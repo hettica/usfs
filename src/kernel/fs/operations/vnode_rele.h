@@ -44,6 +44,7 @@ struct vnode_release_state
     uint64_t forgotten_node_id;                 // Protocol node whose lookup references are released.
     uint64_t forgotten_lookup_count;            // Lookup references transferred to the deferred FORGET.
     int cache_drained;                          // Whether the final cached pages were already flushed.
+    int cache_disposal_failed;                  // VMM may still address a quarantined node and lease.
 };
 
 static int should_drain_vnode_cache_locked (const struct vnode * file_vnode, const struct vnode_release_state * release_state)
@@ -126,14 +127,24 @@ static void release_vnode_reference (struct vnode * file_vnode, struct vnode_rel
     }
 }
 
-static void dispose_reclaimed_node (const struct vnode_release_state * release_state)
+static void dispose_reclaimed_node (struct vnode_release_state * release_state)
 {
     struct usfs_node * reclaimed_node = release_state->reclaimed_node;
 
     if (reclaimed_node == NULL)
         return;
 
-    dispose_cache_resources (reclaimed_node, release_state->reclaimed_mount);
+    if (dispose_cache_resources (reclaimed_node, release_state->reclaimed_mount) != 0)
+    {
+        write_synchronized_with (global_lock)
+        {
+            reclaimed_node->next = release_state->reclaimed_mount->failed_cache_nodes;
+            release_state->reclaimed_mount->failed_cache_nodes = reclaimed_node;
+            release_state->cache_disposal_failed = true;
+        }
+
+        return;
+    }
 
     write_synchronized_with (global_lock)
     {
@@ -156,6 +167,9 @@ static void forget_reclaimed_lookup_references (const struct vnode_release_state
 
 static void finish_reclaimed_mount (const struct vnode_release_state * release_state)
 {
+    if (release_state->cache_disposal_failed)
+        return;
+
     struct usfs_mount_data * stale_mount = NULL;
 
     if (release_state->reclaimed_mount != NULL)
@@ -179,7 +193,7 @@ int gn_rele (struct vnode * file_vnode)
     forget_reclaimed_lookup_references (&release_state);
     finish_reclaimed_mount (&release_state);
 
-    return 0;
+    return release_state.cache_disposal_failed ? EIO : 0;
 }
 
 #endif

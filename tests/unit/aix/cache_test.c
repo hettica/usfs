@@ -17,6 +17,7 @@ static struct usfs_open_state handle;
 static int locks, pageout_locks, bad_lock, submitted, waited, invalidated;
 static int submit_error, wait_error, move_error, move_limit, barrier, aborted;
 static int released, disposed, deleted;
+static int delete_error, release_error;
 static int connection_locks, moves, quarantine_move, truncate_timeout;
 static uint64_t backend_size, invalid_first, invalid_pages;
 static char cache_data[USFS_MAX_DATA * 2];
@@ -56,6 +57,15 @@ static struct usfs_open_state **usfs_open_state_link_locked(struct usfs_node *n,
 }
 static void usfs_open_state_discard(struct usfs_open_state *state) { (void)state; ++disposed; }
 static void usfs_vnode_hold_locked(struct vnode *vp, int reuse) { (void)reuse; ++vp->v_count; }
+static int _call_no_reply(struct usfs_mount_data *m, uint16_t opcode, uint64_t id,
+                          const void *body, uint32_t length, struct ucred *crp) {
+    (void)m; (void)id; (void)body; (void)length; (void)crp;
+    if (opcode == USFS_OP_PAGER_RELEASE) {
+        ++released;
+        return release_error;
+    }
+    return 0;
+}
 #undef VNOP_RELE
 #define VNOP_RELE(vp) (--(vp)->v_count)
 static void _send_release(struct usfs_mount_data *m, uint64_t id, uint64_t fh,
@@ -104,7 +114,7 @@ int vm_invalidatep(vmid_t sid, vpn_t first, ulong count) {
                count * PAGESIZE : sizeof(cache_data) - first * PAGESIZE);
     return 0;
 }
-int vms_delete(vmid_t sid) { (void)sid; check_vm_lock(); ++deleted; return 0; }
+int vms_delete(vmid_t sid) { (void)sid; check_vm_lock(); ++deleted; return delete_error; }
 int vm_uiomove(vmid_t sid, vmsize_t count, enum uio_rw direction, struct uio *uio) {
     (void)sid; check_vm_lock();
     ++moves;
@@ -128,6 +138,7 @@ static void reset(void) {
     flushed = flush_error = flush_wait_error = intervening_write = 0;
     flush_first = flush_pages = 0;
     node.gn = &gn; node.vn = &vn; node.nodeid = 1; node.opens = &handle;
+    node.pager_token = 7;
     node.cache_size = backend_size = PAGESIZE * 3;
     gn.gn_seg = 7; vn.v_gnode = &gn; vn.v_count = 1;
     mount_data.nodes = &node; mount_data.conn = &connection; connection.mounted_data = &mount_data;
@@ -135,7 +146,7 @@ static void reset(void) {
     handle.active = 1; handle.refs = 1; handle.flags = FREAD | FWRITE;
     locks = pageout_locks = bad_lock = submitted = waited = invalidated = 0;
     submit_error = wait_error = move_error = barrier = aborted = 0;
-    released = disposed = deleted = 0; move_limit = -1;
+    released = disposed = deleted = delete_error = release_error = 0; move_limit = -1;
     connection_locks = moves = quarantine_move = truncate_timeout = 0;
 }
 static struct uio make_uio(struct iovec *vector, void *data, size_t count, offset_t offset) {
@@ -157,22 +168,38 @@ static void write_during_eviction(void) {
 }
 int main(void) {
     struct tap_state tap; struct usfs_setattr_in change;
-    struct usfs_open_state *borrowed = NULL;
+    uint64_t retained_token = 0;
     struct iovec vector; struct uio uio; char data[16];
-    tap_plan(&tap, 35);
+    tap_plan(&tap, 38);
     reset();
-    tap_ok(&tap, ensure_cache_handle(&node, 0, &handle) == 0 &&
-           ensure_cache_handle(&node, 1, &handle) == 0 && handle.refs == 3 &&
-           handle.cache_refs == 2 && vn.v_count == 1,
-           "cache retains compatible backend handles without a vnode reference cycle");
-    handle.active = 0; --handle.refs;
-    tap_ok(&tap, borrow_cache_handle(&node, 1, &borrowed) == 0 && borrowed == &handle &&
-           handle.operation_refs == 1 && vn.v_count == 2,
-           "pageout can borrow a retained handle after the final descriptor closes");
-    --handle.refs; --handle.operation_refs; --vn.v_count;
-    dispose_cache_resources(&node, &mount_data);
-    tap_ok(&tap, released == 1 && disposed == 1 && deleted == 1 && node.opens == NULL &&
-           handle.refs == 0 && bad_lock == 0, "reclamation deletes the segment and releases a shared cache handle exactly once");
+    lock_write (&global_lock);
+    const int retain_rc = retain_pager_vnode_locked (&node, &retained_token);
+    lock_done (&global_lock);
+    tap_ok(&tap, retain_rc == 0 &&
+           retained_token == 7 && vn.v_count == 2 && handle.refs == 1,
+           "pageout retains the vnode and its explicit pager resource");
+    --vn.v_count;
+    vn.v_count = 0;
+    lock_write (&global_lock);
+    const int stale_retain_rc = retain_pager_vnode_locked (&node, &retained_token);
+    lock_done (&global_lock);
+    tap_ok(&tap, stale_retain_rc == EIO && vn.v_count == 0,
+           "pager cannot resurrect a vnode already entering reclamation");
+    vn.v_count = 1;
+    tap_ok(&tap, enable_pager_write(&node, NULL) == 0 && node.pager_write_enabled &&
+           node.pager_token == retained_token && released == 0,
+           "a cached write enables the existing object resource independently of opens");
+    tap_ok(&tap, dispose_cache_resources(&node, &mount_data) == 0 &&
+           released == 1 && deleted == 1 && node.pager_token == 0 && bad_lock == 0,
+           "reclamation deletes the segment before releasing its object resource");
+    reset(); delete_error = EIO;
+    tap_ok(&tap, dispose_cache_resources(&node, &mount_data) == EIO &&
+           deleted == 1 && released == 0 && gn.gn_seg == 7 && node.pager_token == 7 && aborted == 1,
+           "failed VMM deletion retains the segment and pager lease");
+    reset(); release_error = EIO;
+    tap_ok(&tap, dispose_cache_resources(&node, &mount_data) == 0 &&
+           deleted == 1 && released == 1 && gn.gn_seg == 0 && node.pager_token == 0 && aborted == 1,
+           "failed pager release quarantines the connection after segment deletion");
     reset(); wait_error = EIO;
     tap_ok(&tap, flush_cached_pages(&vn, 0, 0, 0, 0) == EIO && submitted == 1 && waited == 1,
            "cache sync submits dirty pages and collects writeback completion errors");
@@ -223,11 +250,11 @@ int main(void) {
            node.writeback_error == EIO, "eviction completion failure becomes sticky");
     reset(); handle.flags = FREAD;
     tap_ok(&tap, flush_cached_pages(&vn, 0, 0, 0, 1) == 0 && flushed == 1 && waited == 2 &&
-           node.cache_writer == NULL, "clean read-only cache eviction requires no writable handle");
+           !node.pager_write_enabled, "clean read-only cache eviction requires no write capability");
     reset();
     tap_ok(&tap, flush_cached_pages(&vn, 1, 1, PAGESIZE - 2, 1) == 0 && flushed == 0 && waited == 1,
            "a range without complete interior pages retains both boundaries");
-    reset(); (void)ensure_cache_handle(&node, 1, &handle);
+    reset(); node.pager_write_enabled = 1;
     memset(&change, 0, sizeof(change)); change.valid = USFS_SET_SIZE; change.size = PAGESIZE + 3;
     tap_ok(&tap, resize_cached_file(&vn, &change, 1, NULL) == 0 &&
            backend_size == change.size && node.cache_size == change.size &&
@@ -240,8 +267,8 @@ int main(void) {
            "regrowth does not expose old bytes from removed resident pages");
     reset(); handle.flags = FREAD; change.size = PAGESIZE + 3;
     tap_ok(&tap, resize_cached_file(&vn, &change, 0, NULL) == 0 &&
-           invalid_first == 1 && node.cache_writer == NULL && backend_size == change.size,
-           "path truncation of a read-only mapped segment needs no writable backing descriptor");
+           invalid_first == 1 && !node.pager_write_enabled && backend_size == change.size,
+           "path truncation of a read-only mapped segment needs no write capability");
     reset(); memset(data, 0, sizeof(data)); cache_data[4] = 'd';
     uio = make_uio(&vector, data, sizeof(data), 0);
     tap_ok(&tap, transfer_cached_data(&vn, 1, UIO_READ, 0, &uio, NULL) == 0 && data[4] == 'd',

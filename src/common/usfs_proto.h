@@ -51,7 +51,7 @@
  * the high 39 bits identify a snapshot, and the low 24 bits give its next
  * entry index. Zero starts a new snapshot. */
 /* Version 9 adds mount-scoped file identifiers and vnode reconstruction. */
-#define USFS_PROTOCOL_VERSION 10u
+#define USFS_PROTOCOL_VERSION 11u
 
 #define USFS_DIRECTORY_CURSOR_INDEX_BITS 24u
 #define USFS_DIRECTORY_CURSOR_INDEX_MASK ((1ull << USFS_DIRECTORY_CURSOR_INDEX_BITS) - 1ull)
@@ -103,7 +103,13 @@ enum usfs_opcode
     USFS_OP_CREATE_ATTR = 21, /* hdr(parent) + usfs_create_attr_in + name; out: usfs_create_out */
     USFS_OP_FORGET = 22,      /* hdr(object) + usfs_forget_in; out: acknowledged header only */
     USFS_OP_FID = 23,         /* hdr(object); out: usfs_fid_out */
-    USFS_OP_VGET = 24         /* hdr(root) + usfs_vget_in; out: usfs_vget_out */
+    USFS_OP_VGET = 24,        /* hdr(root) + usfs_vget_in; out: usfs_vget_out */
+    USFS_OP_PAGER_ACQUIRE = 25,
+    USFS_OP_PAGER_AUTHORIZE = 26,
+    USFS_OP_PAGER_ENABLE_WRITE = 27,
+    USFS_OP_PAGER_READ = 28,
+    USFS_OP_PAGER_WRITE = 29,
+    USFS_OP_PAGER_RELEASE = 30
     /* access is answered kernel-side; no opcode for it. */
 };
 
@@ -146,6 +152,38 @@ struct usfs_read_in
     uint64_t fh; /* file handle from usfs_open_out */
     uint64_t offset;
     uint32_t size; /* requested bytes, <= USFS_MAX_DATA */
+    uint32_t pad;
+};
+
+/* A pager token names one retained file object, independently of open files. */
+struct usfs_pager_token_in
+{
+    uint64_t token;
+};
+
+struct usfs_pager_authorize_in
+{
+    uint64_t token;  /* zero before the first acquire */
+    uint32_t access; /* USFS_PAGER_ACCESS_READ or USFS_PAGER_ACCESS_WRITE */
+    uint32_t pad;
+};
+
+#define USFS_PAGER_ACCESS_READ  1u
+#define USFS_PAGER_ACCESS_WRITE 2u
+
+struct usfs_pager_read_in
+{
+    uint64_t token;
+    uint64_t offset;
+    uint32_t size;
+    uint32_t pad;
+};
+
+struct usfs_pager_write_in
+{
+    uint64_t token;
+    uint64_t offset;
+    uint32_t size;
     uint32_t pad;
 };
 
@@ -372,6 +410,11 @@ struct usfs_open_out
     uint32_t pad;
 };
 
+struct usfs_pager_acquire_out
+{
+    uint64_t token; /* nonzero client-owned wire identity */
+};
+
 /* CREATE reply: the new object plus the handle it was opened with, since
  * vnop_create is required to leave the file open. */
 struct usfs_create_out
@@ -427,8 +470,7 @@ struct usfs_dirent
     /* char name[]; NUL-terminated, padded with zeros up to reclen */
 };
 
-#define USFS_DIRENT_SIZE(namelen) \
-    ((uint16_t)((sizeof (struct usfs_dirent) + (namelen) + 1u + 7u) & ~7u))
+#define USFS_DIRENT_SIZE(namelen) ((uint16_t)((sizeof (struct usfs_dirent) + (namelen) + 1u + 7u) & ~7u))
 
 /* ---------------------------------------------------------------------------
  * Device ioctl: daemon setup handshake.
@@ -468,8 +510,7 @@ struct usfs_dev_info
  * the explicit padding did not provide, so the compiler inserted its own --
  * exactly the thing these declarations exist to prevent. Each of these fails
  * the build in that case, in both compilations. */
-#define USFS_CHECK_SIZE(name) \
-    typedef char usfs_size_check_##name[((sizeof (struct name) % 8u) == 0) ? 1 : -1]
+#define USFS_CHECK_SIZE(name) typedef char usfs_size_check_##name[((sizeof (struct name) % 8u) == 0) ? 1 : -1]
 
 USFS_CHECK_SIZE (usfs_in_hdr);
 USFS_CHECK_SIZE (usfs_open_in);

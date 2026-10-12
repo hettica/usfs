@@ -26,6 +26,12 @@
 #define NAMESPACE_RELEASE_TIMEOUT_SECONDS   30
 #define NAMESPACE_RELEASE_POLL_MICROSECONDS 10000
 
+enum mt_pager_object_id
+{
+    MT_PAGER_SLOW_OBJECT_ID = 10,
+    MT_PAGER_OTHER_OBJECT_ID = 11
+};
+
 static pthread_mutex_t state_lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned int active_reads;
 static unsigned int maximum_reads;
@@ -231,7 +237,7 @@ static int mt_getattr (const struct usfs_client_request * request, const char * 
         attributes->st_mode = S_IFREG | 0444;
         attributes->st_nlink = 1;
         attributes->st_size = (off_t)(sizeof (contents) - 1);
-        attributes->st_ino = strcmp (path, "/slow") == 0 ? 10 : 11;
+        attributes->st_ino = strcmp (path, "/slow") == 0 ? MT_PAGER_SLOW_OBJECT_ID : MT_PAGER_OTHER_OBJECT_ID;
         return 0;
     }
     return -ENOENT;
@@ -429,11 +435,99 @@ static ssize_t mt_read (
     return (int)size;
 }
 
+static int mt_pager_acquire (
+    const struct usfs_client_request * request,
+    const char * path,
+    struct usfs_pager_file * pager_file
+)
+{
+    const struct usfs_object_identity * identity = usfs_request_object_identity (request);
+    if (identity == NULL || !identity->has_backend_identity || identity->backend_type != S_IFREG)
+        return -ESTALE;
+
+    const int is_slow = path != NULL && strcmp (path, "/slow") == 0 &&
+        identity->backend_ino == MT_PAGER_SLOW_OBJECT_ID;
+    const int is_other = path != NULL && strcmp (path, "/other") == 0 &&
+        identity->backend_ino == MT_PAGER_OTHER_OBJECT_ID;
+    if (!is_slow && !is_other)
+        return -ENOSYS;
+
+    pager_file->value = identity->backend_ino;
+
+    return 0;
+}
+
+static int mt_pager_authorize (
+    const struct usfs_client_request * request,
+    const enum usfs_pager_access access
+)
+{
+    const struct usfs_object_identity * identity = usfs_request_object_identity (request);
+    if (identity == NULL || !identity->has_backend_identity)
+        return -ESTALE;
+
+    if (identity->backend_ino != MT_PAGER_SLOW_OBJECT_ID &&
+        identity->backend_ino != MT_PAGER_OTHER_OBJECT_ID)
+        return -ENOSYS;
+
+    return access == USFS_PAGER_READ_ACCESS ? 0 : -EACCES;
+}
+
+static ssize_t mt_pager_read (
+    const struct usfs_client_request * request,
+    char * buffer,
+    const size_t size,
+    const off_t offset,
+    struct usfs_pager_file * pager_file
+)
+{
+    (void)request;
+
+    if (pager_file->value != MT_PAGER_SLOW_OBJECT_ID &&
+        pager_file->value != MT_PAGER_OTHER_OBJECT_ID)
+        return -ESTALE;
+
+    if (offset < 0)
+        return -EINVAL;
+
+    const size_t content_length = sizeof (contents) - 1u;
+    if ((uint64_t)offset >= content_length)
+        return 0;
+
+    size_t available = content_length - (size_t)offset;
+    if (available > size)
+        available = size;
+
+    memcpy (buffer, contents + offset, available);
+
+    return (ssize_t)available;
+}
+
+static int mt_pager_release (
+    const struct usfs_client_request * request,
+    struct usfs_pager_file * pager_file
+)
+{
+    (void)request;
+
+    if (pager_file->value != MT_PAGER_SLOW_OBJECT_ID &&
+        pager_file->value != MT_PAGER_OTHER_OBJECT_ID)
+        return -ESTALE;
+
+    pager_file->value = 0;
+
+    return 0;
+}
+
 static const struct usfs_operations mt_operations = {
     .getattr = mt_getattr,
     .readdir = mt_readdir,
     .open = mt_open,
     .read = mt_read,
+    .pager_acquire = mt_pager_acquire,
+    .pager_authorize = mt_pager_authorize,
+    .pager_read = mt_pager_read,
+    .pager_release = mt_pager_release,
     .shutdown = mt_destroy,
 };
 

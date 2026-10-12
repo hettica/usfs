@@ -241,7 +241,7 @@ int usfs_opcode_valid (const uint16_t opcode)
     if (opcode < (uint16_t)USFS_OP_LOOKUP)
         return false;
 
-    return opcode <= (uint16_t)USFS_OP_VGET;
+    return opcode <= (uint16_t)USFS_OP_PAGER_RELEASE;
 }
 
 int usfs_reply_errno_valid (const int32_t error)

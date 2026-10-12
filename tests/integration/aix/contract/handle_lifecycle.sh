@@ -26,6 +26,8 @@ REQUESTS=$BASE/requests.log
 DAEMON_LOG=$BASE/daemon.log
 BARRIERS=$BASE/barriers
 DAEMON_PID=0
+PAGER_READ_OPCODE=28
+PAGER_RELEASE_OPCODE=30
 
 is_mounted()
 {
@@ -251,12 +253,20 @@ old_handle=$(awk '$1 == 3 { print $2; exit }' "$REQUESTS")
 new_handle=$(awk '$1 == 3 { n++; if (n == 2) { print $2; exit } }' "$REQUESTS")
 failure=0
 [ -n "$old_handle" ] && [ -n "$new_handle" ] || failure=1
-grep -q "^HANDLE 4 $old_handle\$" "$REQUESTS" || failure=1
 [ "$(grep -c "^HANDLE 5 $old_handle\$" "$REQUESTS")" -eq 1 ] || failure=1
 [ "$(grep -c "^HANDLE 5 $new_handle\$" "$REQUESTS")" -eq 1 ] || failure=1
-[ "$(awk '$1 == "HANDLE" && $2 == 5 { print $3; exit }' "$REQUESTS")" = "$new_handle" ] || failure=1
+awk -v old="$old_handle" -v replacement="$new_handle" \
+    -v pager_read_opcode="$PAGER_READ_OPCODE" -v pager_release_opcode="$PAGER_RELEASE_OPCODE" '
+    $1 == "HANDLE" && $2 == 5 && $3 == old { old_release = NR }
+    $1 == "HANDLE" && $2 == 5 && $3 == replacement { replacement_release = NR }
+    $1 == pager_read_opcode { pager_read = NR }
+    $1 == pager_release_opcode { pager_release = NR }
+    END { exit !(old_release && replacement_release && pager_read && pager_release &&
+                 old_release < pager_read && pager_read < replacement_release &&
+                 replacement_release < pager_release) }
+' "$REQUESTS" || failure=1
 [ "$failure" -eq 0 ] || sed 's/^/# /' "$REQUESTS"
-tap_ok "$failure" "replacement releases before final unmap releases the original handle exactly once"
+tap_ok "$failure" "closed handles release independently while the pager lease survives faults until segment teardown"
 stop_daemon
 
 for operation in open create; do

@@ -18,7 +18,7 @@
 extern "C" {
 #endif
 
-#define USFS_CLIENT_API_VERSION     2u
+#define USFS_CLIENT_API_VERSION     3u
 #define USFS_CLIENT_DEFAULT_WORKERS 10u
 #define USFS_CLIENT_MAX_WORKERS     64u
 #define USFS_TIME_NOW               (-2L)
@@ -69,6 +69,17 @@ struct usfs_open_file
 {
     uint64_t value; // Backend-owned handle value; zero is valid.
     int open_flags; // POSIX open flags supplied to the backend.
+};
+
+struct usfs_pager_file
+{
+    uint64_t value; // Backend-owned stable object resource; zero is valid.
+};
+
+enum usfs_pager_access
+{
+    USFS_PAGER_READ_ACCESS = 1u,
+    USFS_PAGER_WRITE_ACCESS = 2u
 };
 
 /* Borrowed mount-scoped identity for an object request. The callback path is
@@ -179,7 +190,17 @@ struct usfs_operations
     int (*flush) (const struct usfs_client_request *, const char *, struct usfs_open_file *);                   // Flush per-open state.
     int (*fsync) (const struct usfs_client_request *, const char *, int, struct usfs_open_file *); // Synchronize file contents or metadata.
     int (*release) (const struct usfs_client_request *, const char *, struct usfs_open_file *);    // Release one regular-file handle.
-    int (*syncfs) (const struct usfs_client_request *, const char *);                              // Synchronize the filesystem.
+
+    /* These callbacks own one file object for the entire VMM segment lifetime.
+     * authorize runs for each mapping with its caller's credentials. Page I/O
+     * has zero credentials and no path; it must use only the acquired resource. */
+    int (*pager_acquire) (const struct usfs_client_request *, const char *, struct usfs_pager_file *);
+    int (*pager_authorize) (const struct usfs_client_request *, enum usfs_pager_access);
+    int (*pager_enable_write) (const struct usfs_client_request *, struct usfs_pager_file *);
+    ssize_t (*pager_read) (const struct usfs_client_request *, char *, size_t, off_t, struct usfs_pager_file *);
+    ssize_t (*pager_write) (const struct usfs_client_request *, const char *, size_t, off_t, struct usfs_pager_file *);
+    int (*pager_release) (const struct usfs_client_request *, struct usfs_pager_file *);
+    int (*syncfs) (const struct usfs_client_request *, const char *); // Synchronize the filesystem.
 
     int (*opendir) (const struct usfs_client_request *, const char *, struct usfs_open_file *); // Open a directory and supply its backend handle.
     // Add the complete listing to the sink; the client owns cursor management.

@@ -81,6 +81,10 @@ static int full_reads;
 static int wide_readdir;
 static int force_sync_rules;
 static uint64_t scenario_file_size = 13;
+static uint64_t scenario_pager_token;
+static uint64_t scenario_pager_node;
+static uint64_t next_pager_token;
+static int scenario_pager_write_enabled;
 
 struct test_node
 {
@@ -411,10 +415,16 @@ static int opcode_from_name (const char * name, uint16_t * opcode)
         "CREATE_ATTR",
         "FORGET",
         "FID",
-        "VGET"
+        "VGET",
+        "PAGER_ACQUIRE",
+        "PAGER_AUTHORIZE",
+        "PAGER_ENABLE_WRITE",
+        "PAGER_READ",
+        "PAGER_WRITE",
+        "PAGER_RELEASE"
     };
 
-    for (unsigned opcode_index = 1; opcode_index <= USFS_OP_VGET; ++opcode_index)
+    for (unsigned opcode_index = 1; opcode_index <= USFS_OP_PAGER_RELEASE; ++opcode_index)
     {
         if (strcmp (name, names[opcode_index]) == 0)
         {
@@ -781,6 +791,7 @@ static int request_body_valid (const uint16_t opcode, const unsigned char * body
         case USFS_OP_OPEN:
             return body_length == sizeof (struct usfs_open_in);
         case USFS_OP_READ:
+        case USFS_OP_PAGER_READ:
             return read_request_valid (body, body_length);
         case USFS_OP_RELEASE:
             return body_length == sizeof (struct usfs_release_in);
@@ -822,7 +833,15 @@ static int request_body_valid (const uint16_t opcode, const unsigned char * body
         case USFS_OP_SETATTR:
             return setattr_request_valid (body, body_length);
         case USFS_OP_WRITE:
+        case USFS_OP_PAGER_WRITE:
             return write_request_valid (body, body_length);
+        case USFS_OP_PAGER_ACQUIRE:
+            return body_length == 0;
+        case USFS_OP_PAGER_AUTHORIZE:
+            return body_length == sizeof (struct usfs_pager_authorize_in);
+        case USFS_OP_PAGER_ENABLE_WRITE:
+        case USFS_OP_PAGER_RELEASE:
+            return body_length == sizeof (struct usfs_pager_token_in);
         case USFS_OP_FLUSH:
             return flush_request_valid (body, body_length);
         case USFS_OP_FSYNC:
@@ -866,7 +885,7 @@ static int request_valid (const unsigned char * request, const size_t request_le
     if (request_header->opcode < USFS_OP_LOOKUP)
         return false;
 
-    if (request_header->opcode > USFS_OP_VGET)
+    if (request_header->opcode > USFS_OP_PAGER_RELEASE)
         return false;
 
     if (request_header->opcode == USFS_OP_VGET && request_header->nodeid != USFS_ROOT_ID)
@@ -1258,6 +1277,76 @@ static size_t success_write_body (const struct usfs_in_hdr * request_header, uns
     return sizeof (*write_out);
 }
 
+static size_t success_pager_body (const struct usfs_in_hdr * request_header, unsigned char * body, int * reply_error)
+{
+    const uint64_t nodeid = request_header->nodeid;
+
+    if (request_header->opcode == USFS_OP_PAGER_ACQUIRE)
+    {
+        if (scenario_pager_token != 0 || next_pager_token == UINT64_MAX)
+        {
+            *reply_error = scenario_pager_token != 0 ? EBUSY : EOVERFLOW;
+            return 0;
+        }
+
+        scenario_pager_token = ++next_pager_token;
+        scenario_pager_node = nodeid;
+        scenario_pager_write_enabled = false;
+        ((struct usfs_pager_acquire_out *)body)->token = scenario_pager_token;
+
+        return sizeof (struct usfs_pager_acquire_out);
+    }
+
+    if (request_header->opcode == USFS_OP_PAGER_AUTHORIZE)
+    {
+        const struct usfs_pager_authorize_in * request = (const struct usfs_pager_authorize_in *)(request_header + 1);
+        if (request->pad != 0 || (request->access != USFS_PAGER_ACCESS_READ && request->access != USFS_PAGER_ACCESS_WRITE) ||
+            request->token == 0 || request->token != scenario_pager_token || nodeid != scenario_pager_node)
+            *reply_error = ESTALE;
+
+        return 0;
+    }
+
+    uint64_t token = 0;
+    if (request_header->opcode == USFS_OP_PAGER_READ)
+        token = ((const struct usfs_pager_read_in *)(request_header + 1))->token;
+    else if (request_header->opcode == USFS_OP_PAGER_WRITE)
+        token = ((const struct usfs_pager_write_in *)(request_header + 1))->token;
+    else
+        token = ((const struct usfs_pager_token_in *)(request_header + 1))->token;
+
+    if (token == 0 || token != scenario_pager_token || nodeid != scenario_pager_node)
+    {
+        *reply_error = ESTALE;
+        return 0;
+    }
+
+    switch (request_header->opcode)
+    {
+        case USFS_OP_PAGER_ENABLE_WRITE:
+            scenario_pager_write_enabled = true;
+            return 0;
+        case USFS_OP_PAGER_READ:
+            return success_read_body (request_header, body);
+        case USFS_OP_PAGER_WRITE:
+            if (!scenario_pager_write_enabled)
+            {
+                *reply_error = EACCES;
+                return 0;
+            }
+
+            return success_write_body (request_header, body);
+        case USFS_OP_PAGER_RELEASE:
+            scenario_pager_token = 0;
+            scenario_pager_node = 0;
+            scenario_pager_write_enabled = false;
+            return 0;
+        default:
+            *reply_error = EINVAL;
+            return 0;
+    }
+}
+
 static size_t success_body (const struct usfs_in_hdr * request_header, unsigned char * body, const size_t capacity, int * reply_error)
 {
     (void)capacity;
@@ -1298,6 +1387,13 @@ static size_t success_body (const struct usfs_in_hdr * request_header, unsigned 
             return success_entry_body (request_header, body, reply_error);
         case USFS_OP_WRITE:
             return success_write_body (request_header, body);
+        case USFS_OP_PAGER_ACQUIRE:
+        case USFS_OP_PAGER_AUTHORIZE:
+        case USFS_OP_PAGER_ENABLE_WRITE:
+        case USFS_OP_PAGER_READ:
+        case USFS_OP_PAGER_WRITE:
+        case USFS_OP_PAGER_RELEASE:
+            return success_pager_body (request_header, body, reply_error);
         case USFS_OP_FLUSH:
         case USFS_OP_FSYNC:
         case USFS_OP_SYNCFS:
@@ -1356,13 +1452,13 @@ static void corrupt_operation_body (const enum action action, const struct usfs_
                 ((struct usfs_attr_out *)body)->parent = 0;
             break;
         case ACTION_INVALID_WRITE_COUNT:
-            if (request_header->opcode == USFS_OP_WRITE &&
+            if ((request_header->opcode == USFS_OP_WRITE || request_header->opcode == USFS_OP_PAGER_WRITE) &&
                 body_length >= sizeof (struct usfs_write_out))
                 ((struct usfs_write_out *)body)->written =
                     ((const struct usfs_write_in *)(request_header + 1))->size + 1u;
             break;
         case ACTION_INVALID_WRITE_OFFSET:
-            if (request_header->opcode == USFS_OP_WRITE &&
+            if ((request_header->opcode == USFS_OP_WRITE || request_header->opcode == USFS_OP_PAGER_WRITE) &&
                 body_length >= sizeof (struct usfs_write_out))
             {
                 ((struct usfs_write_out *)body)->written = 1;
@@ -1393,7 +1489,7 @@ static void corrupt_operation_body (const enum action action, const struct usfs_
                 ((struct usfs_open_out *)body)->pad = 1;
             break;
         case ACTION_SHORT_WRITE:
-            if (request_header->opcode == USFS_OP_WRITE &&
+            if ((request_header->opcode == USFS_OP_WRITE || request_header->opcode == USFS_OP_PAGER_WRITE) &&
                 body_length >= sizeof (struct usfs_write_out))
                 ((struct usfs_write_out *)body)->written =
                     ((const struct usfs_write_in *)(request_header + 1))->size / 2u;
@@ -1468,9 +1564,11 @@ static void log_request (const struct usfs_in_hdr * request_header)
     switch (request_header->opcode)
     {
         case USFS_OP_READ:
+        case USFS_OP_PAGER_READ:
             log_read_request (request_header);
             break;
         case USFS_OP_WRITE:
+        case USFS_OP_PAGER_WRITE:
             log_write_request (request_header);
             break;
         case USFS_OP_READDIR:
@@ -1658,7 +1756,7 @@ static size_t prepare_reply_body (const struct rule * rule, const struct usfs_in
             body_length = 0;
     }
     if (rule != NULL && rule->action == ACTION_INVALID_READ_COUNT &&
-        request_header->opcode == USFS_OP_READ &&
+        (request_header->opcode == USFS_OP_READ || request_header->opcode == USFS_OP_PAGER_READ) &&
         body_length < reply_capacity - sizeof (*reply_header))
     {
         reply[sizeof (*reply_header) + body_length] = 0xee;

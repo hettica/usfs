@@ -618,6 +618,47 @@ static int get_filesystem_statistics (const struct usfs_client_request * request
     return 0;
 }
 
+static int acquire_pager_file (const struct usfs_client_request * request, const char * path, struct usfs_pager_file * pager_file)
+{
+    int descriptor = -1;
+    const int rc = get_operation_file_descriptor (request, path, NULL, &descriptor);
+    if (rc != 0)
+        return rc;
+
+    pager_file->value = (uint64_t)descriptor;
+
+    return 0;
+}
+
+static int authorize_pager_mapping (const struct usfs_client_request * request, const enum usfs_pager_access access)
+{
+    (void)request;
+
+    return access == USFS_PAGER_READ_ACCESS ? 0 : -EROFS;
+}
+
+static ssize_t read_pager_file (
+    const struct usfs_client_request * request,
+    char * buffer,
+    const size_t requested_bytes,
+    const off_t offset,
+    struct usfs_pager_file * pager_file
+)
+{
+    (void)request;
+
+    const ssize_t bytes_read = pread ((int)pager_file->value, buffer, requested_bytes, offset);
+
+    return bytes_read == -1 ? -errno : bytes_read;
+}
+
+static int release_pager_file (const struct usfs_client_request * request, struct usfs_pager_file * pager_file)
+{
+    (void)request;
+
+    return close ((int)pager_file->value) == 0 ? 0 : -errno;
+}
+
 static const struct usfs_operations filesystem_operations = {
     .initialize = initialize_filesystem,
     .shutdown = destroy_filesystem,
@@ -631,6 +672,10 @@ static const struct usfs_operations filesystem_operations = {
     .fsync = synchronize_file,
     .fsyncdir = synchronize_file,
     .release = release_file,
+    .pager_acquire = acquire_pager_file,
+    .pager_authorize = authorize_pager_mapping,
+    .pager_read = read_pager_file,
+    .pager_release = release_pager_file,
     .statfs = get_filesystem_statistics,
     .syncfs = synchronize_filesystem,
 };

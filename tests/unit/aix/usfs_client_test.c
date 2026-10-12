@@ -4163,11 +4163,66 @@ static void test_worker_capacity_notifications (struct tap_state * tap)
     destroy_worker_runtime (&runtime);
 }
 
+static int test_pager_authorize (const struct usfs_client_request * request, enum usfs_pager_access access)
+{
+    (void)request;
+    return access == USFS_PAGER_READ_ACCESS ? 0 : -EACCES;
+}
+
+static void test_pager_tokens (struct tap_state * tap)
+{
+    struct usfs_operations operations = { .pager_authorize = test_pager_authorize };
+    struct usfs_client * client = new_test_client (&operations, sizeof (operations), NULL);
+    if (client == NULL)
+        abort ();
+
+    client->fd = 73;
+
+    struct client_node * node = find_or_create_node (client, USFS_ROOT_ID, "pager-file", NULL);
+    struct client_node * other = find_or_create_node (client, USFS_ROOT_ID, "other-file", NULL);
+    if (node == NULL || other == NULL)
+        abort ();
+
+    struct usfs_in_hdr header = { .nodeid = node->id };
+    struct request_context context = { .client = client, .header = &header };
+
+    tap_ok (tap, handle_pager_acquire_request (&context, 0) == 0 && captured_reply.error == ENOSYS,
+            "missing pager callbacks reject acquisition before segment creation");
+
+    struct client_pager pager = { .token = 71 };
+    node->pager = &pager;
+
+    tap_ok (tap, find_request_pager (client, node->id, pager.token) == &pager,
+            "pager token resolves only on its owning object");
+    tap_ok (tap, find_request_pager (client, other->id, pager.token) == NULL &&
+                 find_request_pager (client, node->id, pager.token + 1) == NULL,
+            "pager token rejects another node and an incorrect generation");
+
+    struct usfs_pager_authorize_in authorization = { .token = pager.token, .access = USFS_PAGER_ACCESS_READ };
+    tap_ok (tap, handle_pager_authorize_request (&context, (const char *)&authorization, sizeof (authorization)) == 0 &&
+                 captured_reply.error == 0,
+            "each mapping authorization accepts the owning pager token");
+
+    authorization.token = 0;
+    tap_ok (tap, handle_pager_authorize_request (&context, (const char *)&authorization, sizeof (authorization)) == 0 &&
+                 captured_reply.error == ESTALE,
+            "mapping authorization rejects a missing pager token");
+
+    struct usfs_pager_write_in write_request = { .token = pager.token };
+    tap_ok (tap, handle_pager_write_request (&context, (const char *)&write_request, sizeof (write_request)) == 0 &&
+                 captured_reply.error == EACCES,
+            "pager write requires the explicit write enable step");
+
+    node->pager = NULL;
+    (void)usfs_client_destroy (&client);
+}
+
 int main (void)
 {
     struct tap_state tap;
-    tap_plan (&tap, 272);
+    tap_plan (&tap, 278);
     test_worker_capacity_notifications (&tap);
+    test_pager_tokens (&tap);
     test_native_api_contract (&tap);
     tap_ok (&tap, get_callback_request () == NULL, "no callback context leaks outside callback scope");
     test_lifecycle_context (&tap);

@@ -1805,6 +1805,83 @@ static ssize_t memfs_write (
     MEMFS_LOCKED_CALL (write_file_locked (path, buffer, requested_bytes, offset, file_info));
 }
 
+static int acquire_pager_file_locked (const struct usfs_client_request * request, const char * path, struct usfs_pager_file * pager_file)
+{
+    struct mem_inode * inode = find_operation_inode (request, path, NULL);
+    if (inode == NULL)
+        return missing_operation_inode_error (request);
+
+    if (!S_ISREG (inode->mode))
+        return -EINVAL;
+
+    const uint64_t handle_id = open_file_handle (inode, O_RDWR);
+    if (handle_id == 0)
+        return -ENOMEM;
+
+    pager_file->value = handle_id + 1;
+
+    return 0;
+}
+
+static int acquire_pager_file (const struct usfs_client_request * request, const char * path, struct usfs_pager_file * pager_file)
+{
+    MEMFS_LOCKED_CALL (acquire_pager_file_locked (request, path, pager_file));
+}
+
+static int authorize_pager_mapping (const struct usfs_client_request * request, const enum usfs_pager_access access)
+{
+    (void)request;
+
+    return access == USFS_PAGER_READ_ACCESS || access == USFS_PAGER_WRITE_ACCESS ? 0 : -EINVAL;
+}
+
+static int enable_pager_write (const struct usfs_client_request * request, struct usfs_pager_file * pager_file)
+{
+    (void)request;
+    (void)pager_file;
+
+    return 0;
+}
+
+static ssize_t read_pager_file (
+    const struct usfs_client_request * request,
+    char * buffer,
+    const size_t requested_bytes,
+    const off_t offset,
+    struct usfs_pager_file * pager_file
+)
+{
+    (void)request;
+
+    struct usfs_open_file file_info = { .value = pager_file->value, .open_flags = O_RDWR };
+
+    MEMFS_LOCKED_CALL (read_file_locked (NULL, buffer, requested_bytes, offset, &file_info));
+}
+
+static ssize_t write_pager_file (
+    const struct usfs_client_request * request,
+    const char * buffer,
+    const size_t requested_bytes,
+    const off_t offset,
+    struct usfs_pager_file * pager_file
+)
+{
+    (void)request;
+
+    struct usfs_open_file file_info = { .value = pager_file->value, .open_flags = O_RDWR };
+
+    MEMFS_LOCKED_CALL (write_file_locked (NULL, buffer, requested_bytes, offset, &file_info));
+}
+
+static int release_pager_file (const struct usfs_client_request * request, struct usfs_pager_file * pager_file)
+{
+    (void)request;
+
+    struct usfs_open_file file_info = { .value = pager_file->value, .open_flags = O_RDWR };
+
+    MEMFS_LOCKED_CALL (release_file_locked (NULL, &file_info));
+}
+
 static int change_file_permissions (
     const struct usfs_client_request * request,
     const char * path,
@@ -1885,6 +1962,12 @@ static const struct usfs_operations filesystem_operations = {
     .flush = flush_file,
     .fsync = synchronize_file,
     .release = memfs_release,
+    .pager_acquire = acquire_pager_file,
+    .pager_authorize = authorize_pager_mapping,
+    .pager_enable_write = enable_pager_write,
+    .pager_read = read_pager_file,
+    .pager_write = write_pager_file,
+    .pager_release = release_pager_file,
     .statfs = memfs_statfs,
     .syncfs = synchronize_filesystem,
     .export_id = export_object_id,

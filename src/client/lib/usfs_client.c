@@ -280,6 +280,7 @@ struct client_node
     uint64_t id;                        // Stable wire node identifier.
     uint64_t lookup_refs;               // Kernel lookup references.
     uint64_t open_refs;                 // Open handle references.
+    struct client_pager * pager;        // Resource retained while the vnode has a VMM segment.
     uint64_t operation_refs;            // In-flight request references.
     uint64_t ancestor_refs;             // References from named descendants.
     uint64_t cache_refs;                // Directory snapshot references.
@@ -305,6 +306,13 @@ struct client_handle
     uint64_t wire_fh;            // Nonzero opaque handle sent to the kernel, including for backend fh zero.
     int flags;                   // Open flags supplied to callbacks.
     int isdir;                   // Whether this is a directory handle.
+};
+
+struct client_pager
+{
+    uint64_t token;                  // Client-owned nonzero wire token.
+    struct usfs_pager_file resource; // Backend-owned stable file object.
+    int write_enabled;               // Backend accepted page writeback.
 };
 
 struct client_dircache_key
@@ -368,6 +376,7 @@ struct usfs_client
     struct client_node * gc_pending;                           // Objects pending collection.
     struct client_handle * handles;                            // Open callback handles.
     uint64_t handle_generation;                                // Next handle lifetime sequence number.
+    uint64_t pager_generation;                                 // Next pager token, never reused.
     uint64_t hidden_generation;                                // Next candidate hidden-name sequence number.
     struct client_dircache dircache[CLIENT_DIRCACHE_SLOTS];    // Owned directory snapshot slots.
     uint64_t dircache_seq;                                     // Next snapshot recency sequence number.
@@ -559,6 +568,9 @@ static int request_mutates_namespace (const uint16_t opcode)
         case USFS_OP_SYMLINK:
         case USFS_OP_LINK:
         case USFS_OP_RELEASE:
+        case USFS_OP_PAGER_ACQUIRE:
+        case USFS_OP_PAGER_ENABLE_WRITE:
+        case USFS_OP_PAGER_RELEASE:
             return true;
         default:
             return false;
@@ -1188,6 +1200,9 @@ static int node_has_references (const struct client_node * node)
     if (node->open_refs != 0)
         return true;
 
+    if (node->pager != NULL)
+        return true;
+
     if (node->operation_refs != 0)
         return true;
 
@@ -1278,12 +1293,7 @@ static uint64_t select_wire_handle (const struct usfs_client * client, const uin
     }
 }
 
-static int backend_handle_value (
-    struct usfs_client * client,
-    const uint64_t nodeid,
-    const uint64_t wire_handle,
-    uint64_t * backend_handle
-)
+static int backend_handle_value (struct usfs_client * client, const uint64_t nodeid, const uint64_t wire_handle, uint64_t * backend_handle)
 {
     int result = -ESTALE;
 
@@ -1822,18 +1832,14 @@ static void set_request_context (struct usfs_client * client, const struct usfs_
     context->has_object_identity = false;
 }
 
-static void set_request_object_identity (
-    const uint16_t opcode,
-    const uint64_t nodeid,
-    const struct client_node * node
-)
+static void set_request_object_identity (const uint16_t opcode, const uint64_t nodeid, const struct client_node * node)
 {
     struct usfs_client_request * request = get_callback_request ();
     struct usfs_object_identity * identity = &request->object_identity;
 
-    request->has_object_identity = opcode == USFS_OP_GETATTR || opcode == USFS_OP_SETATTR ||
-        opcode == USFS_OP_FSYNC || opcode == USFS_OP_READDIR || opcode == USFS_OP_OPEN ||
-        opcode == USFS_OP_RELEASE;
+    request->has_object_identity = opcode == USFS_OP_GETATTR || opcode == USFS_OP_SETATTR || opcode == USFS_OP_FSYNC || opcode == USFS_OP_READDIR ||
+                                   opcode == USFS_OP_OPEN || opcode == USFS_OP_RELEASE ||
+                                   (opcode >= USFS_OP_PAGER_ACQUIRE && opcode <= USFS_OP_PAGER_RELEASE);
 
     if (!request->has_object_identity)
         return;
@@ -1848,7 +1854,6 @@ static void set_request_object_identity (
         identity->backend_type = node->backend_type;
         identity->has_backend_identity = node->backend_ino != 0 && node->backend_type != 0;
     }
-
 }
 
 static int read_backend_attributes (const struct usfs_client * client, const char * path, struct stat * metadata, struct usfs_open_file * file_info)
@@ -4015,6 +4020,221 @@ static int handle_write_request (const struct request_context * context, const c
     return write_file_and_reply (context, resolved.path, &request, data);
 }
 
+static int cleanup_hidden_aliases (struct usfs_client * client, struct client_node * node, const int shutdown);
+
+static struct client_pager * find_request_pager (struct usfs_client * client, const uint64_t nodeid, const uint64_t token)
+{
+    struct client_pager * pager = NULL;
+
+    pthread_mutex_lock (&client->node_lock);
+
+    struct client_node * node = find_node_by_id (client, nodeid);
+    if (node != NULL && node->pager != NULL && node->pager->token == token)
+        pager = node->pager;
+
+    pthread_mutex_unlock (&client->node_lock);
+
+    return pager;
+}
+
+static int handle_pager_acquire_request (const struct request_context * context, const uint32_t payload_length)
+{
+    struct usfs_client * client = context->client;
+    const uint64_t nodeid = context->header->nodeid;
+
+    if (payload_length != 0)
+        return send_reply (context, EINVAL, NULL, 0);
+
+    if (client->ops.pager_acquire == NULL || client->ops.pager_authorize == NULL || client->ops.pager_read == NULL ||
+        client->ops.pager_release == NULL)
+        return send_reply (context, ENOSYS, NULL, 0);
+
+    pthread_mutex_lock (&client->node_lock);
+    struct client_node * node = find_node_by_id (client, nodeid);
+    const int unavailable = node == NULL || node->pager != NULL || client->pager_generation == UINT64_MAX;
+    pthread_mutex_unlock (&client->node_lock);
+
+    if (unavailable)
+        return send_reply (context, node == NULL ? ESTALE : EOVERFLOW, NULL, 0);
+
+    struct client_pager * pager = calloc (1, sizeof (*pager));
+    if (pager == NULL)
+        return send_reply (context, ENOMEM, NULL, 0);
+
+    struct resolved_handle_path resolved = { 0 };
+    const int path_rc = resolve_node_handle_path (client, nodeid, 0, &resolved);
+    if (path_rc != 0)
+    {
+        free (pager);
+        return send_reply (context, -path_rc, NULL, 0);
+    }
+
+    const int callback_rc = client->ops.pager_acquire (get_callback_request (), resolved.path, &pager->resource);
+    if (callback_rc != 0)
+    {
+        free (pager);
+        return send_reply (context, normalize_callback_error (callback_rc), NULL, 0);
+    }
+
+    pthread_mutex_lock (&client->node_lock);
+    pager->token = ++client->pager_generation;
+    node->pager = pager;
+    pthread_mutex_unlock (&client->node_lock);
+
+    const struct usfs_pager_acquire_out reply = { .token = pager->token };
+
+    return send_reply (context, 0, &reply, sizeof (reply));
+}
+
+static int handle_pager_authorize_request (const struct request_context * context, const char * payload, const uint32_t payload_length)
+{
+    struct usfs_client * client = context->client;
+    struct usfs_pager_authorize_in body;
+
+    if (payload_length != sizeof (body))
+        return send_reply (context, EINVAL, NULL, 0);
+
+    memcpy (&body, payload, sizeof (body));
+
+    if (body.pad != 0 || (body.access != USFS_PAGER_ACCESS_READ && body.access != USFS_PAGER_ACCESS_WRITE))
+        return send_reply (context, EINVAL, NULL, 0);
+
+    if (client->ops.pager_authorize == NULL)
+        return send_reply (context, ENOSYS, NULL, 0);
+
+    pthread_mutex_lock (&client->node_lock);
+    struct client_node * node = find_node_by_id (client, context->header->nodeid);
+    const int valid = node != NULL && node->pager != NULL && node->pager->token == body.token;
+    pthread_mutex_unlock (&client->node_lock);
+
+    if (!valid)
+        return send_reply (context, ESTALE, NULL, 0);
+
+    const enum usfs_pager_access access = body.access == USFS_PAGER_ACCESS_WRITE ? USFS_PAGER_WRITE_ACCESS : USFS_PAGER_READ_ACCESS;
+    const int rc = client->ops.pager_authorize (get_callback_request (), access);
+
+    return send_reply (context, normalize_callback_error (rc), NULL, 0);
+}
+
+static int handle_pager_enable_write_request (const struct request_context * context, const char * payload, const uint32_t payload_length)
+{
+    struct usfs_pager_token_in body;
+
+    if (payload_length != sizeof (body))
+        return send_reply (context, EINVAL, NULL, 0);
+
+    memcpy (&body, payload, sizeof (body));
+
+    struct usfs_client * client = context->client;
+    struct client_pager * pager = find_request_pager (client, context->header->nodeid, body.token);
+    if (pager == NULL)
+        return send_reply (context, ESTALE, NULL, 0);
+
+    if (pager->write_enabled)
+        return send_reply (context, 0, NULL, 0);
+
+    if (client->ops.pager_enable_write == NULL || client->ops.pager_write == NULL)
+        return send_reply (context, ENOSYS, NULL, 0);
+
+    const int rc = client->ops.pager_enable_write (get_callback_request (), &pager->resource);
+    if (rc == 0)
+        pager->write_enabled = true;
+
+    return send_reply (context, normalize_callback_error (rc), NULL, 0);
+}
+
+static int handle_pager_read_request (const struct request_context * context, const char * payload, const uint32_t payload_length)
+{
+    struct usfs_pager_read_in body;
+
+    if (payload_length != sizeof (body))
+        return send_reply (context, EINVAL, NULL, 0);
+
+    memcpy (&body, payload, sizeof (body));
+
+    if (body.pad != 0 || body.size > USFS_MAX_DATA || body.offset > INT64_MAX || !usfs_file_offset_count_valid ((int64_t)body.offset, body.size))
+        return send_reply (context, EINVAL, NULL, 0);
+
+    struct usfs_client * client = context->client;
+    struct client_pager * pager = find_request_pager (client, context->header->nodeid, body.token);
+    if (pager == NULL)
+        return send_reply (context, ESTALE, NULL, 0);
+
+    char * data = get_reply_buffer (client) + sizeof (struct usfs_reply_header);
+    const ssize_t transferred = client->ops.pager_read (get_callback_request (), data, body.size, (off_t)body.offset, &pager->resource);
+    if (transferred < 0)
+        return send_reply (context, transferred < -INT_MAX ? EIO : (int)-transferred, NULL, 0);
+
+    if ((uint64_t)transferred > body.size)
+        return send_reply (context, EIO, NULL, 0);
+
+    return send_reply (context, 0, data, (uint32_t)transferred);
+}
+
+static int handle_pager_write_request (const struct request_context * context, const char * payload, const uint32_t payload_length)
+{
+    struct usfs_pager_write_in body;
+
+    if (payload_length < sizeof (body))
+        return send_reply (context, EINVAL, NULL, 0);
+
+    memcpy (&body, payload, sizeof (body));
+
+    if (body.pad != 0 || body.size > USFS_MAX_DATA || body.size != payload_length - sizeof (body) || body.offset > INT64_MAX ||
+        !usfs_file_offset_count_valid ((int64_t)body.offset, body.size))
+        return send_reply (context, EINVAL, NULL, 0);
+
+    struct usfs_client * client = context->client;
+    struct client_pager * pager = find_request_pager (client, context->header->nodeid, body.token);
+    if (pager == NULL)
+        return send_reply (context, ESTALE, NULL, 0);
+
+    if (!pager->write_enabled)
+        return send_reply (context, EACCES, NULL, 0);
+
+    const ssize_t transferred =
+        client->ops.pager_write (get_callback_request (), payload + sizeof (body), body.size, (off_t)body.offset, &pager->resource);
+    if (transferred < 0)
+        return send_reply (context, transferred < -INT_MAX ? EIO : (int)-transferred, NULL, 0);
+
+    if ((uint64_t)transferred > body.size)
+        return send_reply (context, EIO, NULL, 0);
+
+    const struct usfs_write_out reply = { .written = (uint32_t)transferred, .offset = body.offset };
+
+    return send_reply (context, 0, &reply, sizeof (reply));
+}
+
+static int handle_pager_release_request (const struct request_context * context, const char * payload, const uint32_t payload_length)
+{
+    struct usfs_pager_token_in body;
+
+    if (payload_length != sizeof (body))
+        return send_reply (context, EINVAL, NULL, 0);
+
+    memcpy (&body, payload, sizeof (body));
+
+    struct usfs_client * client = context->client;
+    struct client_pager * pager = find_request_pager (client, context->header->nodeid, body.token);
+    if (pager == NULL)
+        return send_reply (context, ESTALE, NULL, 0);
+
+    const int rc = client->ops.pager_release (get_callback_request (), &pager->resource);
+
+    pthread_mutex_lock (&client->node_lock);
+    struct client_node * node = find_node_by_id (client, context->header->nodeid);
+    node->pager = NULL;
+    queue_node_for_collection (client, node);
+    pthread_mutex_unlock (&client->node_lock);
+
+    if (node->hidden_names != 0)
+        cleanup_hidden_aliases (client, node, false);
+
+    free (pager);
+
+    return send_reply (context, normalize_callback_error (rc), NULL, 0);
+}
+
 static int client_handle_has_path (const struct client_handle * handle, const struct client_node * node)
 {
     if (handle->nodeid == USFS_ROOT_ID)
@@ -4063,7 +4283,7 @@ static int cleanup_hidden_alias (struct usfs_client * client, struct client_alia
 /* Called with exclusive namespace admission, or after all workers have stopped. */
 static int cleanup_hidden_aliases (struct usfs_client * client, struct client_node * node, const int shutdown)
 {
-    if (node->open_refs != 0)
+    if (!shutdown && (node->open_refs != 0 || node->pager != NULL))
         return 0;
 
     int first_error = 0;
@@ -5200,7 +5420,8 @@ static int lock_request_node_for_mutation (const struct usfs_in_hdr * request_he
 {
     *object = NULL;
 
-    if (request_header->nodeid == USFS_ROOT_ID || (request_header->opcode != USFS_OP_WRITE && request_header->opcode != USFS_OP_SETATTR))
+    if (request_header->nodeid == USFS_ROOT_ID ||
+        (request_header->opcode != USFS_OP_WRITE && request_header->opcode != USFS_OP_SETATTR && request_header->opcode != USFS_OP_PAGER_WRITE))
         return 0;
 
     if (retained == NULL)
@@ -5270,6 +5491,24 @@ static void dispatch_request (const struct request_context * context, const char
             break;
         case USFS_OP_WRITE:
             handle_write_request (context, payload, payload_length);
+            break;
+        case USFS_OP_PAGER_ACQUIRE:
+            handle_pager_acquire_request (context, payload_length);
+            break;
+        case USFS_OP_PAGER_AUTHORIZE:
+            handle_pager_authorize_request (context, payload, payload_length);
+            break;
+        case USFS_OP_PAGER_ENABLE_WRITE:
+            handle_pager_enable_write_request (context, payload, payload_length);
+            break;
+        case USFS_OP_PAGER_READ:
+            handle_pager_read_request (context, payload, payload_length);
+            break;
+        case USFS_OP_PAGER_WRITE:
+            handle_pager_write_request (context, payload, payload_length);
+            break;
+        case USFS_OP_PAGER_RELEASE:
+            handle_pager_release_request (context, payload, payload_length);
             break;
         case USFS_OP_UNLINK:
             handle_unlink_request (context, payload, payload_length);
@@ -5491,37 +5730,45 @@ static int are_client_options_valid (const struct usfs_client_options * options)
 
 static int is_operations_size_valid (const size_t operations_size)
 {
-    static const size_t complete_members[] = { 0,
-                                               offsetof (struct usfs_operations, initialize) + sizeof (((struct usfs_operations *)0)->initialize),
-                                               offsetof (struct usfs_operations, shutdown) + sizeof (((struct usfs_operations *)0)->shutdown),
-                                               offsetof (struct usfs_operations, getattr) + sizeof (((struct usfs_operations *)0)->getattr),
-                                               offsetof (struct usfs_operations, statfs) + sizeof (((struct usfs_operations *)0)->statfs),
-                                               offsetof (struct usfs_operations, readlink) + sizeof (((struct usfs_operations *)0)->readlink),
-                                               offsetof (struct usfs_operations, chmod) + sizeof (((struct usfs_operations *)0)->chmod),
-                                               offsetof (struct usfs_operations, chown) + sizeof (((struct usfs_operations *)0)->chown),
-                                               offsetof (struct usfs_operations, truncate) + sizeof (((struct usfs_operations *)0)->truncate),
-                                               offsetof (struct usfs_operations, utimens) + sizeof (((struct usfs_operations *)0)->utimens),
-                                               offsetof (struct usfs_operations, mkdir) + sizeof (((struct usfs_operations *)0)->mkdir),
-                                               offsetof (struct usfs_operations, rmdir) + sizeof (((struct usfs_operations *)0)->rmdir),
-                                               offsetof (struct usfs_operations, unlink) + sizeof (((struct usfs_operations *)0)->unlink),
-                                               offsetof (struct usfs_operations, rename) + sizeof (((struct usfs_operations *)0)->rename),
-                                               offsetof (struct usfs_operations, link) + sizeof (((struct usfs_operations *)0)->link),
-                                               offsetof (struct usfs_operations, symlink) + sizeof (((struct usfs_operations *)0)->symlink),
-                                               offsetof (struct usfs_operations, create) + sizeof (((struct usfs_operations *)0)->create),
-                                               offsetof (struct usfs_operations, create_attr) + sizeof (((struct usfs_operations *)0)->create_attr),
-                                               offsetof (struct usfs_operations, open) + sizeof (((struct usfs_operations *)0)->open),
-                                               offsetof (struct usfs_operations, read) + sizeof (((struct usfs_operations *)0)->read),
-                                               offsetof (struct usfs_operations, write) + sizeof (((struct usfs_operations *)0)->write),
-                                               offsetof (struct usfs_operations, flush) + sizeof (((struct usfs_operations *)0)->flush),
-                                               offsetof (struct usfs_operations, fsync) + sizeof (((struct usfs_operations *)0)->fsync),
-                                               offsetof (struct usfs_operations, release) + sizeof (((struct usfs_operations *)0)->release),
-                                               offsetof (struct usfs_operations, syncfs) + sizeof (((struct usfs_operations *)0)->syncfs),
-                                               offsetof (struct usfs_operations, opendir) + sizeof (((struct usfs_operations *)0)->opendir),
-                                               offsetof (struct usfs_operations, readdir) + sizeof (((struct usfs_operations *)0)->readdir),
-                                               offsetof (struct usfs_operations, fsyncdir) + sizeof (((struct usfs_operations *)0)->fsyncdir),
-                                               offsetof (struct usfs_operations, releasedir) + sizeof (((struct usfs_operations *)0)->releasedir),
-                                               offsetof (struct usfs_operations, export_id) + sizeof (((struct usfs_operations *)0)->export_id),
-                                               offsetof (struct usfs_operations, resolve_id) + sizeof (((struct usfs_operations *)0)->resolve_id) };
+    static const size_t complete_members[] = {
+        0,
+        offsetof (struct usfs_operations, initialize) + sizeof (((struct usfs_operations *)0)->initialize),
+        offsetof (struct usfs_operations, shutdown) + sizeof (((struct usfs_operations *)0)->shutdown),
+        offsetof (struct usfs_operations, getattr) + sizeof (((struct usfs_operations *)0)->getattr),
+        offsetof (struct usfs_operations, statfs) + sizeof (((struct usfs_operations *)0)->statfs),
+        offsetof (struct usfs_operations, readlink) + sizeof (((struct usfs_operations *)0)->readlink),
+        offsetof (struct usfs_operations, chmod) + sizeof (((struct usfs_operations *)0)->chmod),
+        offsetof (struct usfs_operations, chown) + sizeof (((struct usfs_operations *)0)->chown),
+        offsetof (struct usfs_operations, truncate) + sizeof (((struct usfs_operations *)0)->truncate),
+        offsetof (struct usfs_operations, utimens) + sizeof (((struct usfs_operations *)0)->utimens),
+        offsetof (struct usfs_operations, mkdir) + sizeof (((struct usfs_operations *)0)->mkdir),
+        offsetof (struct usfs_operations, rmdir) + sizeof (((struct usfs_operations *)0)->rmdir),
+        offsetof (struct usfs_operations, unlink) + sizeof (((struct usfs_operations *)0)->unlink),
+        offsetof (struct usfs_operations, rename) + sizeof (((struct usfs_operations *)0)->rename),
+        offsetof (struct usfs_operations, link) + sizeof (((struct usfs_operations *)0)->link),
+        offsetof (struct usfs_operations, symlink) + sizeof (((struct usfs_operations *)0)->symlink),
+        offsetof (struct usfs_operations, create) + sizeof (((struct usfs_operations *)0)->create),
+        offsetof (struct usfs_operations, create_attr) + sizeof (((struct usfs_operations *)0)->create_attr),
+        offsetof (struct usfs_operations, open) + sizeof (((struct usfs_operations *)0)->open),
+        offsetof (struct usfs_operations, read) + sizeof (((struct usfs_operations *)0)->read),
+        offsetof (struct usfs_operations, write) + sizeof (((struct usfs_operations *)0)->write),
+        offsetof (struct usfs_operations, flush) + sizeof (((struct usfs_operations *)0)->flush),
+        offsetof (struct usfs_operations, fsync) + sizeof (((struct usfs_operations *)0)->fsync),
+        offsetof (struct usfs_operations, release) + sizeof (((struct usfs_operations *)0)->release),
+        offsetof (struct usfs_operations, pager_acquire) + sizeof (((struct usfs_operations *)0)->pager_acquire),
+        offsetof (struct usfs_operations, pager_authorize) + sizeof (((struct usfs_operations *)0)->pager_authorize),
+        offsetof (struct usfs_operations, pager_enable_write) + sizeof (((struct usfs_operations *)0)->pager_enable_write),
+        offsetof (struct usfs_operations, pager_read) + sizeof (((struct usfs_operations *)0)->pager_read),
+        offsetof (struct usfs_operations, pager_write) + sizeof (((struct usfs_operations *)0)->pager_write),
+        offsetof (struct usfs_operations, pager_release) + sizeof (((struct usfs_operations *)0)->pager_release),
+        offsetof (struct usfs_operations, syncfs) + sizeof (((struct usfs_operations *)0)->syncfs),
+        offsetof (struct usfs_operations, opendir) + sizeof (((struct usfs_operations *)0)->opendir),
+        offsetof (struct usfs_operations, readdir) + sizeof (((struct usfs_operations *)0)->readdir),
+        offsetof (struct usfs_operations, fsyncdir) + sizeof (((struct usfs_operations *)0)->fsyncdir),
+        offsetof (struct usfs_operations, releasedir) + sizeof (((struct usfs_operations *)0)->releasedir),
+        offsetof (struct usfs_operations, export_id) + sizeof (((struct usfs_operations *)0)->export_id),
+        offsetof (struct usfs_operations, resolve_id) + sizeof (((struct usfs_operations *)0)->resolve_id)
+    };
 
     if (operations_size >= sizeof (struct usfs_operations))
         return true;
@@ -5617,6 +5864,18 @@ static int enter_destroy_callback_context (struct usfs_client * client, struct c
 
 static int destroy_user_state (struct usfs_client * client)
 {
+    for (struct client_node * node = client->nodes; node != NULL; node = node->next)
+    {
+        if (node->pager == NULL)
+            continue;
+
+        if (client->ops.pager_release != NULL)
+            client->ops.pager_release (get_callback_request (), &node->pager->resource);
+
+        free (node->pager);
+        node->pager = NULL;
+    }
+
     while (client->handles != NULL)
     {
         struct client_handle * handle = client->handles;

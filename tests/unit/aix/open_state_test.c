@@ -64,6 +64,7 @@ static int flush_running;
 static int flush_unmap_rc;
 static int cache_flush_error;
 static unsigned connection_aborts;
+static int vnode_release_error;
 
 void abort_connection (struct usfs_connection * connection)
 {
@@ -78,7 +79,12 @@ static struct usfs_mount_data *_mount_of(struct vnode *vnode)
 }
 
 #undef VNOP_RELE
-#define VNOP_RELE(vnode) usfs_vnode_release_locked(vnode)
+static int test_vnop_rele (struct vnode * file_vnode)
+{
+    usfs_vnode_release_locked (file_vnode);
+    return vnode_release_error;
+}
+#define VNOP_RELE(vnode) test_vnop_rele(vnode)
 
 static void _send_release(struct usfs_mount_data *mount, uint64_t nodeid,
                           uint64_t fh, int32long64_t flags, uint32_t isdir,
@@ -149,12 +155,12 @@ static void test_close_flush(struct tap_state *tap)
     (void)allocate_open_state(FREAD, &state);
     state->fh = 303;
     attach_open_state(&node, state);
-    (void)usfs_retain_mapping_state(&vnode, SHM_RDONLY, NULL);
+    (void)usfs_retain_mapping_state(&vnode, SHM_RDONLY);
     flush_vnode = &vnode;
     tap_ok(tap, gn_close(&vnode, FREAD, (caddr_t)state, &credential) == EIO &&
                    flush_unmap_rc == 0 && release_calls == 1 &&
                    release_during_flush == 0,
-           "last unmap during failing FLUSH defers exactly one RELEASE until close finishes");
+           "last unmap during failing FLUSH leaves the open handle to close");
     tap_ok(tap, node.opens == NULL && vnode.v_count == 1 &&
                    usfs_fake_kernel_clean(),
            "close and final unmap balance state and vnode ownership");
@@ -188,7 +194,7 @@ static void test_borrowed_lifetime(struct tap_state *tap)
         old->fh = 404;
         attach_open_state(&node, old);
         if (variant == 2)
-            (void)usfs_retain_mapping_state(&vnode, SHM_RDONLY, NULL);
+            (void)usfs_retain_mapping_state(&vnode, SHM_RDONLY);
         tap_ok(tap, usfs_borrow_description(&node, (caddr_t)old, &borrowed) == 0 &&
                        borrowed == old && old->operation_refs == 1,
                "the exact file description retains an operation reference");
@@ -236,7 +242,7 @@ static void test_unmap_flush_failure (struct tap_state * tap)
     (void)allocate_open_state (FREAD | FWRITE, &state);
     state->fh = 606;
     attach_open_state (&node, state);
-    (void)usfs_retain_mapping_state (&vnode, 0, NULL);
+    (void)usfs_retain_mapping_state (&vnode, 0);
     (void)usfs_close_open_state (&node, (caddr_t)state);
     usfs_put_open_reference (&vnode, state, 0, &credentials);
 
@@ -249,8 +255,30 @@ static void test_unmap_flush_failure (struct tap_state * tap)
         tap,
         release_calls == 1 && release_during_flush == 0 && node.opens == NULL && node.mapping_count == 0 && gnode.gn_mwrcnt == 0 &&
             vnode.v_count == 1 && usfs_fake_kernel_clean (),
-        "failed unmap writeback still releases mapping, handle, and vnode ownership exactly once"
+        "failed unmap writeback still releases mapping and vnode ownership exactly once"
     );
+}
+
+static void test_unmap_release_failure (struct tap_state * tap)
+{
+    struct usfs_node node = { 0 };
+    struct gnode gnode = { 0 };
+    struct vnode vnode = { 0 };
+    struct ucred credentials = { 0 };
+
+    node.vn = &vnode;
+    node.gn = &gnode;
+    gnode.gn_data = (caddr_t)&node;
+    vnode.v_gnode = &gnode;
+    vnode.v_count = 1;
+
+    (void)usfs_retain_mapping_state (&vnode, SHM_RDONLY);
+    vnode_release_error = EIO;
+    const int rc = gn_unmap (&vnode, SHM_RDONLY, &credentials);
+    vnode_release_error = 0;
+
+    tap_ok (tap, rc == EIO && vnode.v_count == 1 && node.mapping_count == 0 && gnode.gn_mrdcnt == 0,
+            "unmap reports a final vnode release failure after balancing mapping ownership");
 }
 
 int main(void)
@@ -264,7 +292,7 @@ int main(void)
     struct usfs_open_state *release = NULL;
     uint64_t fh = 0;
 
-    tap_plan (&tap, 31);
+    tap_plan (&tap, 35);
     usfs_fake_kernel_reset();
     memset(&node, 0, sizeof(node));
     memset(&gnode, 0, sizeof(gnode));
@@ -298,60 +326,77 @@ int main(void)
                  fh == 202,
            "exact file descriptions identify their own open handles");
 
-    tap_ok(&tap, usfs_retain_mapping_state(&vnode, SHM_RDONLY, NULL) == 0 &&
-                 usfs_retain_mapping_state(&vnode, 0, NULL) == 0 &&
+    tap_ok(&tap, usfs_retain_mapping_state(&vnode, SHM_RDONLY) == 0 &&
+                 usfs_retain_mapping_state(&vnode, 0) == 0 &&
                  node.mapping_count == 2 && vnode.v_count == 5,
-           "read and write mappings retain compatible descriptions");
-    tap_ok(&tap, writer->write_mappings != 0 && writer->fh == 202,
-           "page-out keeps its writable mapping description");
+           "read and write mappings hold the vnode independently of open descriptions");
+    tap_ok(&tap, node.read_mapping_count == 1 && node.write_mapping_count == 1,
+           "mapping access types have separate object-scoped counts");
 
     tap_ok(&tap, usfs_close_open_state(&node, (caddr_t)reader) == 0 &&
                  usfs_release_open_reference(&node, reader, 0, &release) == 0 &&
-                 release == NULL &&
+                 release == reader &&
                  !reader->active,
-           "closing a mapped reader defers its release");
+           "closing a mapped reader releases its own handle");
+    usfs_open_state_discard(release);
+    release = NULL;
     usfs_vnode_release_locked(&vnode);
     tap_ok(&tap, usfs_close_open_state(&node, (caddr_t)writer) == 0 &&
                  usfs_release_open_reference(&node, writer, 0, &release) == 0 &&
-                 release == NULL &&
+                 release == writer &&
                  !writer->active,
-           "closing a mapped writer defers its release");
+           "closing a mapped writer releases its own handle");
+    usfs_open_state_discard(release);
+    release = NULL;
     usfs_vnode_release_locked(&vnode);
-    tap_ok(&tap, test_description_handle(&node, (caddr_t)reader, &fh) == EBADF,
-           "closed f_vinfo cannot be reused for file I/O");
+    tap_ok(&tap, node.opens == NULL && node.mapping_count == 2,
+           "closed descriptions are gone while mappings remain");
 
-    tap_ok(&tap, usfs_retain_mapping_state(&vnode, SHM_RDONLY, NULL) == 0 &&
-                 usfs_retain_mapping_state(&vnode, 0, NULL) == 0 &&
+    tap_ok(&tap, usfs_retain_mapping_state(&vnode, SHM_RDONLY) == 0 &&
+                 usfs_retain_mapping_state(&vnode, 0) == 0 &&
                  node.mapping_count == 4 && vnode.v_count == 5,
-           "forked mappings retain their closed backing descriptions");
-    tap_ok(&tap, usfs_release_mapping_state(&vnode, SHM_RDONLY,
-                                             &release) == 0 &&
-                 release == NULL &&
-                 usfs_release_mapping_state(&vnode, 0, &release) == 0 &&
-                 release == NULL && node.mapping_count == 2,
+           "forked mappings need no open description");
+    tap_ok(&tap, usfs_release_mapping_state(&vnode, SHM_RDONLY) == 0 &&
+                 usfs_release_mapping_state(&vnode, 0) == 0 && node.mapping_count == 2,
            "first inherited unmaps keep the original mappings alive");
     usfs_vnode_release_locked(&vnode);
     usfs_vnode_release_locked(&vnode);
 
-    tap_ok(&tap, usfs_release_mapping_state(&vnode, SHM_RDONLY,
-                                             &release) == 0 &&
-                 release == reader && release->fh == 101,
-           "last read unmap returns the reader for release");
-    usfs_open_state_discard(release);
+    tap_ok(&tap, usfs_release_mapping_state(&vnode, SHM_RDONLY) == 0 &&
+                 node.read_mapping_count == 0,
+           "last read unmap drops only the vnode's read count");
     usfs_vnode_release_locked(&vnode);
-    release = NULL;
-    tap_ok(&tap, usfs_release_mapping_state(&vnode, 0, &release) == 0 &&
-                 release == writer && release->fh == 202,
-           "last write unmap returns the writer for release");
-    usfs_open_state_discard(release);
+    tap_ok(&tap, usfs_release_mapping_state(&vnode, 0) == 0 &&
+                 node.write_mapping_count == 0,
+           "last write unmap drops only the vnode's write count");
     usfs_vnode_release_locked(&vnode);
     tap_ok(&tap, node.opens == NULL && node.mapping_count == 0 &&
                  vnode.v_count == 1,
            "all description and mapping references balance");
+
+    node.mapping_count = UINT32_MAX;
+    tap_ok (&tap, usfs_retain_mapping_state (&vnode, SHM_RDONLY) == EOVERFLOW &&
+                    vnode.v_count == 1 && gnode.gn_mrdcnt == 0,
+            "total mapping count overflow changes neither vnode nor AIX gnode state");
+    node.mapping_count = 0;
+
+    node.read_mapping_count = UINT32_MAX;
+    tap_ok (&tap, usfs_retain_mapping_state (&vnode, SHM_RDONLY) == EOVERFLOW &&
+                    node.mapping_count == 0 && vnode.v_count == 1,
+            "read mapping count overflow leaves total ownership unchanged");
+    node.read_mapping_count = 0;
+
+    node.write_mapping_count = UINT32_MAX;
+    tap_ok (&tap, usfs_retain_mapping_state (&vnode, 0) == EOVERFLOW &&
+                    node.mapping_count == 0 && vnode.v_count == 1 && gnode.gn_mwrcnt == 0,
+            "write mapping count overflow leaves VMM and vnode ownership unchanged");
+    node.write_mapping_count = 0;
+
     tap_ok(&tap, usfs_fake_kernel_clean(),
            "open-state helpers leave fake kernel ownership balanced");
     test_close_flush(&tap);
     test_borrowed_lifetime(&tap);
     test_unmap_flush_failure (&tap);
+    test_unmap_release_failure (&tap);
     return tap_finish(&tap);
 }

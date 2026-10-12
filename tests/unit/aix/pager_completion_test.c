@@ -7,6 +7,7 @@
 #include "definitions.h"
 #include <string.h>
 
+Complex_lock global_lock;
 static struct usfs_node node;
 static struct vnode vnode;
 static struct gnode gnode;
@@ -31,29 +32,29 @@ static uint64_t get_cache_size(struct usfs_node *n) { return n->cache_size; }
 static void record_writeback_error(struct usfs_node *n, int error) {
     (void)n; if (error && !sticky_error) sticky_error = error;
 }
-static int borrow_cache_handle(struct usfs_node *n, int writing,
-                                     struct usfs_open_state **out) {
-    (void)n; (void)writing; ++vnode.v_count; ++handle.refs; ++handle.operation_refs;
-    *out = &handle; return 0;
+static int retain_pager_vnode_locked(struct usfs_node *n, uint64_t *token) {
+    if (n->pager_token == 0 || n->vn->v_count == 0) return EIO;
+    ++vnode.v_count;
+    *token = n->pager_token;
+    return 0;
 }
-static void usfs_put_open_reference(struct vnode *virtual_fs_node, struct usfs_open_state *state,
-                                    int operation, struct ucred *credential) {
-    (void)credential;
-    if (!operation || context_depth != 1 || lock_depth) ++premature;
-    if (state == NULL) return;
+static void release_pager_vnode(struct vnode *virtual_fs_node) {
+    if (context_depth != 1 || lock_depth) ++premature;
     /* Model the final-reclaim wait: every VMM buffer submitted in this
      * strategy invocation must already have completion queued. */
     if (virtual_fs_node->v_count == 1 && completed != expected_completions) ++premature;
-    --virtual_fs_node->v_count; --state->refs; --state->operation_refs; ++released;
+    --virtual_fs_node->v_count; ++released;
 }
+#undef VNOP_RELE
+#define VNOP_RELE(vp) release_pager_vnode(vp)
 int allocate_request(const struct usfs_request_allocation_spec *spec,
                      struct usfs_request **out) {
     memset(&request, 0, sizeof(request)); opcode = spec->opcode;
-    if (opcode == USFS_OP_WRITE) {
-        const struct usfs_write_in *body = spec->opcode_specific_body.bytes;
+    if (opcode == USFS_OP_PAGER_WRITE) {
+        const struct usfs_pager_write_in *body = spec->opcode_specific_body.bytes;
         request_offset = body->offset; request_size = body->size;
     } else {
-        const struct usfs_read_in *body = spec->opcode_specific_body.bytes;
+        const struct usfs_pager_read_in *body = spec->opcode_specific_body.bytes;
         request_offset = body->offset; request_size = body->size;
     }
     *out = &request; return 0;
@@ -64,7 +65,7 @@ int usfs_call_with_specific_request_class(struct usfs_connection *conn,
     if (request_class != USFS_REQUEST_PAGER || context_depth != 1) ++premature;
     if (!dropped_external) { --vnode.v_count; dropped_external = 1; }
     req->error = backend_error;
-    if (opcode == USFS_OP_WRITE) {
+    if (opcode == USFS_OP_PAGER_WRITE) {
         memset(&write_reply, 0, sizeof(write_reply));
         write_reply.written = request_size; write_reply.offset = request_offset;
         req->reply_buffer = (char *)&write_reply; req->reply_buffer_size = sizeof(write_reply);
@@ -100,7 +101,7 @@ static void reset(unsigned count, int reading) {
     memset(&node, 0, sizeof(node)); memset(&vnode, 0, sizeof(vnode));
     memset(&gnode, 0, sizeof(gnode)); memset(&handle, 0, sizeof(handle));
     memset(&mount_data, 0, sizeof(mount_data)); memset(buffers, 0, sizeof(buffers));
-    node.vn = &vnode; node.gn = &gnode; node.nodeid = 2; node.cache_size = PAGESIZE;
+    node.vn = &vnode; node.gn = &gnode; node.nodeid = 2; node.cache_size = PAGESIZE; node.pager_token = 42;
     vnode.v_gnode = &gnode; vnode.v_count = 1; gnode.gn_vnode = &vnode;
     mount_data.conn = &connection; mount_data.writable = 1; handle.refs = 1;
     completed = released = premature = context_depth = lock_depth = 0;
@@ -114,7 +115,7 @@ static void reset(unsigned count, int reading) {
 }
 int main(void) {
     struct tap_state tap;
-    tap_plan(&tap, 5);
+    tap_plan(&tap, 6);
     reset(1, 1); usfs_pager_strategy(buffers, 0, 0);
     tap_ok(&tap, completed == 1 && released == 1 && vnode.v_count == 0 &&
            handle.refs == 1 && !handle.operation_refs && !premature && !context_depth,
@@ -134,5 +135,9 @@ int main(void) {
     tap_ok(&tap, completed == 1 && !released && error_completions == 1 &&
            vnode.v_count == 1 && !premature && !context_depth,
            "invalid pager input completes without releasing an unowned reference");
+    reset(1, 1); vnode.v_count = 0; usfs_pager_strategy(buffers, 0, 0);
+    tap_ok(&tap, completed == 1 && !released && error_completions == 1 &&
+           vnode.v_count == 0 && !premature && !context_depth,
+           "pager rejects a vnode already entering reclamation without reviving it");
     return tap_finish(&tap);
 }

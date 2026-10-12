@@ -19,20 +19,13 @@ int gn_unmap (struct vnode * file_vnode, const int32long64_t mapping_flags, stru
     if (flush_rc != 0)
         abort_connection (mount_data->conn);
 
-    struct usfs_open_state * mapping_state_to_release = NULL;
-    const int release_rc = usfs_release_mapping_state (file_vnode, mapping_flags, &mapping_state_to_release);
+    const int release_rc = usfs_release_mapping_state (file_vnode, mapping_flags);
     if (release_rc != 0)
         return release_rc;
 
-    if (mapping_state_to_release != NULL)
-    {
-        _send_release (mount_data, node->nodeid, mapping_state_to_release->fh, mapping_state_to_release->flags, 0, credentials);
-        usfs_open_state_discard (mapping_state_to_release);
-    }
+    const int vnode_release_rc = VNOP_RELE (file_vnode);
 
-    VNOP_RELE (file_vnode);
-
-    return flush_rc;
+    return flush_rc != 0 ? flush_rc : vnode_release_rc;
 }
 
 #endif

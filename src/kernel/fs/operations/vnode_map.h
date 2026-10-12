@@ -45,21 +45,24 @@ static int create_mapping_segment (const struct vnode * file_vnode, const vmsize
     return 0;
 }
 
-static int retain_mapping (struct vnode * file_vnode, const uint64_t mapping_flags, const vmsize_t file_size)
+static int retain_mapping (struct vnode * file_vnode, const uint64_t mapping_flags, const vmsize_t file_size, struct ucred * credentials)
 {
     struct usfs_node * node = _node_of (file_vnode);
-    struct usfs_open_state *open_state = NULL, *release = NULL;
 
     if (node == NULL)
         return EIO;
 
-    int rc = usfs_retain_mapping_state (file_vnode, mapping_flags, &open_state);
+    const int acquired_resource = node->pager_token == 0;
+    const int created_segment = file_vnode->v_gnode->gn_seg == 0;
+
+    int rc = ensure_pager_resource (node);
     if (rc != 0)
         return rc;
 
-    rc = ensure_cache_handle (node, 0, open_state);
+    rc = authorize_pager_mapping (node, usfs_mapping_is_write (mapping_flags), credentials);
+
     if (rc == 0 && usfs_mapping_is_write (mapping_flags))
-        rc = ensure_cache_handle (node, 1, open_state);
+        rc = enable_pager_write (node, credentials);
 
     if (rc == 0 && file_vnode->v_gnode->gn_seg == 0)
     {
@@ -72,18 +75,21 @@ static int retain_mapping (struct vnode * file_vnode, const uint64_t mapping_fla
         rc = create_mapping_segment (file_vnode, file_size);
     }
 
-    if (rc != 0)
+    if (rc == 0)
+        rc = usfs_retain_mapping_state (file_vnode, mapping_flags);
+
+    if (rc == 0)
+        return 0;
+
+    if (created_segment && file_vnode->v_gnode->gn_seg != 0)
     {
-        (void)usfs_release_mapping_state (file_vnode, (int32long64_t)mapping_flags, &release);
-
-        if (release != NULL)
-        {
-            _send_release (_mount_of (file_vnode), node->nodeid, release->fh, release->flags, 0, NULL);
-            usfs_open_state_discard (release);
-        }
-
-        VNOP_RELE (file_vnode);
+        const int delete_rc = delete_cache_segment (node, _mount_of (file_vnode));
+        if (delete_rc != 0)
+            return delete_rc;
     }
+
+    if (acquired_resource)
+        release_pager_resource (node, _mount_of (file_vnode));
 
     return rc;
 }
@@ -127,7 +133,7 @@ static int map_validated_file (struct vnode * file_vnode, const uint64_t mapping
             return rc;
     }
 
-    const int rc = retain_mapping (file_vnode, mapping_flags, (vmsize_t)attributes.va_size);
+    const int rc = retain_mapping (file_vnode, mapping_flags, (vmsize_t)attributes.va_size, credentials);
     if (rc == 0 && usfs_mapping_is_write (mapping_flags))
         _node_of (file_vnode)->cache_shared_writable = 1;
 

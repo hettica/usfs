@@ -14,12 +14,12 @@ int main(void)
     struct usfs_reply_header header;
     unsigned opcode;
 
-    tap_plan(&state, 25);
+    tap_plan(&state, 31);
     memset(&header, 0, sizeof(header));
     header.len = sizeof(header);
     header.version = USFS_PROTOCOL_VERSION;
 
-    for (opcode = USFS_OP_LOOKUP; opcode <= USFS_OP_VGET; opcode++) {
+    for (opcode = USFS_OP_LOOKUP; opcode <= USFS_OP_PAGER_RELEASE; opcode++) {
         header.opcode = (uint16_t)opcode;
         tap_ok(&state, usfs_out_header_valid(&header, sizeof(header)),
                "known opcode corpus entry");

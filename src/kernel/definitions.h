@@ -167,9 +167,6 @@ struct usfs_open_state
     uint32_t active;
     uint32_t closing;
     uint32_t operation_refs;
-    uint32_t cache_refs;
-    uint32_t read_mappings;
-    uint32_t write_mappings;
 };
 
 struct usfs_node
@@ -183,9 +180,12 @@ struct usfs_node
     uint64_t lookup_refs; /* successful reply transfers, including vnode reuse */
     struct usfs_open_state * opens;
     uint32_t mapping_count;
+    uint32_t read_mapping_count;
+    uint32_t write_mapping_count;
     /* Sticky until vnode reclamation; protected by namespace_lock/mutation_lock. */
     uint32_t cache_shared_writable;
-    struct usfs_open_state *cache_reader, *cache_writer;
+    uint64_t pager_token; /* Client-owned object lease for this VMM segment. */
+    uint32_t pager_write_enabled;
     uint64_t cache_size;
     uint64_t cache_extent;
     int writeback_error;
@@ -201,10 +201,11 @@ struct usfs_mount_data
     struct usfs_connection * conn;
     struct usfs_node * root;
     struct usfs_node * nodes;
-    uint64_t reclaiming_nodes; /* Detached nodes still using this mount; global_lock. */
-    uint32_t inflight_vgets;    /* VGET callbacks retaining this mount; global_lock. */
-    int unmount_in_progress;   /* Protects the forced-unmount caller outside global_lock. */
-    int stale_accounted;       /* Deferred recovery owns one stale-mount/VFS release. */
+    struct usfs_node * failed_cache_nodes; /* VMM deletion failures retained to prevent pager use after free. */
+    uint64_t reclaiming_nodes;             /* Detached nodes still using this mount; global_lock. */
+    uint32_t inflight_vgets;               /* VGET callbacks retaining this mount; global_lock. */
+    int unmount_in_progress;               /* Protects the forced-unmount caller outside global_lock. */
+    int stale_accounted;                   /* Deferred recovery owns one stale-mount/VFS release. */
     int state;
     int writable;
 };

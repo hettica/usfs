@@ -40,103 +40,155 @@ static uint64_t get_cache_size (const struct usfs_node * node)
     return size;
 }
 
-static int is_handle_usable_for_cache (const struct usfs_open_state * open_state, const int required_access)
+static int request_pager_acquire (struct usfs_node * node, uint64_t * token)
 {
-    if ((open_state->flags & required_access) == 0)
-        return false;
+    struct usfs_mount_data * mount_data = _mount_of (node->vn);
+    const struct usfs_request_allocation_spec specification = { .opcode = USFS_OP_PAGER_ACQUIRE,
+                                                                .node_id = node->nodeid,
+                                                                .max_allowed_reply_buffer_size = sizeof (struct usfs_pager_acquire_out) };
+    struct usfs_request * request = NULL;
 
-    if (open_state->active)
-        return true;
+    int rc = allocate_request (&specification, &request);
+    if (rc != 0)
+        return rc;
 
-    if (open_state->read_mappings != 0)
-        return true;
+    rc = usfs_call (mount_data->conn, request);
+    if (rc != 0)
+        return rc;
 
-    if (open_state->write_mappings != 0)
-        return true;
-
-    return open_state->cache_refs != 0;
-}
-
-/* Caller holds global_lock while selecting an existing handle. */
-static struct usfs_open_state * find_usable_handle (
-    const struct usfs_node * node,
-    const int required_access,
-    struct usfs_open_state * preferred_handle
-)
-{
-    if (preferred_handle != NULL)
+    int malformed_reply = false;
+    rc = request->error;
+    if (rc == 0)
     {
-        if ((preferred_handle->flags & required_access) != 0)
-            return preferred_handle;
+        if (request->reply_buffer_size != sizeof (struct usfs_pager_acquire_out))
+        {
+            rc = EIO;
+            malformed_reply = true;
+        }
+        else
+        {
+            struct usfs_pager_acquire_out reply;
+            memcpy (&reply, request->reply_buffer, sizeof (reply));
+            *token = reply.token;
+            if (*token == 0)
+            {
+                rc = EIO;
+                malformed_reply = true;
+            }
+        }
     }
 
-    for (struct usfs_open_state * open_state = node->opens; open_state != NULL; open_state = open_state->next)
-    {
-        if (is_handle_usable_for_cache (open_state, required_access))
-            return open_state;
-    }
+    free_request (request);
 
-    return NULL;
+    if (malformed_reply)
+        abort_connection (mount_data->conn);
+
+    return rc;
 }
 
-/* Caller holds global_lock through selection and reference publication. */
-static int select_and_retain_cache_handle (
-    const struct usfs_node * node,
-    struct usfs_open_state ** cache_handle,
-    const int required_access,
-    struct usfs_open_state * preferred_handle
-)
+static int ensure_pager_resource (struct usfs_node * node)
 {
-    if (*cache_handle != NULL)
+    uint64_t existing_token = 0;
+
+    read_synchronized_with (global_lock)
+    {
+        existing_token = node->pager_token;
+    }
+
+    if (existing_token != 0)
         return 0;
 
-    struct usfs_open_state * open_state = find_usable_handle (node, required_access, preferred_handle);
-    if (open_state == NULL)
-        return EBADF;
+    uint64_t token = 0;
+    const int rc = request_pager_acquire (node, &token);
+    if (rc != 0)
+        return rc;
 
-    if (open_state->refs == UINT32_MAX)
-        return EOVERFLOW;
-
-    if (open_state->cache_refs == UINT32_MAX)
-        return EOVERFLOW;
-
-    ++open_state->refs;
-    ++open_state->cache_refs;
-    *cache_handle = open_state;
+    write_synchronized_with (global_lock)
+    {
+        node->pager_token = token;
+    }
 
     return 0;
 }
 
-/* Cache references own backend handles, but do not keep an otherwise unused
- * vnode alive. Reclamation drains VMM I/O before dropping these references. */
-static int ensure_cache_handle (struct usfs_node * node, const int is_writing, struct usfs_open_state * preferred_handle)
+static int authorize_pager_mapping (struct usfs_node * node, const int is_writing, struct ucred * credentials)
 {
-    struct usfs_open_state ** cache_handle = is_writing ? &node->cache_writer : &node->cache_reader;
-    const int required_access = is_writing ? FWRITE : FREAD;
-    int rc = 0;
+    uint64_t token = 0;
 
-    write_synchronized_with (global_lock)
+    read_synchronized_with (global_lock)
     {
-        rc = select_and_retain_cache_handle (node, cache_handle, required_access, preferred_handle);
+        token = node->pager_token;
+    }
+
+    const struct usfs_pager_authorize_in body = { .token = token, .access = is_writing ? USFS_PAGER_ACCESS_WRITE : USFS_PAGER_ACCESS_READ };
+
+    return _call_no_reply (_mount_of (node->vn), USFS_OP_PAGER_AUTHORIZE, node->nodeid, &body, sizeof (body), credentials);
+}
+
+static int enable_pager_write (struct usfs_node * node, struct ucred * credentials)
+{
+    int write_enabled = false;
+    uint64_t token = 0;
+
+    read_synchronized_with (global_lock)
+    {
+        write_enabled = node->pager_write_enabled;
+        token = node->pager_token;
+    }
+
+    if (write_enabled)
+        return 0;
+
+    if (token == 0)
+        return EIO;
+
+    const struct usfs_pager_token_in body = { .token = token };
+    const int rc = _call_no_reply (_mount_of (node->vn), USFS_OP_PAGER_ENABLE_WRITE, node->nodeid, &body, sizeof (body), credentials);
+    if (rc == 0)
+    {
+        write_synchronized_with (global_lock)
+        {
+            node->pager_write_enabled = true;
+        }
     }
 
     return rc;
 }
 
-static int borrow_cache_handle (struct usfs_node * node, const int is_writing, struct usfs_open_state ** borrowed_handle)
+static void release_pager_resource (struct usfs_node * node, struct usfs_mount_data * mount_data)
 {
-    int rc = EBADF;
+    uint64_t token = 0;
 
-    *borrowed_handle = NULL;
+    read_synchronized_with (global_lock)
+    {
+        token = node->pager_token;
+    }
+
+    if (token == 0)
+        return;
+
+    const struct usfs_pager_token_in body = { .token = token };
+    const int rc = _call_no_reply (mount_data, USFS_OP_PAGER_RELEASE, node->nodeid, &body, sizeof (body), NULL);
+    if (rc != 0)
+        abort_connection (mount_data->conn);
 
     write_synchronized_with (global_lock)
     {
-        struct usfs_open_state * cache_handle = is_writing ? node->cache_writer : node->cache_reader;
-        if (cache_handle != NULL)
-            rc = usfs_retain_operation_locked (node, cache_handle, borrowed_handle);
+        node->pager_token = 0;
+        node->pager_write_enabled = false;
     }
+}
 
-    return rc;
+/* Caller holds global_lock while proving this vnode is still live. */
+static int retain_pager_vnode_locked (struct usfs_node * node, uint64_t * token)
+{
+    if (node->pager_token == 0 || node->vn->v_count == 0)
+        return EIO;
+
+    *token = node->pager_token;
+    usfs_vnode_hold_locked (node->vn, USFS_INSTRUMENT_NODE_REUSE_NONE);
+
+    return 0;
 }
 
 static uint64_t page_count_for_bytes (const uint64_t byte_count)
@@ -298,23 +350,23 @@ static int zero_partial_page_tail (const struct vnode * file_vnode, const uint64
     return vm_uiomove (file_vnode->v_gnode->gn_seg, (vmsize_t)byte_count, UIO_WRITE, &user_io_request);
 }
 
-static int has_cached_write_handle (const struct usfs_node * node)
+static int has_pager_write_capability (const struct usfs_node * node)
 {
-    int has_cache_writer = false;
+    int write_enabled = false;
 
     read_synchronized_with (global_lock)
     {
-        has_cache_writer = node->cache_writer != NULL;
+        write_enabled = node->pager_write_enabled;
     }
 
-    return has_cache_writer;
+    return write_enabled;
 }
 
 static int adjust_segment_after_shrink (
     const struct vnode * file_vnode,
     const uint64_t previous_size,
     const uint64_t file_size,
-    const int has_cache_writer
+    const int has_write_capability
 )
 {
     const uint64_t first_removed_page = page_count_for_bytes (file_size);
@@ -330,7 +382,7 @@ static int adjust_segment_after_shrink (
     if (file_size % PAGESIZE == 0)
         return 0;
 
-    if (has_cache_writer)
+    if (has_write_capability)
         return zero_partial_page_tail (file_vnode, file_size, page_count_for_bytes (file_size) * PAGESIZE);
 
     return vm_invalidatep (file_vnode->v_gnode->gn_seg, (vpn_t)(file_size / PAGESIZE), 1);
@@ -340,7 +392,7 @@ static int adjust_segment_after_growth (
     const struct vnode * file_vnode,
     const uint64_t previous_size,
     const uint64_t file_size,
-    const int has_cache_writer
+    const int has_write_capability
 )
 {
     if (previous_size % PAGESIZE == 0)
@@ -350,7 +402,7 @@ static int adjust_segment_after_growth (
     if (partial_page_end > file_size)
         partial_page_end = file_size;
 
-    if (has_cache_writer)
+    if (has_write_capability)
         return zero_partial_page_tail (file_vnode, previous_size, partial_page_end);
 
     return vm_invalidatep (file_vnode->v_gnode->gn_seg, (vpn_t)(previous_size / PAGESIZE), 1);
@@ -360,14 +412,14 @@ static int adjust_segment_after_resize (
     const struct vnode * file_vnode,
     const uint64_t previous_size,
     const uint64_t file_size,
-    const int has_cache_writer
+    const int has_write_capability
 )
 {
     if (file_size < previous_size)
-        return adjust_segment_after_shrink (file_vnode, previous_size, file_size, has_cache_writer);
+        return adjust_segment_after_shrink (file_vnode, previous_size, file_size, has_write_capability);
 
     if (file_size > previous_size)
-        return adjust_segment_after_growth (file_vnode, previous_size, file_size, has_cache_writer);
+        return adjust_segment_after_growth (file_vnode, previous_size, file_size, has_write_capability);
 
     return 0;
 }
@@ -382,7 +434,7 @@ static int resize_cached_file (
     struct usfs_node * node = _node_of (file_vnode);
     const uint64_t previous_size = get_cache_size (node);
     const uint64_t file_size = resize_request->size;
-    const int has_cache_writer = has_cached_write_handle (node);
+    const int has_write_capability = has_pager_write_capability (node);
 
     int rc = 0;
 
@@ -400,7 +452,7 @@ static int resize_cached_file (
         }
     }
 
-    rc = adjust_segment_after_resize (file_vnode, previous_size, file_size, has_cache_writer);
+    rc = adjust_segment_after_resize (file_vnode, previous_size, file_size, has_write_capability);
     if (rc == 0)
         return 0;
 
@@ -447,7 +499,7 @@ struct usfs_cache_chunk_result
 
 static int prepare_cached_write (const struct usfs_cache_io_context * io_context)
 {
-    const int rc = ensure_cache_handle (io_context->node, true, NULL);
+    const int rc = enable_pager_write (io_context->node, io_context->credentials);
     if (rc != 0)
         return rc;
 
@@ -664,58 +716,32 @@ static int transfer_cached_data (
     return rc;
 }
 
-static void delete_cache_segment (const struct usfs_node * node, const struct usfs_mount_data * mount_data)
+static int delete_cache_segment (struct usfs_node * node, const struct usfs_mount_data * mount_data)
 {
     if (node->gn->gn_seg == 0)
-        return;
+        return 0;
 
     const vmid_t segment = node->gn->gn_seg;
-    node->gn->gn_seg = 0;
-
     if (vms_delete (segment) != 0)
-        abort_connection (mount_data->conn);
-}
-
-static struct usfs_open_state * detach_cache_handle (struct usfs_node * node, struct usfs_open_state ** cache_handle)
-{
-    struct usfs_open_state * open_state = *cache_handle;
-    *cache_handle = NULL;
-
-    if (open_state == NULL)
-        return NULL;
-
-    --open_state->cache_refs;
-    --open_state->refs;
-    if (open_state->refs != 0)
-        return NULL;
-
-    struct usfs_open_state ** open_state_link = usfs_open_state_link_locked (node, open_state);
-    *open_state_link = open_state->next;
-
-    return open_state;
-}
-
-static void dispose_cache_handle (struct usfs_node * node, struct usfs_mount_data * mount_data, struct usfs_open_state ** cache_handle)
-{
-    struct usfs_open_state * released_handle = NULL;
-
-    write_synchronized_with (global_lock)
     {
-        released_handle = detach_cache_handle (node, cache_handle);
+        abort_connection (mount_data->conn);
+        return EIO;
     }
 
-    if (released_handle == NULL)
-        return;
+    node->gn->gn_seg = 0;
 
-    _send_release (mount_data, node->nodeid, released_handle->fh, released_handle->flags, 0, NULL);
-    usfs_open_state_discard (released_handle);
+    return 0;
 }
 
-static void dispose_cache_resources (struct usfs_node * node, struct usfs_mount_data * mount_data)
+static int dispose_cache_resources (struct usfs_node * node, struct usfs_mount_data * mount_data)
 {
-    delete_cache_segment (node, mount_data);
-    dispose_cache_handle (node, mount_data, &node->cache_reader);
-    dispose_cache_handle (node, mount_data, &node->cache_writer);
+    const int rc = delete_cache_segment (node, mount_data);
+    if (rc != 0)
+        return rc;
+
+    release_pager_resource (node, mount_data);
+
+    return 0;
 }
 
 static int is_next_sync_candidate (

@@ -33,6 +33,7 @@ static struct vnode *other_vnode;
 static struct vfs *watched_vfs;
 static unsigned mount_frees, dispose_calls;
 static int dispose_error;
+static int disposal_failure;
 
 static void invoke_once(void (**hook)(void))
 {
@@ -162,13 +163,15 @@ int vfsrele(struct vfs *vfsp)
 
 static int flush_cached_pages(struct vnode *vp, int range, uint64_t offset, uint64_t length, int discard)
 { (void)vp; (void)range; (void)offset; (void)length; (void)discard; return 0; }
-static void dispose_cache_resources(struct usfs_node *node, struct usfs_mount_data *mount)
+static int dispose_cache_resources(struct usfs_node *node, struct usfs_mount_data *mount)
 {
     (void)node;
     ++dispose_calls;
     invoke_once(&dispose_hook);
     if (mount == watched_mount && (mount_frees != 0 || mount->conn == NULL)) abort();
     if (dispose_error) abort_connection(mount->conn);
+    if (disposal_failure) return EIO;
+    return 0;
 }
 static void usfs_vnode_hold_locked(struct vnode *vn, enum usfs_instrumentation_node_reuse why)
 { (void)why; ++vn->v_count; }
@@ -212,7 +215,7 @@ static void reset_counters(void)
     forget_error = 0; forget_id = forget_count = 0;
     dispose_hook = abort_hook = forget_hook = NULL;
     watched_mount = NULL; watched_vfs = NULL; other_vnode = NULL;
-    mount_frees = dispose_calls = 0; dispose_error = 0;
+    mount_frees = dispose_calls = 0; dispose_error = disposal_failure = 0;
 }
 
 static void initialize_node(struct usfs_node *node, struct vnode *vn,
@@ -244,7 +247,7 @@ int main(void)
     struct gnode second_gnode;
     struct vfs vfs;
 
-    tap_plan(&tap, 29);
+    tap_plan(&tap, 31);
 
     reset_counters();
     memset(&conn, 0, sizeof(conn));
@@ -279,6 +282,27 @@ int main(void)
                      forced_recovery_calls == 1 &&
                      deferred_recovery_calls == 0,
            "immediate forced unmount quarantines and releases the channel");
+
+    reset_counters();
+    memset(&conn, 0, sizeof(conn));
+    memset(&mount, 0, sizeof(mount));
+    memset(&vfs, 0, sizeof(vfs));
+    conn.state = USFS_CONN_ACTIVE;
+    mount.conn = &conn;
+    mount.state = USFS_MOUNT_ACTIVE;
+    initialize_node(&first, &first_vnode, &first_gnode, &vfs, 41);
+    mount.nodes = &first;
+    vfs.vfs_data = (caddr_t)&mount;
+    disposal_failure = 1;
+
+    tap_ok(&tap, gn_rele(&first_vnode) == EIO && mount.nodes == NULL &&
+                    mount.failed_cache_nodes == &first && mount.reclaiming_nodes == 1 &&
+                    vnode_free_calls == 0 && gnode_free_calls == 0,
+           "failed VMM teardown quarantines its vnode and reports the error");
+    tap_ok(&tap, usfs_unmount(&vfs, UVMNT_FORCE, NULL) == 0 &&
+                    vfs.vfs_data == (caddr_t)&mount && mount_frees == 0 &&
+                    mount.failed_cache_nodes == &first,
+           "forced unmount keeps quarantined pager storage addressable");
 
     reset_counters();
     memset(&conn, 0, sizeof(conn));

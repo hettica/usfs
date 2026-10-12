@@ -6,7 +6,7 @@
 
 static void release_detached_mount (struct usfs_mount_data * mount_data);
 
-static void free_mount_nodes (struct usfs_mount_data * mount_data)
+static int free_mount_nodes (struct usfs_mount_data * mount_data)
 {
     struct usfs_node * node = mount_data->nodes;
 
@@ -17,8 +17,15 @@ static void free_mount_nodes (struct usfs_mount_data * mount_data)
         if (node->gn->gn_seg != 0 && flush_cached_pages (node->vn, 0, 0, 0, 0) != 0)
             abort_connection (mount_data->conn);
 
-        dispose_cache_resources (node, mount_data);
+        const int disposal_rc = dispose_cache_resources (node, mount_data);
+        if (disposal_rc != 0)
+            return disposal_rc;
+
         (void)usfs_forget (mount_data->conn, node->nodeid, node->lookup_refs);
+
+        mount_data->nodes = next;
+        if (mount_data->root == node)
+            mount_data->root = NULL;
 
         write_synchronized_with (global_lock)
         {
@@ -33,6 +40,8 @@ static void free_mount_nodes (struct usfs_mount_data * mount_data)
 
         node = next;
     }
+
+    return 0;
 }
 
 static int detach_mount_data (struct vfs * file_system, struct usfs_mount_data ** reply)
@@ -57,7 +66,19 @@ static int detach_mount_data (struct vfs * file_system, struct usfs_mount_data *
         file_system->vfs_data = NULL;
     }
 
-    free_mount_nodes (mount_data);
+    const int free_rc = free_mount_nodes (mount_data);
+    if (free_rc != 0)
+    {
+        write_synchronized_with (global_lock)
+        {
+            file_system->vfs_data = (caddr_t)mount_data;
+            if (mount_data->conn != NULL)
+                mount_data->conn->mounted_data = mount_data;
+        }
+
+        return free_rc;
+    }
+
     mount_data->nodes = NULL;
     mount_data->root = NULL;
     *reply = mount_data;
@@ -71,8 +92,8 @@ static struct usfs_mount_data * claim_stale_mount (struct vfs * file_system)
 {
     struct usfs_mount_data * mount = (struct usfs_mount_data *)file_system->vfs_data;
 
-    if (mount == NULL || mount->state != USFS_MOUNT_STALE || mount->nodes != NULL || mount->reclaiming_nodes != 0 || mount->inflight_vgets != 0 ||
-        mount->unmount_in_progress)
+    if (mount == NULL || mount->state != USFS_MOUNT_STALE || mount->nodes != NULL || mount->failed_cache_nodes != NULL ||
+        mount->reclaiming_nodes != 0 || mount->inflight_vgets != 0 || mount->unmount_in_progress)
         return NULL;
 
     file_system->vfs_data = NULL;
