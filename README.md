@@ -1,3 +1,5 @@
+[![Quality gate status](https://sonarcloud.io/api/project_badges/measure?project=hettica_usfs&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=hettica_usfs)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=hettica_usfs&metric=coverage)](https://sonarcloud.io/summary/new_code?id=hettica_usfs)
 # USFS: userspace file systems for IBM AIX
 
 USFS is a 64-bit AIX filesystem kernel extension and a userspace client library. 

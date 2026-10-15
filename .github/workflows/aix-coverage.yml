@@ -1,0 +1,57 @@
+# Copyright (c) 2026 Raman Dzehtsiar
+# SPDX-License-Identifier: MIT
+
+name: AIX Coverage
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    name: Coverage and SonarCloud
+    runs-on:
+      - codebuild-usfs-${{ github.run_id }}-${{ github.run_attempt }}
+      - buildspec-override:true
+    env:
+      AIX_HOST: ${{ secrets.AIX_HOST }}
+      AIX_PORT: ${{ secrets.AIX_PORT }}
+      AIX_USER: ${{ secrets.AIX_USER }}
+      AIX_SSH_OPTIONS: ${{ secrets.AIX_SSH_OPTIONS }}
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate Sonar keys and install GPG tools
+        shell: bash
+        env:
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
+        run: bash tests/ci/install-sonar-scan-tools.sh
+
+      - name: Generate and download coverage reports
+        shell: bash
+        run: bash tests/ci/collect-aix-coverage.sh
+
+      - name: Cache SonarQube packages
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+
+      - name: Analyze sources and publish coverage to SonarCloud
+        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >-
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}

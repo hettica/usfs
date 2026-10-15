@@ -1,0 +1,32 @@
+# Copyright (c) 2026 Raman Dzehtsiar
+# SPDX-License-Identifier: MIT
+
+name: AIX Production Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Production package
+    runs-on:
+      - codebuild-usfs-${{ github.run_id }}-${{ github.run_attempt }}
+      - buildspec-override:true
+    env:
+      AIX_HOST: ${{ secrets.AIX_HOST }}
+      AIX_PORT: ${{ secrets.AIX_PORT }}
+      AIX_USER: ${{ secrets.AIX_USER }}
+      AIX_SSH_OPTIONS: ${{ secrets.AIX_SSH_OPTIONS }}
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Build production RPM
+        shell: bash
+        run: bash tests/ci/build-aix-package.sh
