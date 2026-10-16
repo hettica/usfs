@@ -111,6 +111,25 @@ static int close_test_directory (DIR * directory_stream)
     return 0;
 }
 
+static ssize_t symbolic_link_result;
+static unsigned symbolic_link_calls;
+
+static ssize_t read_test_symbolic_link (const char * path, char * buffer, size_t capacity)
+{
+    (void)path;
+    ++symbolic_link_calls;
+
+    if (symbolic_link_result < 0)
+    {
+        errno = EACCES;
+        return -1;
+    }
+
+    memset (buffer, 'x', capacity);
+    return symbolic_link_result;
+}
+
+#define readlink           read_test_symbolic_link
 #define open(...)          open_test_file (__VA_ARGS__)
 #define fstat(...)         stat_test_file (__VA_ARGS__)
 #define close(...)         close_test_file (__VA_ARGS__)
@@ -121,6 +140,7 @@ static int close_test_directory (DIR * directory_stream)
 #define usfs_directory_add fill_test_directory
 #define main               mirror_program_main
 #include "../../../examples/mirror.c"
+#undef readlink
 #undef main
 #undef usfs_directory_add
 #undef closedir
@@ -172,7 +192,7 @@ int main (void)
 {
     struct tap_state tap;
 
-    tap_plan (&tap, 9);
+    tap_plan (&tap, 14);
 
     reset_directory_case ();
     const struct usfs_object_identity unknown_identity = { .nodeid = 9 };
@@ -229,6 +249,42 @@ int main (void)
         &tap,
         run_directory_case () == -EACCES && read_calls == 0 && close_calls == 0,
         "open failure returns its error without touching a stream"
+    );
+
+    char link_buffer[4];
+
+    memset (link_buffer, 'z', sizeof (link_buffer));
+    symbolic_link_calls = 0;
+    tap_ok (
+        &tap,
+        read_symbolic_link (NULL, "/link", link_buffer, 0) == -EINVAL && symbolic_link_calls == 0 && link_buffer[0] == 'z',
+        "zero-capacity symlink buffer is rejected before readlink"
+    );
+
+    symbolic_link_result = sizeof (link_buffer) - 1;
+    tap_ok (
+        &tap,
+        read_symbolic_link (NULL, "/link", link_buffer, sizeof (link_buffer)) == 0 && memcmp (link_buffer, "xxx", sizeof (link_buffer) - 1) == 0 &&
+            link_buffer[3] == '\0',
+        "maximum symlink result leaves room for the terminator"
+    );
+
+    symbolic_link_result = sizeof (link_buffer);
+    link_buffer[3] = 'z';
+    tap_ok (
+        &tap,
+        read_symbolic_link (NULL, "/link", link_buffer, sizeof (link_buffer)) == -EIO && link_buffer[3] == 'z',
+        "oversized symlink result is rejected before termination"
+    );
+
+    symbolic_link_result = -1;
+    tap_ok (&tap, read_symbolic_link (NULL, "/link", link_buffer, sizeof (link_buffer)) == -EACCES, "readlink failure preserves its error");
+
+    symbolic_link_result = 0;
+    tap_ok (
+        &tap,
+        read_symbolic_link (NULL, "/link", link_buffer, 1) == 0 && link_buffer[0] == '\0',
+        "one-byte symlink buffer can hold an empty target"
     );
 
     return tap_finish (&tap);

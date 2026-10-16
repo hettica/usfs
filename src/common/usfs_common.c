@@ -4,6 +4,8 @@
 #include "usfs_common.h"
 #include "usfs_config_instrumentation.h"
 
+#include <limits.h>
+
 /* Shared implementation for the AIX ODM configuration methods. */
 
 /* ------------------------------------------------------------------------- *
@@ -285,34 +287,31 @@ static FILE * create_vfs_temporary (char * temporary_path, const size_t capacity
 
 static int copy_other_vfs_entries (FILE * source, FILE * target, int * last_character)
 {
-    char line[USFS_LOG_BUFFER_SIZE];
-    int line_rc = 0;
-    int failed = false;
+    if (source == NULL)
+        return USFS_SUCCESS;
 
-    while (source != NULL &&
-           (line_rc = usfs_vfs_read_line (source, line, sizeof (line))) > 0)
+    char line[USFS_LOG_BUFFER_SIZE];
+
+    for (;;)
     {
+        const int rc = usfs_vfs_read_line (source, line, sizeof (line));
+        if (rc < 0)
+            return USFS_FAILURE;
+
+        if (rc == 0)
+            break;
+
         if (is_usfs_vfs_line (line))
             continue;
+
         if (fputs (line, target) == EOF)
-        {
-            failed = true;
-            break;
-        }
+            return USFS_FAILURE;
+
         if (line[0] != '\0')
             *last_character = line[strlen (line) - 1];
     }
 
-    if (failed)
-        return USFS_FAILURE;
-
-    if (line_rc < 0)
-        return USFS_FAILURE;
-
-    if (source != NULL && ferror (source))
-        return USFS_FAILURE;
-
-    return USFS_SUCCESS;
+    return ferror (source) ? USFS_FAILURE : USFS_SUCCESS;
 }
 
 static int write_vfs_registration (FILE * target, const int last_character, const int file_system_type)
@@ -485,26 +484,117 @@ static int usfs_remove_device_node (const char * logical_device_name, const dev_
     return errno == ENOENT ? USFS_SUCCESS : USFS_FAILURE;
 }
 
-static int apply_device_node_policy (const char * device_path)
+enum
 {
-    /* mknod(2) is affected by the invoking process's umask.  Apply owner,
-     * group, and mode explicitly so configuration never inherits ambient
-     * security state.  Remove the node if the complete policy cannot be
-     * established; configure rollback will handle the remaining state. */
-    /* This locked, single-threaded ODM method owns both static results. */
-    /* cppcheck-suppress getpwnamCalled */
-    const struct passwd * owner = getpwnam (USFS_DEVICE_NODE_OWNER);
-    /* cppcheck-suppress getgrnamCalled */
-    const struct group * group = getgrnam (USFS_DEVICE_NODE_GROUP);
-    if (owner == NULL || group == NULL ||
-        chown (device_path, owner->pw_uid, group->gr_gid) != 0 ||
-        chmod (device_path, USFS_DEVICE_NODE_PERMS) != 0)
-    {
-        (void)unlink (device_path);
+    ACCOUNT_LOOKUP_INITIAL_CAPACITY = 1024
+};
+
+/* AIX's reentrant account APIs take an int buffer size. */
+static int grow_account_buffer (char ** buffer, size_t * capacity)
+{
+    if (*capacity == INT_MAX)
         return USFS_FAILURE;
+
+    size_t next_capacity = ACCOUNT_LOOKUP_INITIAL_CAPACITY;
+
+    if (*capacity != 0)
+        next_capacity = *capacity > INT_MAX / 2 ? INT_MAX : *capacity * 2;
+
+    char * expanded_buffer = realloc (*buffer, next_capacity);
+    if (expanded_buffer == NULL)
+        return USFS_FAILURE;
+
+    *buffer = expanded_buffer;
+    *capacity = next_capacity;
+    return USFS_SUCCESS;
+}
+
+static int resolve_device_owner (uid_t * owner_id)
+{
+    char * buffer = NULL;
+    size_t capacity = 0;
+    int rc = USFS_FAILURE;
+
+    while (grow_account_buffer (&buffer, &capacity) == USFS_SUCCESS)
+    {
+        struct passwd account = { 0 };
+        struct passwd * owner = NULL;
+
+        const int lookup_rc = getpwnam_r (USFS_DEVICE_NODE_OWNER, &account, buffer, (int)capacity, &owner);
+        if (lookup_rc == ERANGE)
+            continue;
+
+        if (lookup_rc == 0 && owner != NULL)
+        {
+            *owner_id = owner->pw_uid;
+            rc = USFS_SUCCESS;
+        }
+
+        break;
     }
 
+    free (buffer);
+    return rc;
+}
+
+static int resolve_device_group (gid_t * group_id)
+{
+    char * buffer = NULL;
+    size_t capacity = 0;
+    int rc = USFS_FAILURE;
+
+    while (grow_account_buffer (&buffer, &capacity) == USFS_SUCCESS)
+    {
+        struct group account = { 0 };
+        struct group * group = NULL;
+
+        const int lookup_rc = getgrnam_r (USFS_DEVICE_NODE_GROUP, &account, buffer, (int)capacity, &group);
+        if (lookup_rc == ERANGE)
+            continue;
+
+        if (lookup_rc == 0 && group != NULL)
+        {
+            *group_id = group->gr_gid;
+            rc = USFS_SUCCESS;
+        }
+
+        break;
+    }
+
+    free (buffer);
+    return rc;
+}
+
+static int set_device_node_policy (const char * device_path)
+{
+    uid_t owner_id;
+    gid_t group_id;
+
+    if (resolve_device_owner (&owner_id) != USFS_SUCCESS)
+        return USFS_FAILURE;
+
+    if (resolve_device_group (&group_id) != USFS_SUCCESS)
+        return USFS_FAILURE;
+
+    if (chown (device_path, owner_id, group_id) != 0)
+        return USFS_FAILURE;
+
+    if (chmod (device_path, USFS_DEVICE_NODE_PERMS) != 0)
+        return USFS_FAILURE;
+
     return USFS_SUCCESS;
+}
+
+static int apply_device_node_policy (const char * device_path)
+{
+    /* mknod is affected by umask. Remove the node unless its complete owner,
+     * group and mode policy can be established. Configuration rolls back the
+     * remaining state. */
+    const int rc = set_device_node_policy (device_path);
+    if (rc != USFS_SUCCESS)
+        (void)unlink (device_path);
+
+    return rc;
 }
 
 /*

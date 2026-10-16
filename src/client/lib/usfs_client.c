@@ -4938,7 +4938,7 @@ static int create_directory_spool (const struct usfs_client * client, int * spoo
     if (temporary_directory == NULL || temporary_directory[0] == '\0')
         temporary_directory = "/tmp";
 
-    char resolved_directory[USFS_PATH_MAX];
+    char resolved_directory[PATH_MAX];
     if (realpath (temporary_directory, resolved_directory) == NULL)
         return EIO;
 

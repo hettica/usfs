@@ -410,6 +410,12 @@ endfunction()
 usfs_add_unit(tap_selftest PORTABLE tests/harness/tap.c tests/harness/tap_selftest.c)
 usfs_add_unit(configuration_methods_test PORTABLE tests/harness/tap.c
     tests/unit/aix/configuration_methods_test.c)
+usfs_add_unit(device_node_policy_test PORTABLE tests/harness/tap.c
+    src/common/instrumentation/config_normal.c tests/unit/aix/device_node_policy_test.c)
+target_compile_options(_usfs_unit_device_node_policy_test PRIVATE -pthread)
+target_compile_options(_usfs_coverage_unit_device_node_policy_test PRIVATE -pthread)
+target_link_libraries(_usfs_unit_device_node_policy_test PRIVATE cfg odm pthreads)
+target_link_libraries(_usfs_coverage_unit_device_node_policy_test PRIVATE cfg odm pthreads)
 usfs_add_unit(protocol_test PORTABLE tests/harness/tap.c src/common/usfs_validate.c
     src/common/usfs_status.c tests/unit/protocol_test.c)
 usfs_add_unit(corpus_test PORTABLE tests/harness/tap.c src/common/usfs_validate.c

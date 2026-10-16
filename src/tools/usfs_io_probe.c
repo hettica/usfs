@@ -206,6 +206,14 @@ static int run_io (const char * operation, const char * path, const char * count
     saved_errno = errno;
     final_offset = lseek (file_descriptor, 0, SEEK_CUR);
 
+    if (result > 0 && (uint64_t)result > count_value)
+    {
+        fprintf (stderr, "Failed to validate read from %s: returned byte count exceeds the requested count\n", path);
+        close (file_descriptor);
+        free (buffer);
+        return EXIT_FAILURE;
+    }
+
     if (flags == O_RDONLY && result > 0)
         for (byte_index = 0; byte_index < (size_t)result; ++byte_index)
             if (buffer[byte_index] !=
@@ -1355,9 +1363,22 @@ static int run_held_close (const char * path, const char * ready, const char * r
         return 1;
     }
     close (marker);
-    while (access (release, F_OK) != 0 && attempts++ < 200)
-        usleep (100000);
-    if (attempts >= 200)
+    enum
+    {
+        RELEASE_WAIT_MAX_ATTEMPTS = 200,
+        RELEASE_WAIT_INTERVAL_US = 100000
+    };
+
+    while (access (release, F_OK) != 0)
+    {
+        if (attempts >= RELEASE_WAIT_MAX_ATTEMPTS)
+            break;
+
+        ++attempts;
+        usleep (RELEASE_WAIT_INTERVAL_US);
+    }
+
+    if (attempts >= RELEASE_WAIT_MAX_ATTEMPTS)
     {
         close (file_descriptor);
         return 1;

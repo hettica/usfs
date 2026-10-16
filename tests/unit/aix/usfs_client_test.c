@@ -56,6 +56,7 @@ static int directory_spool_create_error, directory_spool_write_error, directory_
 static unsigned directory_spool_opens, directory_spool_closes;
 static void * directory_allocation;
 static int path_error, open_error, handshake_error, version_error, mount_error;
+static const char * resolved_test_path;
 static unsigned opens, closes, mounts;
 static int transport_flags;
 static int mount_saw_cleanup_storage;
@@ -217,7 +218,7 @@ char * realpath (const char * path, char * resolved)
         errno = ENOENT;
         return NULL;
     }
-    return strcpy (resolved, "/canonical/mount");
+    return strcpy (resolved, resolved_test_path != NULL ? resolved_test_path : "/canonical/mount");
 }
 
 int open (const char * path, int flags, ...)
@@ -3104,6 +3105,49 @@ static int large_directory_listing (
     return 0;
 }
 
+static void test_directory_spool_path (struct tap_state * tap)
+{
+    struct usfs_client client = { 0 };
+    int descriptor = -1;
+    char resolved_path[PATH_MAX];
+
+    memset (resolved_path, 'x', sizeof (resolved_path) - 1);
+    resolved_path[0] = '/';
+    resolved_path[sizeof (resolved_path) - 1] = '\0';
+    resolved_test_path = resolved_path;
+
+    const unsigned initial_opens = directory_spool_opens;
+    const int rc = create_directory_spool (&client, &descriptor);
+    if (rc == 0)
+        close (descriptor);
+
+    const size_t required_capacity = strlen (resolved_path) + sizeof ("/usfs-dir-XXXXXX");
+    const int expected_result = required_capacity > USFS_PATH_MAX ? ENAMETOOLONG : 0;
+    tap_ok (
+        tap,
+        rc == expected_result && directory_spool_opens == initial_opens + (expected_result == 0),
+        "maximum realpath result is accepted only when the spool template fits"
+    );
+
+    client.mountpoint = "/canonical/mount";
+    resolved_test_path = "/canonical/mount/temporary";
+    descriptor = -1;
+    const unsigned opens_before_rejection = directory_spool_opens;
+    tap_ok (
+        tap,
+        create_directory_spool (&client, &descriptor) == EINVAL && descriptor == -1 && directory_spool_opens == opens_before_rejection,
+        "spool directory within the mount is rejected before file creation"
+    );
+
+    resolved_test_path = "/canonical/mount-other";
+    const int sibling_rc = create_directory_spool (&client, &descriptor);
+    if (sibling_rc == 0)
+        close (descriptor);
+
+    tap_ok (tap, sibling_rc == 0, "spool directory with a shared mount prefix remains valid");
+    resolved_test_path = NULL;
+}
+
 static void test_large_directory_spool (struct tap_state * tap)
 {
     struct usfs_operations operations = { 0 };
@@ -4476,7 +4520,7 @@ static void test_pager_tokens (struct tap_state * tap)
 int main (void)
 {
     struct tap_state tap;
-    tap_plan (&tap, 295);
+    tap_plan (&tap, 298);
     test_worker_capacity_notifications (&tap);
     test_pager_tokens (&tap);
     test_native_api_contract (&tap);
@@ -4512,6 +4556,7 @@ int main (void)
     test_partial_readdir_error (&tap);
     test_readdir_rejects_wire_handle (&tap);
     test_directory_isolation (&tap);
+    test_directory_spool_path (&tap);
     test_large_directory_spool (&tap);
     test_directory_ram_bound (&tap);
     test_atomic_create (&tap);

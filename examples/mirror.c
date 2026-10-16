@@ -228,8 +228,11 @@ static int read_symbolic_link (const struct usfs_client_request * request, const
         return -EINVAL;
 
     const ssize_t target_length = readlink (source_path, buffer, buffer_capacity - 1);
-    if (target_length == -1)
+    if (target_length < 0)
         return -errno;
+
+    if ((size_t)target_length >= buffer_capacity)
+        return -EIO;
 
     /* The high-level API expects a NUL-terminated target and a 0 return,
        not the length. */
