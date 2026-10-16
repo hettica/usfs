@@ -798,10 +798,7 @@ struct automatic_mount_paths
 
 static int create_mount_directory (const char * directory_path)
 {
-    if (mkdir (directory_path, 0755) == 0)
-        return 0;
-
-    if (errno == EEXIST)
+    if (mkdir (directory_path, S_IRWXU) == 0)
         return 0;
 
     fprintf (stderr, "Failed to create mount directory %s: %s\n", directory_path, strerror (errno));
@@ -876,7 +873,10 @@ static int prepare_mount_arguments (struct example_arguments * arguments, struct
         return -1;
 
     if (create_mount_directory (mount_paths->mountpoint_path) != 0)
+    {
+        (void)rmdir (mount_paths->parent_directory_path);
         return -1;
+    }
 
     if (!is_mountpoint_outside_source (mount_paths->mountpoint_path))
     {

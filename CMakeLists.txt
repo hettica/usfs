@@ -416,6 +416,10 @@ target_compile_options(_usfs_unit_device_node_policy_test PRIVATE -pthread)
 target_compile_options(_usfs_coverage_unit_device_node_policy_test PRIVATE -pthread)
 target_link_libraries(_usfs_unit_device_node_policy_test PRIVATE cfg odm pthreads)
 target_link_libraries(_usfs_coverage_unit_device_node_policy_test PRIVATE cfg odm pthreads)
+usfs_add_unit(coverage_container_file_test PORTABLE tests/harness/tap.c
+    tests/unit/aix/coverage_container_file_test.c)
+usfs_add_unit(io_probe_security_test PORTABLE tests/harness/tap.c
+    tests/unit/aix/io_probe_security_test.c)
 usfs_add_unit(protocol_test PORTABLE tests/harness/tap.c src/common/usfs_validate.c
     src/common/usfs_status.c tests/unit/protocol_test.c)
 usfs_add_unit(corpus_test PORTABLE tests/harness/tap.c src/common/usfs_validate.c

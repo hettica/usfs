@@ -57,6 +57,8 @@ static unsigned directory_spool_opens, directory_spool_closes;
 static void * directory_allocation;
 static int path_error, open_error, handshake_error, version_error, mount_error;
 static const char * resolved_test_path;
+static int private_directory_error, private_directory_public, private_directory_foreign;
+static unsigned private_directory_closes;
 static unsigned opens, closes, mounts;
 static int transport_flags;
 static int mount_saw_cleanup_storage;
@@ -223,6 +225,9 @@ char * realpath (const char * path, char * resolved)
 
 int open (const char * path, int flags, ...)
 {
+    if ((flags & O_DIRECTORY) != 0)
+        return 77;
+
     if (strstr (path, "/wake") != NULL)
         return (flags & O_ACCMODE) == O_RDONLY ? 74 : 75;
     (void)path;
@@ -239,6 +244,12 @@ int open (const char * path, int flags, ...)
 
 int close (int fd)
 {
+    if (fd == 77)
+    {
+        ++private_directory_closes;
+        return 0;
+    }
+
     if (fd == 76)
     {
         ++directory_spool_closes;
@@ -319,6 +330,67 @@ ssize_t pread (int fd, void * data, size_t length, off_t offset)
     return (ssize_t)length;
 }
 
+static int private_test_fstat (int descriptor, struct stat * metadata)
+{
+    if (descriptor != 77)
+        return fstat (descriptor, metadata);
+
+    if (private_directory_error)
+    {
+        errno = EIO;
+        return -1;
+    }
+
+    memset (metadata, 0, sizeof (*metadata));
+    metadata->st_mode = S_IFDIR | S_IRWXU;
+    if (private_directory_public)
+        metadata->st_mode |= S_IROTH;
+
+    metadata->st_uid = geteuid () + private_directory_foreign;
+    return 0;
+}
+
+int openat (int directory_descriptor, const char * path, int flags, ...)
+{
+    if (directory_descriptor != 77 || (flags & O_NOFOLLOW) == 0 || (flags & _FCLOEXEC) == 0)
+        abort ();
+
+    if (strcmp (path, "wake") == 0)
+        return (flags & O_ACCMODE) == O_RDONLY ? 74 : 75;
+
+    if (strcmp (path, "spool") != 0 || (flags & (O_CREAT | O_EXCL)) != (O_CREAT | O_EXCL))
+        abort ();
+
+    if (directory_spool_create_error)
+    {
+        errno = EIO;
+        return -1;
+    }
+
+    ++directory_spool_opens;
+    directory_spool_length = 0;
+    return 76;
+}
+
+int mkfifoat (int directory_descriptor, const char * path, mode_t mode)
+{
+    if (directory_descriptor != 77 || strcmp (path, "wake") != 0 || mode != (S_IRUSR | S_IWUSR))
+        abort ();
+
+    return 0;
+}
+
+int unlinkat (int directory_descriptor, const char * path, int flags)
+{
+    if (directory_descriptor != 77 || flags != 0)
+        abort ();
+
+    if (strcmp (path, "wake") != 0 && strcmp (path, "spool") != 0)
+        abort ();
+
+    return 0;
+}
+
 char * mkdtemp (char * path)
 {
     return path;
@@ -389,7 +461,9 @@ int vmount (struct vmount * mount, int length)
 #define USFS_OBJECT_WAITING(id)           append_test_waiting (id)
 #define poll                              loop_test_poll
 #define sigaction(...)                    signal_test_sigaction (__VA_ARGS__)
+#define fstat                             private_test_fstat
 #include "../../../src/client/lib/usfs_client.c"
+#undef fstat
 #undef sigaction
 #undef poll
 #undef pthread_key_create
@@ -3105,6 +3179,27 @@ static int large_directory_listing (
     return 0;
 }
 
+static void test_private_temporary_directory (struct tap_state * tap)
+{
+    for (unsigned scenario = 0; scenario < 4; ++scenario)
+    {
+        char directory[] = "/fixture/private-XXXXXX";
+        const unsigned closes_before = private_directory_closes;
+
+        private_directory_error = scenario == 1;
+        private_directory_public = scenario == 2;
+        private_directory_foreign = scenario == 3;
+        const int descriptor = open_private_temporary_directory (directory);
+        const int valid = scenario == 0 ? descriptor == 77 : descriptor == INVALID_FILE_DESCRIPTOR && private_directory_closes == closes_before + 1;
+        if (descriptor >= 0)
+            close (descriptor);
+
+        tap_ok (tap, valid, "temporary directory descriptor requires private permissions and the effective owner");
+    }
+
+    private_directory_error = private_directory_public = private_directory_foreign = 0;
+}
+
 static void test_directory_spool_path (struct tap_state * tap)
 {
     struct usfs_client client = { 0 };
@@ -4520,7 +4615,7 @@ static void test_pager_tokens (struct tap_state * tap)
 int main (void)
 {
     struct tap_state tap;
-    tap_plan (&tap, 298);
+    tap_plan (&tap, 302);
     test_worker_capacity_notifications (&tap);
     test_pager_tokens (&tap);
     test_native_api_contract (&tap);
@@ -4556,6 +4651,7 @@ int main (void)
     test_partial_readdir_error (&tap);
     test_readdir_rejects_wire_handle (&tap);
     test_directory_isolation (&tap);
+    test_private_temporary_directory (&tap);
     test_directory_spool_path (&tap);
     test_large_directory_spool (&tap);
     test_directory_ram_bound (&tap);

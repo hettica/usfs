@@ -192,7 +192,7 @@ int main (void)
 {
     struct tap_state tap;
 
-    tap_plan (&tap, 14);
+    tap_plan (&tap, 17);
 
     reset_directory_case ();
     const struct usfs_object_identity unknown_identity = { .nodeid = 9 };
@@ -286,6 +286,27 @@ int main (void)
         read_symbolic_link (NULL, "/link", link_buffer, 1) == 0 && link_buffer[0] == '\0',
         "one-byte symlink buffer can hold an empty target"
     );
+
+    char mount_fixture[] = "/tmp/usfs-mount-security-XXXXXX";
+    if (mkdtemp (mount_fixture) == NULL)
+        abort ();
+
+    char mount_directory[PATH_MAX];
+    snprintf (mount_directory, sizeof (mount_directory), "%s/mount", mount_fixture);
+    struct stat mount_metadata;
+
+    tap_ok (
+        &tap,
+        create_mount_directory (mount_directory) == 0 && stat (mount_directory, &mount_metadata) == 0 && (mount_metadata.st_mode & 0777) == S_IRWXU,
+        "automatic mount directories grant access only to their owner"
+    );
+    tap_ok (&tap, create_mount_directory (mount_directory) != 0, "automatic mounts refuse a pre-existing directory");
+    if (rmdir (mount_directory) != 0 || symlink (mount_fixture, mount_directory) != 0)
+        abort ();
+
+    tap_ok (&tap, create_mount_directory (mount_directory) != 0, "automatic mounts refuse a pre-existing symbolic link");
+    if (unlink (mount_directory) != 0 || rmdir (mount_fixture) != 0)
+        abort ();
 
     return tap_finish (&tap);
 }

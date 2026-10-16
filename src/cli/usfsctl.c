@@ -1047,7 +1047,9 @@ static int process_command (const int argc, char ** argv)
 
 int main (const int argc, char ** argv)
 {
-    (void)umask (077); // todo: review this
+    /* Trace files are private to the invoking administrator. This mask only
+     * removes permissions; it does not grant process capabilities. */
+    (void)umask (S_IRWXG | S_IRWXO);
 
     const int rc = process_command (argc, argv);
 

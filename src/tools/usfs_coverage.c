@@ -318,56 +318,87 @@ static int snapshot_to_directory (int file_descriptor, const char * directory)
     return rc;
 }
 
-static int unpack_container_file (const char * path, const char * directory)
+static int read_container_file (const int descriptor, unsigned char ** contents, unsigned * length)
 {
-    struct stat status;
-    unsigned char * buffer;
-    unsigned remaining;
-    unsigned char * cursor;
-    int file_descriptor;
-    int rc;
+    struct stat metadata;
+    if (fstat (descriptor, &metadata) != 0)
+        return 1;
 
-    if (stat (path, &status) != 0 || status.st_size <= 0 ||
-        (uint64_t)status.st_size > USFS_GCOV_MAX_SNAPSHOT)
-    {
-        fprintf (stderr, "invalid coverage container file: %s\n", path);
+    if (!S_ISREG (metadata.st_mode))
         return 1;
-    }
-    file_descriptor = open (path, O_RDONLY);
-    if (file_descriptor < 0)
-    {
-        perror ("open coverage container");
+
+    if (metadata.st_size <= 0 || (uint64_t)metadata.st_size > USFS_GCOV_MAX_SNAPSHOT)
         return 1;
-    }
-    remaining = (unsigned)status.st_size;
-    buffer = malloc (remaining);
+
+    const unsigned size = (unsigned)metadata.st_size;
+    unsigned char * buffer = malloc (size);
     if (buffer == NULL)
-    {
-        perror ("malloc coverage container");
-        close (file_descriptor);
         return 1;
-    }
-    cursor = buffer;
+
+    unsigned remaining = size;
+    unsigned char * cursor = buffer;
+
     while (remaining != 0)
     {
-        ssize_t count = read (file_descriptor, cursor, remaining);
-        if (count <= 0)
+        const ssize_t count = read (descriptor, cursor, remaining);
+        if (count < 0 && errno == EINTR)
+            continue;
+
+        if (count <= 0 || (size_t)count > remaining)
         {
-            perror ("read coverage container");
             free (buffer);
-            close (file_descriptor);
             return 1;
         }
+
         cursor += count;
         remaining -= (unsigned)count;
     }
-    if (close (file_descriptor) != 0)
+
+    unsigned char extra_byte;
+    ssize_t extra_count;
+
+    do
     {
-        perror ("close coverage container");
+        extra_count = read (descriptor, &extra_byte, sizeof (extra_byte));
+    }
+    while (extra_count < 0 && errno == EINTR);
+
+    if (extra_count != 0)
+    {
         free (buffer);
         return 1;
     }
-    rc = container_to_directory (buffer, (unsigned)status.st_size, directory);
+
+    *contents = buffer;
+    *length = size;
+    return 0;
+}
+
+static int unpack_container_file (const char * path, const char * directory)
+{
+    /* Open once, then validate and read that descriptor. Nonblocking mode
+     * prevents a substituted FIFO from stalling this administrative tool. */
+    const int descriptor = open (path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | _FCLOEXEC);
+    if (descriptor < 0)
+    {
+        fprintf (stderr, "Failed to open coverage container %s: %s\n", path, strerror (errno));
+        return 1;
+    }
+
+    unsigned char * buffer = NULL;
+    unsigned length = 0;
+    int rc = read_container_file (descriptor, &buffer, &length);
+    if (close (descriptor) != 0)
+        rc = 1;
+
+    if (rc != 0)
+    {
+        fprintf (stderr, "Failed to read coverage container %s: invalid, changed, or unreadable file\n", path);
+        free (buffer);
+        return 1;
+    }
+
+    rc = container_to_directory (buffer, length, directory);
     free (buffer);
     return rc;
 }

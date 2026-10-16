@@ -120,24 +120,80 @@ static void notify_session (const struct client_session * session)
     errno = saved;
 }
 
-static void open_session_wake_fifo (struct client_session * session, const char * path)
+static int is_private_directory (const struct stat * metadata)
 {
-    if (mkfifo (path, S_IRUSR | S_IWUSR) != 0)
+    if (!S_ISDIR (metadata->st_mode))
+        return false;
+
+    if (metadata->st_uid != geteuid ())
+        return false;
+
+    return (metadata->st_mode & (S_IRWXG | S_IRWXO)) == 0;
+}
+
+/* mkdtemp creates a private directory atomically. Anchor later operations to
+ * its verified descriptor so replacing a pathname cannot redirect I/O. */
+static int open_private_temporary_directory (char * directory_template)
+{
+    if (mkdtemp (directory_template) == NULL)
+        return INVALID_FILE_DESCRIPTOR;
+
+    const int descriptor = open (directory_template, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | _FCLOEXEC);
+    if (descriptor < 0)
+    {
+        const int saved_error = errno;
+
+        (void)rmdir (directory_template);
+        errno = saved_error;
+        return INVALID_FILE_DESCRIPTOR;
+    }
+
+    struct stat metadata;
+    int rc = fstat (descriptor, &metadata);
+    if (rc == 0 && !is_private_directory (&metadata))
+    {
+        errno = EACCES;
+        rc = -1;
+    }
+
+    if (rc != 0)
+    {
+        const int saved_error = errno;
+
+        close (descriptor);
+        (void)rmdir (directory_template);
+        errno = saved_error;
+        return INVALID_FILE_DESCRIPTOR;
+    }
+
+    return descriptor;
+}
+
+static void open_session_wake_fifo (struct client_session * session, const int directory_descriptor)
+{
+    if (mkfifoat (directory_descriptor, "wake", S_IRUSR | S_IWUSR) != 0)
         return;
 
-    session->wake_read = open (path, O_RDONLY | O_NONBLOCK | _FCLOEXEC);
+    session->wake_read = openat (directory_descriptor, "wake", O_RDONLY | O_NONBLOCK | O_NOFOLLOW | _FCLOEXEC);
 
     if (session->wake_read < 0)
         return;
 
-    session->wake_write = open (path, O_WRONLY | O_NONBLOCK | _FCLOEXEC);
+    session->wake_write = openat (directory_descriptor, "wake", O_WRONLY | O_NONBLOCK | O_NOFOLLOW | _FCLOEXEC);
 }
 
-static int detach_session_wake_fifo (struct client_session * session, const char * path, const char * directory)
+static int detach_session_wake_fifo (struct client_session * session, const int directory_descriptor, const char * directory)
 {
     int saved_error = errno;
 
-    if (unlink (path) != 0 && session->wake_write >= 0)
+    if (unlinkat (directory_descriptor, "wake", 0) != 0 && session->wake_write >= 0)
+    {
+        saved_error = errno;
+        close (session->wake_write);
+        session->wake_write = INVALID_FILE_DESCRIPTOR;
+    }
+
+    if (close (directory_descriptor) != 0 && session->wake_write >= 0)
     {
         saved_error = errno;
         close (session->wake_write);
@@ -167,20 +223,17 @@ static int detach_session_wake_fifo (struct client_session * session, const char
 
 static int create_session_wake_pipe (struct client_session * session)
 {
-    char directory[] = "/tmp/usfs-wake-XXXXXX"; // todo: review path and permissions
+    char directory[] = "/tmp/usfs-wake-XXXXXX";
 
     session->wake_write = INVALID_FILE_DESCRIPTOR;
     session->wake_read = INVALID_FILE_DESCRIPTOR;
 
-    if (mkdtemp (directory) == NULL)
+    const int directory_descriptor = open_private_temporary_directory (directory);
+    if (directory_descriptor < 0)
         return -1;
 
-    char path[sizeof (directory) + sizeof ("/wake")];
-
-    snprintf (path, sizeof (path), "%s/wake", directory);
-    open_session_wake_fifo (session, path);
-
-    return detach_session_wake_fifo (session, path, directory);
+    open_session_wake_fifo (session, directory_descriptor);
+    return detach_session_wake_fifo (session, directory_descriptor, directory);
 }
 
 enum session_poll_slot
@@ -4951,32 +5004,43 @@ static int create_directory_spool (const struct usfs_client * client, int * spoo
             return EINVAL;
     }
 
-    char spool_path[USFS_PATH_MAX];
-    const int path_length = snprintf (spool_path, sizeof (spool_path), "%s/usfs-dir-XXXXXX", resolved_directory);
-    if (path_length < 0 || (size_t)path_length >= sizeof (spool_path))
+    char private_directory[USFS_PATH_MAX];
+    const int path_length = snprintf (private_directory, sizeof (private_directory), "%s/usfs-dir-XXXXXX", resolved_directory);
+    if (path_length < 0 || (size_t)path_length >= sizeof (private_directory))
         return ENAMETOOLONG;
 
-    const int fd = mkstemp (spool_path);
-    if (fd < 0)
+    const int directory_descriptor = open_private_temporary_directory (private_directory);
+    if (directory_descriptor < 0)
         return EIO;
 
-    int unlink_rc;
-    do
-    {
-        unlink_rc = unlink (spool_path);
-    }
-    while (unlink_rc != 0 && errno == EINTR);
+    const int fd = openat (directory_descriptor, "spool", O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | _FCLOEXEC, S_IRUSR | S_IWUSR);
+    int failed = fd < 0;
 
-    if (unlink_rc != 0)
+    if (fd >= 0)
     {
-        close (fd);
-        unlink (spool_path);
-        return EIO;
+        int unlink_rc;
+
+        do
+        {
+            unlink_rc = unlinkat (directory_descriptor, "spool", 0);
+        }
+        while (unlink_rc != 0 && errno == EINTR);
+
+        if (unlink_rc != 0)
+            failed = true;
     }
 
-    if (fcntl (fd, F_SETFD, FD_CLOEXEC) != 0)
+    if (close (directory_descriptor) != 0)
+        failed = true;
+
+    if (rmdir (private_directory) != 0)
+        failed = true;
+
+    if (failed)
     {
-        close (fd);
+        if (fd >= 0)
+            close (fd);
+
         return EIO;
     }
 

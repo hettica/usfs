@@ -367,6 +367,11 @@ phase_mmap()
     fi
 
     chmod 444 "$1/mapped.bin"
+    # These two cross-user mapping checks deliberately permit parent search.
+    if ! chmod go+x "${1%/*}"; then
+        fail "failed to grant parent search for the cross-user mapping fixture"
+        return
+    fi
     got=$(su nobody -c "/usr/sbin/usfs_io_probe mmap-write-private-readonly \
         '$1/mapped.bin' 4096 0" 2>>"$LOGFILE")
     if echo "$got" | grep -q "result=0 errno=0 source=1"; then
@@ -380,6 +385,9 @@ phase_mmap()
         say "OK   writable shared mapping rejects a read-only descriptor"
     else
         fail "read-only descriptor shared mmap was not rejected: $got"
+    fi
+    if ! chmod go-rwx "${1%/*}"; then
+        fail "failed to restore the private automatic mount parent"
     fi
     chmod 644 "$1/mapped.bin"
 

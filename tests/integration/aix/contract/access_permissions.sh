@@ -18,7 +18,7 @@ set -u
 BASE=/tmp/usfs-access.$$
 DAEMON_LOG=$BASE/daemon.log
 DAEMON_PID=0
-MOUNT=
+MOUNT=$BASE/mnt
 
 is_mounted()
 {
@@ -31,13 +31,15 @@ cleanup()
     rm -rf "$BASE"
 }
 
+# This deliberate multiuser fixture grants search, without directory listing,
+# independently of the examples' private automatic-mount defaults.
+mkdir -m u=rwx,go=x "$BASE" || exit 1
 trap cleanup 0 1 2 15
-mkdir -p "$BASE"
+mkdir -m u=rwx,go= "$MOUNT" || exit 1
 tap_plan 38
 
-/usr/sbin/usfs_memfs --size=1 >"$DAEMON_LOG" 2>&1 &
+/usr/sbin/usfs_memfs --size=1 "$MOUNT" >"$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
-MOUNT=/mnt/$DAEMON_PID/memfs
 usfs_track_pid "$DAEMON_PID"
 usfs_track_mount "$MOUNT"
 

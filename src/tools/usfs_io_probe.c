@@ -33,6 +33,57 @@
 #include <string.h>
 #include <unistd.h>
 
+enum
+{
+    MAPPING_PROBE_GROUP_ID = 1001,
+    MAPPING_PROBE_FILE_MODE = S_IRWXU | S_IRWXG,
+    MAPPING_PROBE_SETID_MODE = S_ISUID | S_ISGID | MAPPING_PROBE_FILE_MODE,
+    MAPPING_PROBE_SETID_DATA_MODE = S_ISUID | S_ISGID | S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP
+};
+
+static int probe_alias_matches (const struct stat * expected, const struct stat * actual)
+{
+    if (!S_ISREG (actual->st_mode))
+        return false;
+
+    if (actual->st_dev != expected->st_dev)
+        return false;
+
+    return actual->st_ino == expected->st_ino;
+}
+
+/* Keep separate open descriptions for alias tests, but bind every reopened
+ * alias to the inode already owned by the probe before reading or writing. */
+static int open_probe_alias (const int owned_descriptor, const char * path, const int flags)
+{
+    struct stat expected;
+    if (fstat (owned_descriptor, &expected) != 0)
+        return INVALID_FILE_DESCRIPTOR;
+
+    const int descriptor = open (path, flags | O_NOFOLLOW | O_NONBLOCK);
+    if (descriptor < 0)
+        return INVALID_FILE_DESCRIPTOR;
+
+    struct stat actual;
+    if (fstat (descriptor, &actual) != 0)
+    {
+        const int saved_error = errno;
+
+        close (descriptor);
+        errno = saved_error;
+        return INVALID_FILE_DESCRIPTOR;
+    }
+
+    if (!probe_alias_matches (&expected, &actual))
+    {
+        close (descriptor);
+        errno = ESTALE;
+        return INVALID_FILE_DESCRIPTOR;
+    }
+
+    return descriptor;
+}
+
 static sigjmp_buf mapping_fault_context;
 static volatile sig_atomic_t mapping_fault_armed;
 static volatile sig_atomic_t mapping_fault_signal;
@@ -898,10 +949,11 @@ static int run_mapped_mode_change (const char * root)
     struct stat value;
     if (snprintf (path, sizeof (path), "%s/mapped-mode-change", root) >= (int)sizeof (path))
         return 1;
-    file_descriptor = open (path, O_CREAT | O_EXCL | O_RDWR, 0777);
+    file_descriptor = open (path, O_CREAT | O_EXCL | O_RDWR, MAPPING_PROBE_FILE_MODE);
     if (file_descriptor < 0)
         return 1;
-    if (fchmod (file_descriptor, 0777) != 0 || ftruncate (file_descriptor, 4096) != 0 || pipe (ready) != 0 || pipe (proceed) != 0)
+    if (fchown (file_descriptor, getuid (), MAPPING_PROBE_GROUP_ID) != 0 || fchmod (file_descriptor, MAPPING_PROBE_FILE_MODE) != 0 ||
+        ftruncate (file_descriptor, 4096) != 0 || pipe (ready) != 0 || pipe (proceed) != 0)
         goto out;
     child = fork ();
     if (child == 0)
@@ -912,7 +964,7 @@ static int run_mapped_mode_change (const char * root)
     close (proceed[0]);
     if (child < 0)
         goto out;
-    if (read (ready[0], &byte, 1) != 1 || fchmod (file_descriptor, 06777) != 0 || fstat (file_descriptor, &value) != 0)
+    if (read (ready[0], &byte, 1) != 1 || fchmod (file_descriptor, MAPPING_PROBE_SETID_MODE) != 0 || fstat (file_descriptor, &value) != 0)
     {
         kill (child, SIGKILL);
     }
@@ -986,11 +1038,11 @@ static int run_mapped_setid_race (const char * root)
         struct stat value;
         if (snprintf (path, sizeof (path), "%s/mapped-setid-race-%u", root, iteration) >= (int)sizeof (path))
             return 1;
-        file_descriptor = open (path, O_CREAT | O_EXCL | O_RDWR, 0777);
+        file_descriptor = open (path, O_CREAT | O_EXCL | O_RDWR, MAPPING_PROBE_FILE_MODE);
         if (file_descriptor < 0)
             return 1;
-        if (fchmod (file_descriptor, 0777) != 0 || ftruncate (file_descriptor, 4096) != 0 ||
-            pipe (ready) != 0 || pipe (proceed) != 0)
+        if (fchown (file_descriptor, getuid (), MAPPING_PROBE_GROUP_ID) != 0 || fchmod (file_descriptor, MAPPING_PROBE_FILE_MODE) != 0 ||
+            ftruncate (file_descriptor, 4096) != 0 || pipe (ready) != 0 || pipe (proceed) != 0)
             goto out;
         child = fork ();
         if (child == 0)
@@ -1006,7 +1058,7 @@ static int run_mapped_setid_race (const char * root)
         if (mapped_policy_byte (ready[0], 'A') != 0 || write (proceed[1], "B", 1) != 1)
             goto out;
         errno = 0;
-        mode_rc = fchmod (file_descriptor, 06777);
+        mode_rc = fchmod (file_descriptor, MAPPING_PROBE_SETID_MODE);
         mode_error = errno;
         {
             struct pollfd event = { ready[0], POLLIN, 0 };
@@ -1020,7 +1072,7 @@ static int run_mapped_setid_race (const char * root)
             if (mode_rc != -1 || mode_error != EBUSY || (value.st_mode & 06000) != 0)
                 goto out;
         }
-        else if (byte != 'D' || mode_rc != 0 || (value.st_mode & 07777) != 06777)
+        else if (byte != 'D' || mode_rc != 0 || (value.st_mode & 07777) != MAPPING_PROBE_SETID_MODE)
             goto out;
         if (write (proceed[1], "C", 1) != 1 || waitpid (child, &status, 0) != child)
             goto out;
@@ -1069,17 +1121,16 @@ static int run_mapped_policy_direct (const char * kind, const char * path, const
         if (*file_descriptor < 0)
             return 1;
     }
-    if (chmod (alias, 06777) != 0)
+    if (chmod (alias, MAPPING_PROBE_SETID_MODE) != 0)
         return 1;
 
     errno = 0;
     *mapping = mmap (NULL, 4096, PROT_READ | (private_map || privileged ? PROT_WRITE : 0), private_map ? MAP_PRIVATE : MAP_SHARED, *file_descriptor, 0);
     if (privileged)
     {
-        if (*mapping != MAP_FAILED || errno != EBUSY ||
-            fstat (*file_descriptor, after) != 0 || (after->st_mode & 07777) != 06777)
+        if (*mapping != MAP_FAILED || errno != EBUSY || fstat (*file_descriptor, after) != 0 || (after->st_mode & 07777) != MAPPING_PROBE_SETID_MODE)
             return 1;
-        if (chmod (alias, 0777) != 0)
+        if (chmod (alias, MAPPING_PROBE_FILE_MODE) != 0)
             return 1;
         *mapping = mmap (NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, *file_descriptor, 0);
         if (*mapping == MAP_FAILED)
@@ -1093,7 +1144,7 @@ static int run_mapped_policy_direct (const char * kind, const char * path, const
             (*mapping)[0] = 'P';
         else if ((*mapping)[0] != 0)
             return 1;
-        if (fstat (*file_descriptor, after) != 0 || (after->st_mode & 07777) != 06777)
+        if (fstat (*file_descriptor, after) != 0 || (after->st_mode & 07777) != MAPPING_PROBE_SETID_MODE)
             return 1;
     }
 
@@ -1174,7 +1225,7 @@ static int check_mapped_policy_grant (const int file_descriptor, const char * al
         return 1;
     errno = 0;
     {
-        const int mode_rc = chmod (alias, 06777);
+        const int mode_rc = chmod (alias, MAPPING_PROBE_SETID_MODE);
         (*grant_blocked) = mode_rc == -1 && errno == EBUSY;
         if (!(*grant_blocked) && (!upgrade || mode_rc != 0))
             return 1;
@@ -1185,12 +1236,11 @@ static int check_mapped_policy_grant (const int file_descriptor, const char * al
     if (!upgrade)
     {
         /* Adding execute later must not bypass the combined-mode check. */
-        if (fchmod (file_descriptor, 06666) != 0 || fstat (file_descriptor, &before) != 0)
+        if (fchmod (file_descriptor, MAPPING_PROBE_SETID_DATA_MODE) != 0 || fstat (file_descriptor, &before) != 0)
             return 1;
         errno = 0;
-        if (fchmod (file_descriptor, 06777) != -1 || errno != EBUSY || fstat (file_descriptor, &after) != 0 ||
-            after.st_mode != before.st_mode || after.st_ctime != before.st_ctime ||
-            fchmod (file_descriptor, 0777) != 0)
+        if (fchmod (file_descriptor, MAPPING_PROBE_SETID_MODE) != -1 || errno != EBUSY || fstat (file_descriptor, &after) != 0 ||
+            after.st_mode != before.st_mode || after.st_ctime != before.st_ctime || fchmod (file_descriptor, MAPPING_PROBE_FILE_MODE) != 0)
             return 1;
     }
     return 0;
@@ -1246,7 +1296,7 @@ static int exercise_mapped_policy_parent (const char * kind, const char * path, 
     if (!upgrade)
     {
         errno = 0;
-        if (fchmod (file_descriptor, 06777) != -1 || errno != EBUSY)
+        if (fchmod (file_descriptor, MAPPING_PROBE_SETID_MODE) != -1 || errno != EBUSY)
             return 1;
     }
     return 0;
@@ -1265,10 +1315,11 @@ static int run_mapped_setid_policy (const char * root, const char * kind)
         snprintf (alias, sizeof (alias), "%s.alias", path) >= (int)sizeof (alias))
         return 1;
     signal (SIGPIPE, SIG_IGN);
-    file_descriptor = open (path, O_CREAT | O_EXCL | O_RDWR, 0777);
+    file_descriptor = open (path, O_CREAT | O_EXCL | O_RDWR, MAPPING_PROBE_FILE_MODE);
     if (file_descriptor < 0)
         return 1;
-    if (fchmod (file_descriptor, 0777) != 0 || ftruncate (file_descriptor, 4096) != 0 || link (path, alias) != 0)
+    if (fchown (file_descriptor, getuid (), MAPPING_PROBE_GROUP_ID) != 0 || fchmod (file_descriptor, MAPPING_PROBE_FILE_MODE) != 0 ||
+        ftruncate (file_descriptor, 4096) != 0 || link (path, alias) != 0)
         goto out;
     stage = 1;
     if (strcmp (kind, "private") == 0 || strcmp (kind, "readonly") == 0 || strcmp (kind, "privileged") == 0)
@@ -1289,8 +1340,7 @@ static int run_mapped_setid_policy (const char * root, const char * kind)
     file_descriptor = INVALID_FILE_DESCRIPTOR;
     stage = 6;
     /* No mapping/descriptor keeps the old vnode: a fresh lookup may grant mode. */
-    if (chmod (alias, 06777) != 0 || stat (alias, &after) != 0 ||
-        (after.st_mode & 07777) != 06777)
+    if (chmod (alias, MAPPING_PROBE_SETID_MODE) != 0 || stat (alias, &after) != 0 || (after.st_mode & 07777) != MAPPING_PROBE_SETID_MODE)
         goto out;
     result = 0;
 out:
@@ -1778,7 +1828,7 @@ enum directory_probe_limits
     DIRECTORY_PROBE_TOTAL_ENTRIES = DIRECTORY_PROBE_ENTRY_COUNT + 2,
     DIRECTORY_PROBE_PRIVATE_MODE = 0700,
     DIRECTORY_PROBE_FILE_MODE = 0600,
-    DIRECTORY_PROBE_REPLACEMENT_MODE = 0644,
+    DIRECTORY_PROBE_REPLACEMENT_MODE = 0640,
     DIRECTORY_PROBE_DETACHED_MODE = 0400,
     DIRECTORY_PROBE_PERMISSION_MASK = 0777
 };
@@ -2631,7 +2681,7 @@ static int run_hardlink_mappings (const char * root)
     if (write (first_descriptor, data, sizeof (data)) != sizeof (data) || link (first, second) != 0)
         goto out;
     second_owned = 1;
-    second_descriptor = open (second, O_RDWR);
+    second_descriptor = open_probe_alias (first_descriptor, second, O_RDWR);
     if (second_descriptor < 0)
         goto out;
     first_mapping = mmap (NULL, sizeof (data), PROT_READ | PROT_WRITE, MAP_SHARED, first_descriptor, 0);
@@ -2757,11 +2807,9 @@ static int verify_recreated_mappings (unsigned char * old_map, unsigned char * n
         pread (new_fd, data, 3, 0) != 3 || memcmp (data, "BBy", 3) != 0)
         return 1;
     (*stage) = "independent ownership";
-    if (fstat (old_fd, &old_attributes) != 0 || fstat (new_fd, &new_attributes) != 0 ||
-        old_attributes.st_ino == new_attributes.st_ino ||
-        old_attributes.st_uid != 1001 || new_attributes.st_uid != 1002 ||
-        old_attributes.st_nlink != 0 || new_attributes.st_nlink != 1 ||
-        (old_attributes.st_mode & 0777) != 0640 || (new_attributes.st_mode & 0777) != 0604)
+    if (fstat (old_fd, &old_attributes) != 0 || fstat (new_fd, &new_attributes) != 0 || old_attributes.st_ino == new_attributes.st_ino ||
+        old_attributes.st_uid != 1001 || new_attributes.st_uid != 1002 || old_attributes.st_nlink != 0 || new_attributes.st_nlink != 1 ||
+        (old_attributes.st_mode & 0777) != 0640 || (new_attributes.st_mode & 0777) != 0600)
         return 1;
     return 0;
 }
@@ -2784,19 +2832,19 @@ static int run_recreated_identity (const char * root)
         goto out;
     file_owned = 1;
     memset (data, 'A', sizeof (data));
-    if (write (old_fd, data, sizeof (data)) != sizeof (data) || chown (path, 1001, 1001) != 0)
+    if (write (old_fd, data, sizeof (data)) != sizeof (data) || fchown (old_fd, 1001, 1001) != 0)
         goto out;
     old_map = mmap (NULL, sizeof (data), PROT_READ | PROT_WRITE, MAP_SHARED, old_fd, 0);
     if (old_map == MAP_FAILED || old_map[0] != 'A' || unlink (path) != 0)
         goto out;
     file_owned = 0;
     stage = "replacement";
-    new_fd = open (path, O_CREAT | O_EXCL | O_RDWR, 0604);
+    new_fd = open (path, O_CREAT | O_EXCL | O_RDWR, 0600);
     if (new_fd < 0)
         goto out;
     file_owned = 1;
     memset (data, 'B', sizeof (data));
-    if (write (new_fd, data, sizeof (data)) != sizeof (data) || chown (path, 1002, 1002) != 0)
+    if (write (new_fd, data, sizeof (data)) != sizeof (data) || fchown (new_fd, 1002, 1002) != 0)
         goto out;
     new_map = mmap (NULL, sizeof (data), PROT_READ | PROT_WRITE, MAP_SHARED, new_fd, 0);
     if (new_map == MAP_FAILED || new_map[0] != 'B' || old_map[0] != 'A')
@@ -3013,7 +3061,7 @@ static int run_append_records (const char * root, int mapped)
     if (link (path, alias) != 0)
         goto out;
     alias_owned = 1;
-    files[1] = open (alias, O_WRONLY | O_APPEND);
+    files[1] = open_probe_alias (files[0], alias, O_WRONLY | O_APPEND);
     data = malloc (record_size);
     if (files[1] < 0 || data == NULL || pipe (start[0]) != 0 ||
         pipe (start[1]) != 0 || pipe (done) != 0)
@@ -3299,7 +3347,7 @@ static int run_retained_attributes (const char * root)
                 goto out;
             owned = 0;
         }
-        other = open (replacement ? source : path, O_CREAT | O_EXCL | O_RDWR, 0644);
+        other = open (replacement ? source : path, O_CREAT | O_EXCL | O_RDWR, 0600);
         if (other < 0)
             goto out;
         if (replacement)
@@ -3317,13 +3365,11 @@ static int run_retained_attributes (const char * root)
         if (verify_retained_owner_access (file_descriptor, times, &stage) != 0)
             goto out;
         stage = "independent attributes";
-        if (fstat (file_descriptor, &old) != 0 || fstat (other, &current) != 0 ||
-            old.st_uid != 1001 || old.st_nlink != 0 || old.st_ino == current.st_ino ||
-            (old.st_mode & 0777) != 0640 || old.st_atime != 123456 || old.st_mtime != 234567 ||
-            current.st_uid != 1002 || (current.st_mode & 0777) != 0644 ||
-            current.st_mtime == old.st_mtime || fchown (file_descriptor, 1003, 1003) != 0 ||
-            fstat (file_descriptor, &old) != 0 || fstat (other, &current) != 0 ||
-            old.st_uid != 1003 || old.st_gid != 1003 || current.st_uid != 1002)
+        if (fstat (file_descriptor, &old) != 0 || fstat (other, &current) != 0 || old.st_uid != 1001 || old.st_nlink != 0 ||
+            old.st_ino == current.st_ino || (old.st_mode & 0777) != 0640 || old.st_atime != 123456 || old.st_mtime != 234567 ||
+            current.st_uid != 1002 || (current.st_mode & 0777) != 0600 || current.st_mtime == old.st_mtime ||
+            fchown (file_descriptor, 1003, 1003) != 0 || fstat (file_descriptor, &old) != 0 || fstat (other, &current) != 0 || old.st_uid != 1003 ||
+            old.st_gid != 1003 || current.st_uid != 1002)
             goto out;
         result = 0;
 out:
