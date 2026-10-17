@@ -222,7 +222,7 @@ printf 'USFS-SCENARIO 1\nLOOKUP delay 250 1\n' >"$SCENARIO"
 delay_failure=0
 if start_daemon; then
     content=$(cat "$MOUNT/file" 2>/dev/null)
-    [ "$content" = "contract-data" ] || delay_failure=1
+    [[ "$content" = "contract-data" ]] || delay_failure=1
 else
     delay_failure=1
 fi
@@ -240,9 +240,9 @@ if start_daemon; then
     duplicate_second_rc=$?
     grep -q '^DUPLICATE_REJECTED ' "$REQUESTS"
     duplicate_log_rc=$?
-    [ "$duplicate_first_rc" -ne 0 ] || duplicate_failure=1
-    [ "$duplicate_second_rc" -ne 0 ] || duplicate_failure=1
-    [ "$duplicate_log_rc" -eq 0 ] || duplicate_failure=1
+    [[ "$duplicate_first_rc" -ne 0 ]] || duplicate_failure=1
+    [[ "$duplicate_second_rc" -ne 0 ]] || duplicate_failure=1
+    [[ "$duplicate_log_rc" -eq 0 ]] || duplicate_failure=1
     tap_diag "duplicate first_rc=$duplicate_first_rc second_rc=$duplicate_second_rc log_rc=$duplicate_log_rc"
 else
     duplicate_failure=1
@@ -252,7 +252,7 @@ printf 'USFS-SCENARIO 1\n' >"$SCENARIO"
 if start_daemon; then
     cat "$MOUNT/file" >/dev/null 2>&1
     duplicate_recovery_rc=$?
-    [ "$duplicate_recovery_rc" -eq 0 ] || duplicate_failure=1
+    [[ "$duplicate_recovery_rc" -eq 0 ]] || duplicate_failure=1
     tap_diag "duplicate recovery_rc=$duplicate_recovery_rc"
 else
     duplicate_failure=1
@@ -274,12 +274,12 @@ if start_daemon; then
     kill -TERM "$canceled_pid" 2>/dev/null
     touch "$BARRIERS/after-read.release"
     wait "$canceled_pid" 2>/dev/null
-    [ "$?" -ne 0 ] || cancel_failure=1
+    [[ "$?" -ne 0 ]] || cancel_failure=1
     cat "$MOUNT/file" >/dev/null 2>&1 || cancel_failure=1
 else
     cancel_failure=1
 fi
-[ "$cancel_failure" -eq 0 ] || sed 's/^/# /' "$REQUESTS"
+[[ "$cancel_failure" -eq 0 ]] || sed 's/^/# /' "$REQUESTS"
 stop_daemon >/dev/null 2>&1
 tap_ok "$cancel_failure" "delivered reply before signaled process teardown preserves channel"
 
@@ -299,9 +299,9 @@ if start_daemon; then
     usfs_track_pid "$second_pid"
     wait "$first_pid" || reorder_failure=1
     wait "$second_pid" || reorder_failure=1
-    [ "$(cat "$BASE/reordered.a" 2>/dev/null)" = "contract-data" ] ||
+    [[ "$(cat "$BASE/reordered.a" 2>/dev/null)" = "contract-data" ]] ||
         reorder_failure=1
-    [ "$(cat "$BASE/reordered.b" 2>/dev/null)" = "contract-data" ] ||
+    [[ "$(cat "$BASE/reordered.b" 2>/dev/null)" = "contract-data" ]] ||
         reorder_failure=1
 else
     reorder_failure=1

@@ -72,7 +72,7 @@ cleanup_failure_case()
     fi
     # A failed devswdel leaves the extension active, so there is no deferred
     # cleanup export until the successful termination retry.
-    if [ "$fault" -ne 5 ]; then
+    if [[ "$fault" -ne 5 ]]; then
         usfs_coverage_expect_export "$event-term-failure" || return
     fi
     if USFS_COVERAGE_EVENT="$event-term-failure" \
@@ -83,23 +83,23 @@ cleanup_failure_case()
         return
     fi
 
-    if [ ! -x /usr/sbin/usfs_coverage ] &&
-       [ "$fault" -eq 5 ] && ! /usr/sbin/usfs_testctl info >/dev/null 2>&1; then
+    if [[ ! -x /usr/sbin/usfs_coverage ]] &&
+       [[ "$fault" -eq 5 ]] && ! /usr/sbin/usfs_testctl info >/dev/null 2>&1; then
         tap_diag "failed devswdel did not restore device callback admission"
         restore_available
         tap_ok 1 "$name cleanup is retryable"
         return
     fi
 
-    if [ ! -x /usr/sbin/usfs_coverage ] &&
-       [ "$fault" -eq 6 ] && /usr/sbin/usfs_testctl info >/dev/null 2>&1; then
+    if [[ ! -x /usr/sbin/usfs_coverage ]] &&
+       [[ "$fault" -eq 6 ]] && /usr/sbin/usfs_testctl info >/dev/null 2>&1; then
         tap_diag "failed GFS removal reopened a removed device registration"
         restore_available
         tap_ok 1 "$name cleanup is retryable"
         return
     fi
 
-    if [ "$fault" -eq 5 ]; then
+    if [[ "$fault" -eq 5 ]]; then
         usfs_coverage_checkpoint "$event-active-after-failed-term" || return
     fi
 
@@ -132,20 +132,20 @@ ensure_defined "init-unwind" || unwind_failure=1
 usfs_coverage_expect_export "init-unwind-failure" || unwind_failure=1
 USFS_COVERAGE_EVENT=init-unwind-failure USFS_TEST_INIT_FAULT=18 \
     USFS_TEST_INIT_ERRNO=16 mkdev -l usfs0 >/tmp/usfs-init-unwind.log 2>&1 && unwind_failure=1
-if [ -x /usr/sbin/usfs_coverage ]; then
+if [[ -x /usr/sbin/usfs_coverage ]]; then
     # The required coverage drain retries cleanup after capturing the failed
     # unwind; that successful drain may already have removed the registration.
     :
 else
-    [ -c /dev/usfs0 ] || unwind_failure=1
+    [[ -c /dev/usfs0 ]] || unwind_failure=1
     owned_number=$(ls -ln /dev/usfs0 2>/dev/null | awk '{ print $5 $6 }')
     /usr/lib/methods/usfs/cfgusfs -l usfs0 >/dev/null 2>&1 && unwind_failure=1
-    [ "$(ls -ln /dev/usfs0 2>/dev/null | awk '{ print $5 $6 }')" = "$owned_number" ] || unwind_failure=1
+    [[ "$(ls -ln /dev/usfs0 2>/dev/null | awk '{ print $5 $6 }')" = "$owned_number" ]] || unwind_failure=1
 fi
 /usr/lib/methods/usfs/ucfgusfs -l usfs0 >/dev/null 2>&1 || unwind_failure=1
-[ ! -e /dev/usfs0 ] || unwind_failure=1
+[[ ! -e /dev/usfs0 ]] || unwind_failure=1
 restore_available || unwind_failure=1
-[ "$unwind_failure" -eq 0 ] || sed 's/^/# /' /tmp/usfs-init-unwind.log
+[[ "$unwind_failure" -eq 0 ]] || sed 's/^/# /' /tmp/usfs-init-unwind.log
 tap_ok "$unwind_failure" "failed initialization unwind retains ownership until cleanup of the original registration"
 
 tap_finish

@@ -45,8 +45,8 @@ start_daemon()
 stop_daemon()
 {
     umount "$MOUNT" >/dev/null 2>&1 || umount -f "$MOUNT" >/dev/null 2>&1
-    [ "$DAEMON_PID" -eq 0 ] || kill -TERM "$DAEMON_PID" 2>/dev/null
-    [ "$DAEMON_PID" -eq 0 ] || wait "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
 }
 
@@ -92,13 +92,13 @@ mkdir -p "$MOUNT"
 tap_plan 21
 
 opcode=1
-while [ "$opcode" -le 17 ]; do
+while [[ "$opcode" -le 17 ]]; do
     name=$(opcode_name "$opcode")
     occurrence=1
     # Resolving the child now checks search permission on its parent. That
     # prerequisite obtains the root attributes, so target the child GETATTR
     # rather than the prerequisite root GETATTR during path traversal.
-    [ "$opcode" -ne 2 ] || occurrence=2
+    [[ "$opcode" -ne 2 ]] || occurrence=2
     printf 'USFS-SCENARIO 1\n%s error 5 %s\n' \
         "$name" "$occurrence" >"$SCENARIO"
     failure=0
@@ -106,17 +106,17 @@ while [ "$opcode" -le 17 ]; do
         trigger "$opcode"
         operation_rc=$?
         wire_opcode=$opcode
-        [ "$opcode" -ne 9 ] || wire_opcode=21
+        [[ "$opcode" -ne 9 ]] || wire_opcode=21
         grep -q "^ACTION $wire_opcode 1 5$" "$REQUESTS" || failure=1
         # RELEASE errors are not returned by close(2).
-        if [ "$opcode" -ne 5 ] &&
-           [ "$operation_rc" -eq 0 ]; then
+        if [[ "$opcode" -ne 5 ]] &&
+           [[ "$operation_rc" -eq 0 ]]; then
             failure=1
         fi
     else
         failure=1
     fi
-    if [ "$failure" -ne 0 ]; then
+    if [[ "$failure" -ne 0 ]]; then
         sed 's/^/# request: /' "$REQUESTS" 2>/dev/null
     fi
     stop_daemon
@@ -145,7 +145,7 @@ for capacity_case in zero full invalid-statfs short-body; do
     else
         failure=1
     fi
-    [ "$failure" -eq 0 ] || cat "$BASE/statfs.log" "$REQUESTS"
+    [[ "$failure" -eq 0 ]] || cat "$BASE/statfs.log" "$REQUESTS"
     stop_daemon
     tap_ok "$failure" "STATFS $capacity_case reports truthful capacity or failure and permits cleanup"
 done

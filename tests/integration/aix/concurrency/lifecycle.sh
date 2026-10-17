@@ -108,7 +108,7 @@ run_bounded_command()
     local timeout_seconds=$2
     shift 2
 
-    if [ "$COMMAND_PID" -ne 0 ]; then
+    if [[ "$COMMAND_PID" -ne 0 ]]; then
         tap_diag "cannot start $description while an earlier command is active: pid=$COMMAND_PID"
         return "$PROCESS_WAIT_TIMEOUT"
     fi
@@ -147,13 +147,13 @@ stop_daemon()
     if is_mounted; then
         if ! bounded_unmount "lifecycle clean unmount" "$MOUNT" >/dev/null 2>&1; then
             stop_failed=1
-            if [ "$COMMAND_PID" -eq 0 ]; then
+            if [[ "$COMMAND_PID" -eq 0 ]]; then
                 bounded_unmount "lifecycle forced cleanup unmount" -f "$MOUNT" >/dev/null 2>&1 || stop_failed=1
             fi
         fi
     fi
 
-    if [ "$DAEMON_PID" -ne 0 ]; then
+    if [[ "$DAEMON_PID" -ne 0 ]]; then
         stop_owned_process "lifecycle daemon" "$DAEMON_PID" || stop_failed=1
         if process_finished "$DAEMON_PID"; then DAEMON_PID=0; fi
     fi
@@ -166,28 +166,28 @@ cleanup()
 {
     local cleanup_failed=0
 
-    if [ "$STATUS_FD_THREE_OPEN" -eq 1 ]; then exec 3<&-; fi
-    if [ "$STATUS_FD_FOUR_OPEN" -eq 1 ]; then exec 4<&-; fi
+    if [[ "$STATUS_FD_THREE_OPEN" -eq 1 ]]; then exec 3<&-; fi
+    if [[ "$STATUS_FD_FOUR_OPEN" -eq 1 ]]; then exec 4<&-; fi
 
     for process_id in "$MOUNT_TERM_PID" "$CHANNEL_ONE_PID" "$CHANNEL_TWO_PID" "$CHANNEL_TERM_PID" "$DEALLOCATION_ARM_PID" "$DEALLOCATION_TERM_PID" "$COMMAND_PID"; do
-        if [ "$process_id" -ne 0 ]; then
+        if [[ "$process_id" -ne 0 ]]; then
             stop_owned_process "lifecycle owned process" "$process_id" || cleanup_failed=1
         fi
     done
-    if [ "$MOUNT_TERM_PID" -ne 0 ] && process_finished "$MOUNT_TERM_PID"; then MOUNT_TERM_PID=0; fi
-    if [ "$CHANNEL_ONE_PID" -ne 0 ] && process_finished "$CHANNEL_ONE_PID"; then CHANNEL_ONE_PID=0; fi
-    if [ "$CHANNEL_TWO_PID" -ne 0 ] && process_finished "$CHANNEL_TWO_PID"; then CHANNEL_TWO_PID=0; fi
-    if [ "$CHANNEL_TERM_PID" -ne 0 ] && process_finished "$CHANNEL_TERM_PID"; then CHANNEL_TERM_PID=0; fi
-    if [ "$DEALLOCATION_ARM_PID" -ne 0 ] && process_finished "$DEALLOCATION_ARM_PID"; then DEALLOCATION_ARM_PID=0; fi
-    if [ "$DEALLOCATION_TERM_PID" -ne 0 ] && process_finished "$DEALLOCATION_TERM_PID"; then DEALLOCATION_TERM_PID=0; fi
-    if [ "$COMMAND_PID" -ne 0 ] && process_finished "$COMMAND_PID"; then COMMAND_PID=0; fi
+    if [[ "$MOUNT_TERM_PID" -ne 0 ]] && process_finished "$MOUNT_TERM_PID"; then MOUNT_TERM_PID=0; fi
+    if [[ "$CHANNEL_ONE_PID" -ne 0 ]] && process_finished "$CHANNEL_ONE_PID"; then CHANNEL_ONE_PID=0; fi
+    if [[ "$CHANNEL_TWO_PID" -ne 0 ]] && process_finished "$CHANNEL_TWO_PID"; then CHANNEL_TWO_PID=0; fi
+    if [[ "$CHANNEL_TERM_PID" -ne 0 ]] && process_finished "$CHANNEL_TERM_PID"; then CHANNEL_TERM_PID=0; fi
+    if [[ "$DEALLOCATION_ARM_PID" -ne 0 ]] && process_finished "$DEALLOCATION_ARM_PID"; then DEALLOCATION_ARM_PID=0; fi
+    if [[ "$DEALLOCATION_TERM_PID" -ne 0 ]] && process_finished "$DEALLOCATION_TERM_PID"; then DEALLOCATION_TERM_PID=0; fi
+    if [[ "$COMMAND_PID" -ne 0 ]] && process_finished "$COMMAND_PID"; then COMMAND_PID=0; fi
 
     stop_daemon || cleanup_failed=1
     restore_device || cleanup_failed=1
-    if ! is_mounted && [ "$DAEMON_PID" -eq 0 ] && [ "$COMMAND_PID" -eq 0 ] &&
-       [ "$MOUNT_TERM_PID" -eq 0 ] && [ "$CHANNEL_ONE_PID" -eq 0 ] &&
-       [ "$CHANNEL_TWO_PID" -eq 0 ] && [ "$CHANNEL_TERM_PID" -eq 0 ] &&
-       [ "$DEALLOCATION_ARM_PID" -eq 0 ] && [ "$DEALLOCATION_TERM_PID" -eq 0 ]; then
+    if ! is_mounted && [[ "$DAEMON_PID" -eq 0 ]] && [[ "$COMMAND_PID" -eq 0 ]] &&
+       [[ "$MOUNT_TERM_PID" -eq 0 ]] && [[ "$CHANNEL_ONE_PID" -eq 0 ]] &&
+       [[ "$CHANNEL_TWO_PID" -eq 0 ]] && [[ "$CHANNEL_TERM_PID" -eq 0 ]] &&
+       [[ "$DEALLOCATION_ARM_PID" -eq 0 ]] && [[ "$DEALLOCATION_TERM_PID" -eq 0 ]]; then
         rm -rf "$BASE"
     fi
 
@@ -200,7 +200,7 @@ no_usfs_state()
         awk '$3 == "usfs" { n++ } END { print n+0 }')
     daemons=$(ps -ef | grep -c '[u]sfs_scenario_daemon')
     users=$(fuser /dev/usfs0 2>/dev/null | wc -w | tr -d ' ')
-    [ "$mounts" -eq 0 ] && [ "$daemons" -eq 0 ] && [ "$users" -eq 0 ]
+    [[ "$mounts" = 0 ]] && [[ "$daemons" = 0 ]] && [[ "$users" = 0 ]]
 }
 
 trap 'result=$?; trap - 0; cleanup || result=1; exit "$result"' 0
@@ -242,8 +242,8 @@ fi
 wait_owned_process "mount-race termination" "$MOUNT_TERM_PID" "$COMMAND_TIMEOUT_SECONDS"
 MOUNT_TERM_RC=$?
 if process_finished "$MOUNT_TERM_PID"; then MOUNT_TERM_PID=0; else exit 1; fi
-if [ "$MOUNT_TERM_RC" -ne 0 ] && [ "$MOUNT_TERM_RC" -ne "$PROCESS_WAIT_TIMEOUT" ] &&
-   [ "$(device_status)" = "Available" ]; then
+if [[ "$MOUNT_TERM_RC" -ne 0 ]] && [[ "$MOUNT_TERM_RC" -ne "$PROCESS_WAIT_TIMEOUT" ]] &&
+   [[ "$(device_status)" = "Available" ]]; then
     tap_ok 0 "CFG_TERM observes the reserved mount and fails busy"
 else
     sed 's/^/# /' "$BASE/mount-rmdev.log" 2>/dev/null
@@ -273,7 +273,7 @@ usfs_coverage_expect_export lifecycle-drained-term ||
 USFS_COVERAGE_EVENT=lifecycle-drained-term \
     run_bounded_command "drained mount termination" "$COMMAND_TIMEOUT_SECONDS" rmdev -l usfs0 >"$BASE/post-mount-rmdev.log" 2>&1 || mount_failure=1
 restore_device || mount_failure=1
-if [ "$mount_failure" -ne 0 ]; then
+if [[ "$mount_failure" -ne 0 ]]; then
     sed 's/^/# /' "$BASE/post-mount-rmdev.log" 2>/dev/null
 fi
 tap_ok "$mount_failure" "drained mount permits termination and clean reconfiguration"
@@ -300,8 +300,8 @@ if process_finished "$CHANNEL_TWO_PID"; then CHANNEL_TWO_PID=0; else exit 1; fi
 wait_owned_process "channel-race termination" "$CHANNEL_TERM_PID" "$COMMAND_TIMEOUT_SECONDS"; CHANNEL_TERM_RC=$?
 if process_finished "$CHANNEL_TERM_PID"; then CHANNEL_TERM_PID=0; else exit 1; fi
 
-if [ "$channel_failure" -eq 0 ] &&
-   [ "$CHANNEL_ONE_RC" -eq 0 ] && [ "$CHANNEL_TWO_RC" -eq 0 ]; then
+if [[ "$channel_failure" -eq 0 ]] &&
+   [[ "$CHANNEL_ONE_RC" -eq 0 ]] && [[ "$CHANNEL_TWO_RC" -eq 0 ]]; then
     tap_ok 0 "two paused channel allocations complete after busy rollback"
 else
     sed 's/^/# /' "$BASE/channel-one.log" 2>/dev/null
@@ -309,8 +309,8 @@ else
     tap_ok 1 "two paused channel allocations complete after busy rollback"
 fi
 
-if [ "$CHANNEL_TERM_RC" -ne 0 ] && [ "$CHANNEL_TERM_RC" -ne "$PROCESS_WAIT_TIMEOUT" ] &&
-   [ "$(device_status)" = "Available" ]; then
+if [[ "$CHANNEL_TERM_RC" -ne 0 ]] && [[ "$CHANNEL_TERM_RC" -ne "$PROCESS_WAIT_TIMEOUT" ]] &&
+   [[ "$(device_status)" = "Available" ]]; then
     tap_ok 0 "CFG_TERM keeps registrations while channel callbacks are active"
 else
     sed 's/^/# /' "$BASE/channel-rmdev.log" 2>/dev/null
@@ -340,26 +340,26 @@ if exec 3</dev/usfs0/status; then STATUS_FD_THREE_OPEN=1; else status_failure=1;
 if exec 4</dev/usfs0/status; then STATUS_FD_FOUR_OPEN=1; else status_failure=1; fi
 run_bounded_command "two-open status termination" "$COMMAND_TIMEOUT_SECONDS" rmdev -l usfs0 3<&- 4<&- >"$BASE/status-rmdev-two.log" 2>&1
 status_term_rc=$?
-if [ "$status_term_rc" -eq 0 ] || [ "$status_term_rc" -eq "$PROCESS_WAIT_TIMEOUT" ]; then status_failure=1; fi
-if [ "$(device_status)" != "Available" ] ||
+if [[ "$status_term_rc" -eq 0 ]] || [[ "$status_term_rc" -eq "$PROCESS_WAIT_TIMEOUT" ]]; then status_failure=1; fi
+if [[ "$(device_status)" != "Available" ]] ||
    ! run_bounded_command "two-open status query" "$COMMAND_TIMEOUT_SECONDS" /usr/sbin/usfsctl status 3<&- 4<&- >/dev/null 2>&1; then status_failure=1; fi
 tap_ok "$status_failure" "two shared status opens keep termination busy and admission usable"
 
 status_failure=0
-if [ "$STATUS_FD_THREE_OPEN" -eq 1 ]; then exec 3<&-; STATUS_FD_THREE_OPEN=0; else status_failure=1; fi
+if [[ "$STATUS_FD_THREE_OPEN" -eq 1 ]]; then exec 3<&-; STATUS_FD_THREE_OPEN=0; else status_failure=1; fi
 run_bounded_command "one-open status termination" "$COMMAND_TIMEOUT_SECONDS" rmdev -l usfs0 4<&- >"$BASE/status-rmdev-one.log" 2>&1
 status_term_rc=$?
-if [ "$status_term_rc" -eq 0 ] || [ "$status_term_rc" -eq "$PROCESS_WAIT_TIMEOUT" ]; then status_failure=1; fi
-if [ "$(device_status)" != "Available" ] ||
+if [[ "$status_term_rc" -eq 0 ]] || [[ "$status_term_rc" -eq "$PROCESS_WAIT_TIMEOUT" ]]; then status_failure=1; fi
+if [[ "$(device_status)" != "Available" ]] ||
    ! run_bounded_command "one-open status query" "$COMMAND_TIMEOUT_SECONDS" /usr/sbin/usfsctl status 4<&- >/dev/null 2>&1; then status_failure=1; fi
 tap_ok "$status_failure" "one remaining status open still keeps termination busy"
 
 status_failure=0
-if [ "$STATUS_FD_FOUR_OPEN" -eq 1 ]; then exec 4<&-; STATUS_FD_FOUR_OPEN=0; else status_failure=1; fi
+if [[ "$STATUS_FD_FOUR_OPEN" -eq 1 ]]; then exec 4<&-; STATUS_FD_FOUR_OPEN=0; else status_failure=1; fi
 usfs_coverage_expect_export lifecycle-status-drained-term || status_failure=1
 USFS_COVERAGE_EVENT=lifecycle-status-drained-term \
     run_bounded_command "drained status termination" "$COMMAND_TIMEOUT_SECONDS" rmdev -l usfs0 >"$BASE/status-rmdev-drained.log" 2>&1 || status_failure=1
-if [ "$(device_status)" != "Defined" ]; then status_failure=1; fi
+if [[ "$(device_status)" != "Defined" ]]; then status_failure=1; fi
 restore_device || status_failure=1
 tap_ok "$status_failure" "final status close permits clean termination and reconfiguration"
 
@@ -377,9 +377,9 @@ if usfs_wait_until "deallocation schedule arm" 10 grep -q '^channel deallocation
     wait_owned_process "deallocation-race termination" "$DEALLOCATION_TERM_PID" "$COMMAND_TIMEOUT_SECONDS"; DEALLOCATION_TERM_RC=$?
     if process_finished "$DEALLOCATION_TERM_PID"; then DEALLOCATION_TERM_PID=0; else exit 1; fi
 
-    if [ "$DEALLOCATION_ARM_RC" -eq 0 ] && [ "$DEALLOCATION_TERM_RC" -ne 0 ] &&
-       [ "$DEALLOCATION_TERM_RC" -ne "$PROCESS_WAIT_TIMEOUT" ] &&
-       [ "$(device_status)" = "Available" ]; then
+    if [[ "$DEALLOCATION_ARM_RC" -eq 0 ]] && [[ "$DEALLOCATION_TERM_RC" -ne 0 ]] &&
+       [[ "$DEALLOCATION_TERM_RC" -ne "$PROCESS_WAIT_TIMEOUT" ]] &&
+       [[ "$(device_status)" = "Available" ]]; then
         tap_ok 0 "unpublished channel callback prevents runtime teardown"
     else
         sed 's/^/# /' "$BASE/deallocation-arm.log" "$BASE/deallocation-rmdev.log" 2>/dev/null
@@ -409,7 +409,7 @@ fi
 
 cycle_failure=0
 cycle=0
-while [ "$cycle" -lt 8 ]; do
+while [[ "$cycle" -lt 8 ]]; do
     /usr/sbin/usfs_scenario_daemon "$MOUNT" "$SCENARIO" "$REQUESTS" \
         >"$DAEMON_LOG" 2>&1 &
     DAEMON_PID=$!

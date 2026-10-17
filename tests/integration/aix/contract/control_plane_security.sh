@@ -28,8 +28,8 @@ mkdir -p "$BASE"
 tap_plan 9
 
 set -- $(ls -l "$NODE" 2>/dev/null)
-tap_ok $( [ "${1:-}" = crw-rw---- ] && [ "${3:-}" = root ] &&
-          [ "${4:-}" = system ]; echo $? ) \
+tap_ok $([[ "${1:-}" = crw-rw---- ]] && [[ "${3:-}" = root ]] &&
+          [[ "${4:-}" = system ]]; echo $? ) \
     "control device is explicitly root:system 0660"
 
 if su nobody -c "/usr/sbin/usfs_probe" >"$BASE/probe.log" 2>&1; then
@@ -82,8 +82,8 @@ done
 chmod 660 "$NODE"
 chown root:system "$NODE"
 set -- $(ls -l "$NODE")
-tap_ok $( [ "$1" = crw-rw---- ] && [ "$3" = root ] &&
-          [ "$4" = system ]; echo $? ) \
+tap_ok $([[ "$1" = crw-rw---- ]] && [[ "$3" = root ]] &&
+          [[ "$4" = system ]]; echo $? ) \
     "security test restores the production node policy"
 
 if /usr/sbin/chusfs -l usfs0 -a request_timeout_ms=30000 \

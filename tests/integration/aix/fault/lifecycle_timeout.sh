@@ -34,7 +34,7 @@ daemon_exited()
 cleanup()
 {
     usfs_owned_cleanup
-    if [ "$DAEMON_PID" -ne 0 ]; then
+    if [[ "$DAEMON_PID" -ne 0 ]]; then
         kill -TERM "$DAEMON_PID" 2>/dev/null
         wait "$DAEMON_PID" 2>/dev/null
     fi
@@ -60,7 +60,7 @@ fi
 wait "$DAEMON_PID"; DAEMON_RC=$?
 elapsed=$(( $(date +%s) - start ))
 DAEMON_PID=0
-if [ "$DAEMON_RC" -eq 0 ] || [ "$elapsed" -gt 14 ]; then
+if [[ "$DAEMON_RC" -eq 0 ]] || [[ "$elapsed" -gt 14 ]]; then
     failure=1
 fi
 tap_ok "$failure" "unpaired mount rendezvous fails within its bounded deadline"
@@ -94,9 +94,9 @@ usfs_track_pid "$CHANNEL_TWO_PID"
 wait "$CHANNEL_ONE_PID"; CHANNEL_ONE_RC=$?
 wait "$CHANNEL_TWO_PID"; CHANNEL_TWO_RC=$?
 elapsed=$(( $(date +%s) - start ))
-if [ "$channel_failure" -eq 0 ] &&
-   [ "$CHANNEL_ONE_RC" -ne 0 ] && [ "$CHANNEL_TWO_RC" -ne 0 ] &&
-   [ "$elapsed" -le 14 ]; then
+if [[ "$channel_failure" -eq 0 ]] &&
+   [[ "$CHANNEL_ONE_RC" -ne 0 ]] && [[ "$CHANNEL_TWO_RC" -ne 0 ]] &&
+   [[ "$elapsed" -le 14 ]]; then
     tap_ok 0 "unpaired channel rendezvous fails both allocators within its deadline"
 else
     tap_diag "channel timeout elapsed=$elapsed rc1=$CHANNEL_ONE_RC rc2=$CHANNEL_TWO_RC"

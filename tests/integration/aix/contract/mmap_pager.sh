@@ -43,7 +43,7 @@ daemon_exited()
 
 probe_done()
 {
-    test -f "$BASE/probe.rc"
+    [[ -f "$BASE/probe.rc" ]]
 }
 
 probe_exited()
@@ -76,8 +76,8 @@ start_daemon()
 stop_daemon()
 {
     umount "$MOUNT" >/dev/null 2>&1 || umount -f "$MOUNT" >/dev/null 2>&1
-    [ "$DAEMON_PID" -eq 0 ] || kill -TERM "$DAEMON_PID" 2>/dev/null
-    [ "$DAEMON_PID" -eq 0 ] || wait "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
 }
 
@@ -139,14 +139,14 @@ recovery_works()
     ok=1
     echo "$PROBE_OUT" | grep -q 'result=0 errno=0 signal=0 value=1' || ok=0
     stop_daemon
-    [ "$ok" -eq 1 ]
+    [[ "$ok" -eq 1 ]]
 }
 
 no_usfs_state()
 {
     mounts=$(mount 2>/dev/null | awk '$3 == "usfs" { n++ } END { print n+0 }')
     daemons=$(ps -ef | grep -c '[u]sfs_scenario_daemon')
-    [ "$mounts" -eq 0 ] && [ "$daemons" -eq 0 ]
+    [[ "$mounts" = 0 ]] && [[ "$daemons" = 0 ]]
 }
 
 trap 'usfs_owned_cleanup; rm -rf "$BASE"' 0 1 2 15
@@ -214,7 +214,7 @@ echo "$PROBE_OUT" | grep -q 'result=0 errno=0 signal=0 value=123' || \
     high_failure=1
 grep -q "^DETAIL $PAGER_READ_OPCODE 4294967296 4096\$" "$REQUESTS" 2>/dev/null || \
     high_failure=1
-[ "$high_failure" -eq 0 ] || {
+[[ "$high_failure" -eq 0 ]] || {
     tap_diag "high offset probe: $PROBE_OUT"
     tap_diag "high offset requests: $(grep "^DETAIL $PAGER_READ_OPCODE " "$REQUESTS" 2>/dev/null)"
 }
@@ -226,9 +226,9 @@ growth_failure=0
 start_daemon 8192 || growth_failure=1
 spawn_probe /usr/sbin/usfs_io_probe mmap-grow-large "$MOUNT/file"
 wait_probe || growth_failure=1
-[ "$PROBE_RC" = 0 ] || growth_failure=1
+[[ "$PROBE_RC" = 0 ]] || growth_failure=1
 echo "$PROBE_OUT" | grep -q 'mmap-grow-large=valid' || growth_failure=1
-[ "$growth_failure" -eq 0 ] || tap_diag "cache growth: $PROBE_OUT $(cat "$BASE/probe.err" 2>/dev/null)"
+[[ "$growth_failure" -eq 0 ]] || tap_diag "cache growth: $PROBE_OUT $(cat "$BASE/probe.err" 2>/dev/null)"
 stop_daemon
 tap_ok "$growth_failure" "existing small client segment grows past 4 GiB with coherent ordinary I/O"
 
@@ -248,7 +248,7 @@ concurrent_failure=0
 start_daemon 65536 || concurrent_failure=1
 probe_pids=""
 index=0
-while [ "$index" -lt 8 ]; do
+while [[ "$index" -lt 8 ]]; do
     (
         /usr/sbin/usfs_io_probe mmap-touch-read "$MOUNT/file" \
             4096 "$((index * 4096))" 7 >"$BASE/concurrent.$index"
@@ -262,7 +262,7 @@ for probe_pid in $probe_pids; do
     wait "$probe_pid" 2>/dev/null || concurrent_failure=1
 done
 index=0
-while [ "$index" -lt 8 ]; do
+while [[ "$index" -lt 8 ]]; do
     grep -q 'result=0 errno=0 signal=0 value=7' \
         "$BASE/concurrent.$index" || concurrent_failure=1
     index=$((index + 1))
@@ -312,7 +312,7 @@ spawn_probe /usr/sbin/usfs_io_probe mmap-touch-read "$MOUNT/file" 4096 0 9
 wait_probe || cancel_failure=1
 echo "$PROBE_OUT" | grep -q 'result=0 errno=0 signal=0 value=9' || \
     cancel_failure=1
-[ "$cancel_failure" -eq 0 ] || {
+[[ "$cancel_failure" -eq 0 ]] || {
     tap_diag "cancel recovery probe: $PROBE_OUT"
     tap_diag "cancel requests: $(grep -E '^(ACTION|REPLIED|DETAIL 4)' "$REQUESTS" 2>/dev/null)"
 }
@@ -365,7 +365,7 @@ stop_daemon
     allocation_failure=1
 grep -q 'fired=1' "$BASE/allocation.status" 2>/dev/null || \
     allocation_failure=1
-[ "$allocation_failure" -eq 0 ] || {
+[[ "$allocation_failure" -eq 0 ]] || {
     tap_diag "allocation probe: rc=$PROBE_RC out=$PROBE_OUT"
     tap_diag "allocation status: $(cat "$BASE/allocation.status" 2>/dev/null)"
     tap_diag "allocation requests: $(grep -E '^[0-9]|^DETAIL' "$REQUESTS" 2>/dev/null)"
@@ -387,7 +387,7 @@ for kind in file range filesystem range-zero range-zero-eof range-zero-nocache r
     echo "$PROBE_OUT" | grep -q 'first=0 first_errno=0 second=0 second_errno=0' || sync_failure=1
     sync_probe_pid=$(printf '%s\n' "$PROBE_OUT" | sed -n 's/.* pid=\([0-9][0-9]*\).*/\1/p')
     case "$sync_probe_pid" in ""|0|*[!0-9]*) sync_failure=1 ;; esac
-    if [ "$kind" = filesystem ]; then
+    if [[ "$kind" = filesystem ]]; then
         echo "$PROBE_OUT" | grep -q 'descriptors_closed=1' || sync_failure=1
     fi
     # Dirty-page WRITE must arrive before the durability barrier. Pager I/O
@@ -411,7 +411,7 @@ for kind in file range filesystem range-zero range-zero-eof range-zero-nocache r
                  END { exit (!barrier || bad) }' "$REQUESTS" || sync_failure=1
             ;;
     esac
-    [ "$sync_failure" -eq 0 ] || {
+    [[ "$sync_failure" -eq 0 ]] || {
         tap_diag "$kind sync: rc=$PROBE_RC out=$PROBE_OUT"
         tap_diag "$kind requests: $(cat "$REQUESTS" 2>/dev/null)"
         tap_diag "$kind probe errors: $(cat "$BASE/probe.err" 2>/dev/null)"
@@ -431,7 +431,7 @@ for kind in file range filesystem range-zero range-zero-eof range-zero-nocache r
     case "$sync_probe_pid" in ""|0|*[!0-9]*) sync_failure=1 ;; esac
     awk -v probe="$sync_probe_pid" '($1 == 19 || $1 == 20) && $7 == probe { found=1 }
         END { exit !found }' "$REQUESTS" && sync_failure=1
-    [ "$sync_failure" -eq 0 ] || tap_diag "$kind writeback: $PROBE_OUT"
+    [[ "$sync_failure" -eq 0 ]] || tap_diag "$kind writeback: $PROBE_OUT"
     stop_daemon
     recovery_works || sync_failure=1
     tap_ok "$sync_failure" "$kind sync retains a pageout failure across a later successful writeback"
@@ -447,11 +447,11 @@ for kind in mapped cached; do
     usfs_wait_until "eviction memfs mount" 30 is_mounted || eviction_failure=1
     spawn_probe /usr/sbin/usfs_io_probe cache-eviction "$MOUNT/eviction" "$kind"
     wait_probe || eviction_failure=1
-    [ "$PROBE_RC" = 0 ] || eviction_failure=1
+    [[ "$PROBE_RC" = 0 ]] || eviction_failure=1
     echo "$PROBE_OUT" | grep -q 'cache-eviction=valid' || eviction_failure=1
     stop_daemon
     /usr/sbin/usfs_testctl reset >/dev/null 2>&1 || eviction_failure=1
-    [ "$eviction_failure" -eq 0 ] || tap_diag "$kind eviction: $PROBE_OUT"
+    [[ "$eviction_failure" -eq 0 ]] || tap_diag "$kind eviction: $PROBE_OUT"
     tap_ok "$eviction_failure" "FNOCACHE preserves a $kind write between writeback and eviction through read-only range sync"
 done
 

@@ -47,7 +47,7 @@ corruption_case()
 
     elapsed=0
     while kill -0 "$DAEMON_PID" 2>/dev/null &&
-          [ "$elapsed" -lt 10 ]; do
+          [[ "$elapsed" -lt 10 ]]; do
         if is_mounted; then
             failure=1
             break
@@ -63,7 +63,7 @@ corruption_case()
     wait "$DAEMON_PID" 2>/dev/null
     daemon_rc=$?
     DAEMON_PID=0
-    [ "$daemon_rc" -ne 0 ] || failure=1
+    [[ "$daemon_rc" -ne 0 ]] || failure=1
     is_mounted && failure=1
     umount "$MOUNT" >/dev/null 2>&1 ||
         umount -f "$MOUNT" >/dev/null 2>&1
@@ -83,9 +83,9 @@ normal_mount_recovers()
     usfs_track_mount "$MOUNT"
     usfs_wait_until "post-malformed mount recovery" 30 is_mounted ||
         failure=1
-    if [ "$failure" -eq 0 ]; then
+    if [[ "$failure" -eq 0 ]]; then
         content=$(cat "$MOUNT/file" 2>/dev/null)
-        [ "$content" = "contract-data" ] || failure=1
+        [[ "$content" = "contract-data" ]] || failure=1
     fi
     umount "$MOUNT" >/dev/null 2>&1 ||
         umount -f "$MOUNT" >/dev/null 2>&1
@@ -110,7 +110,7 @@ readonly_mount()
     usfs_track_pid "$DAEMON_PID"
     usfs_track_mount "$MOUNT"
     usfs_wait_until "read-only mount" 30 is_mounted || failure=1
-    if [ "$failure" -eq 0 ]; then
+    if [[ "$failure" -eq 0 ]]; then
         /usr/sbin/usfs_io_probe readonly-all "$MOUNT" >>"$DAEMON_LOG" 2>&1 || failure=1
         if grep -E '^(9|1[0-7]) ' "$REQUESTS"; then
             failure=1
@@ -120,7 +120,7 @@ readonly_mount()
     kill -TERM "$DAEMON_PID" 2>/dev/null
     wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
-    [ "$failure" -eq 0 ] || cat "$DAEMON_LOG" "$REQUESTS"
+    [[ "$failure" -eq 0 ]] || cat "$DAEMON_LOG" "$REQUESTS"
     tap_ok "$failure" "$policy blocks every mutation while retaining readable data"
 }
 
@@ -149,14 +149,14 @@ case "$winner" in
     *) race_failure=1 ;;
 esac
 count=$(mount | awk -v a="$MOUNT" -v b="$BASE/second" '$2==a || $2==b {n++} END {print n+0}')
-[ "$count" -eq 1 ] || race_failure=1
-if [ -n "$winner" ]; then
+[[ "$count" -eq 1 ]] || race_failure=1
+if [[ -n "$winner" ]]; then
     case "$winner" in "$MOUNT"|"$BASE/second") umount "$winner" || race_failure=1 ;; esac
 fi
 kill -TERM "$DAEMON_PID" 2>/dev/null
 wait "$DAEMON_PID" 2>/dev/null || race_failure=1
 DAEMON_PID=0
-[ "$race_failure" -eq 0 ] || cat "$DAEMON_LOG"
+[[ "$race_failure" -eq 0 ]] || cat "$DAEMON_LOG"
 tap_ok "$race_failure" "simultaneous mount attempts publish exactly one usable mount and return EBUSY to the other"
 
 readonly_mount USFS_SCENARIO_READONLY_FLAGS

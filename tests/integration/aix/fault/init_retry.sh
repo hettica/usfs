@@ -61,11 +61,11 @@ else
 fi
 
 log_race_failure=0
-if [ -x /usr/sbin/usfs_coverage ]; then
+if [[ -x /usr/sbin/usfs_coverage ]]; then
     tap_ok 0 "concurrent configuration teardown is serialized # SKIP coverage unload accounting"
 else
     cycle=1
-    while [ "$cycle" -le 8 ]; do
+    while [[ "$cycle" -le 8 ]]; do
         rmdev -l usfs0 >"/tmp/usfs_log_race.$$.${cycle}.1" 2>&1 &
         first=$!
         rmdev -l usfs0 >"/tmp/usfs_log_race.$$.${cycle}.2" 2>&1 &
@@ -73,7 +73,7 @@ else
         wait "$first" 2>/dev/null
         wait "$second" 2>/dev/null
 
-        if [ "$(lsdev -l usfs0 -F status 2>/dev/null)" != "Defined" ] ||
+        if [[ "$(lsdev -l usfs0 -F status 2>/dev/null)" != "Defined" ]] ||
            ! mkdev -l usfs0 >/dev/null 2>&1 ||
            ! /usr/sbin/usfs_testctl info >/dev/null 2>&1; then
             log_race_failure=1

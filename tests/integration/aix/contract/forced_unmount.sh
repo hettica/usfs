@@ -51,7 +51,7 @@ close_stale_fd()
 
 cleanup()
 {
-    if [ "$FD_OPEN" -eq 1 ]; then
+    if [[ "$FD_OPEN" -eq 1 ]]; then
         close_stale_fd
     fi
     usfs_owned_cleanup
@@ -90,7 +90,7 @@ if exec 3<"$MOUNT/file"; then
     FD_OPEN=1
 fi
 
-if [ "$FD_OPEN" -eq 1 ] && umount -f "$MOUNT" >"$BASE/force.log" 2>&1 &&
+if [[ "$FD_OPEN" -eq 1 ]] && umount -f "$MOUNT" >"$BASE/force.log" 2>&1 &&
    ! is_mounted; then
     tap_ok 0 "forced unmount detaches while a vnode is open"
 else
@@ -98,7 +98,7 @@ else
     tap_ok 1 "forced unmount detaches while a vnode is open"
 fi
 
-if [ "$FD_OPEN" -eq 1 ] && ! dd bs=1 count=1 <&3 >/dev/null 2>&1; then
+if [[ "$FD_OPEN" -eq 1 ]] && ! dd bs=1 count=1 <&3 >/dev/null 2>&1; then
     tap_ok 0 "stale open descriptor fails safely"
 else
     tap_ok 1 "stale open descriptor fails safely"
@@ -110,7 +110,7 @@ else
     tap_ok 1 "forced recovery terminates the quarantined daemon channel"
 fi
 
-if [ "$FD_OPEN" -eq 1 ]; then
+if [[ "$FD_OPEN" -eq 1 ]]; then
     close_stale_fd
 fi
 
@@ -148,7 +148,7 @@ for fault in error malformed; do
     DAEMON_PID=$!
     usfs_track_pid "$DAEMON_PID"
     usfs_wait_until "restricted root mount" 30 is_mounted || failure=1
-    if [ "$failure" -eq 0 ]; then
+    if [[ "$failure" -eq 0 ]]; then
         /usr/sbin/usfs_io_probe stat "$MOUNT" >"$BASE/stat.log" 2>&1 || failure=1
         grep -q '^result=0 errno=0$' "$BASE/stat.log" || failure=1
         su nobody -c "cat '$MOUNT/file'" >/dev/null 2>&1 && failure=1
@@ -160,7 +160,7 @@ for fault in error malformed; do
         is_mounted && failure=1
         usfs_wait_until "root failure forced recovery" 15 daemon_exited || failure=1
     fi
-    if [ "$failure" -ne 0 ]; then
+    if [[ "$failure" -ne 0 ]]; then
         cat "$BASE/stat.log" "$BASE/force.log" "$DAEMON_LOG" 2>/dev/null
         umount -f "$MOUNT" >/dev/null 2>&1
         kill -TERM "$DAEMON_PID" 2>/dev/null
@@ -172,7 +172,7 @@ done
 
 pair_ready()
 {
-    test -f "$BASE/ready-read" && test -f "$BASE/ready-write"
+    [[ -f "$BASE/ready-read" ]] && [[ -f "$BASE/ready-write" ]]
 }
 pair_done()
 {
@@ -222,9 +222,9 @@ for iteration in 1 2 3 4; do
     fi
     wait "$DAEMON_PID" 2>/dev/null
     usfs_wait_until "cached pair resources released" 15 no_stale_mounts || pair_failure=1
-    [ "$pair_failure" -eq 0 ] || break
+    [[ "$pair_failure" -eq 0 ]] || break
 done
-if [ "$pair_failure" -ne 0 ]; then
+if [[ "$pair_failure" -ne 0 ]]; then
     cat "$BASE/read.log" "$BASE/write.log" "$BASE/status.log" "$DAEMON_LOG" 2>/dev/null
 fi
 tap_ok "$pair_failure" "concurrent final unmaps release stale cached nodes and permit remount"

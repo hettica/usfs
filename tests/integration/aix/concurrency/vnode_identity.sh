@@ -75,8 +75,8 @@ start_daemon()
 stop_daemon()
 {
     umount "$MOUNT" >/dev/null 2>&1 || umount -f "$MOUNT" >/dev/null 2>&1
-    [ "$DAEMON_PID" -eq 0 ] || kill -TERM "$DAEMON_PID" 2>/dev/null
-    [ "$DAEMON_PID" -eq 0 ] || wait "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
 }
 
@@ -118,9 +118,9 @@ usfs_track_pid "$SECOND_PID"
 reader_failure=0
 wait "$FIRST_PID" || reader_failure=1
 wait "$SECOND_PID" || reader_failure=1
-[ "$(cat "$BASE/first" 2>/dev/null)" = "contract-data" ] ||
+[[ "$(cat "$BASE/first" 2>/dev/null)" = "contract-data" ]] ||
     reader_failure=1
-[ "$(cat "$BASE/second" 2>/dev/null)" = "contract-data" ] ||
+[[ "$(cat "$BASE/second" 2>/dev/null)" = "contract-data" ]] ||
     reader_failure=1
 tap_ok "$reader_failure" "racing same-node lookups both complete correctly"
 
@@ -137,9 +137,9 @@ node_status=$(/usr/sbin/usfs_testctl node-status 2>/dev/null)
 lookup_reused=$(status_value "$node_status" lookup_reused)
 duplicate_live=$(status_value "$node_status" duplicate_live)
 accounting_errors=$(status_value "$node_status" accounting_errors)
-if [ "$lookup_reused" -ge 1 ] &&
-   [ "$duplicate_live" -eq 0 ] &&
-   [ "$accounting_errors" -eq 0 ]; then
+if [[ "$lookup_reused" =~ ^[1-9][0-9]*$ ]] &&
+   [[ "$duplicate_live" = 0 ]] &&
+   [[ "$accounting_errors" = 0 ]]; then
     tap_ok 0 "same node id reuses one live vnode without identity violations"
 else
     tap_diag "node status after race: $node_status"
@@ -149,7 +149,8 @@ fi
 created=$(status_value "$node_status" created)
 reclaimed=$(status_value "$node_status" reclaimed)
 live=$(status_value "$node_status" live)
-if [ "$created" -eq $((reclaimed + live)) ]; then
+if [[ "$created:$reclaimed:$live" =~ ^[0-9]+:[0-9]+:[0-9]+$ ]] &&
+   [[ "$created" = "$((reclaimed + live))" ]]; then
     tap_ok 0 "live vnode accounting balances during the mounted race"
 else
     tap_diag "node status during race: $node_status"
@@ -161,7 +162,7 @@ parent_failure=0
 (
     cd "$MOUNT/dir/child" 2>/dev/null || exit 1
     : >"$BASE/child.ready"
-    while [ ! -f "$BASE/parent.release" ]; do
+    while [[ ! -f "$BASE/parent.release" ]]; do
         sleep 1
     done
     cd -P .. 2>/dev/null || exit 1
@@ -174,7 +175,7 @@ usfs_wait_until "child cwd with intermediate vnodes released" 8 \
 
 node_status=$(/usr/sbin/usfs_testctl node-status 2>/dev/null)
 live=$(status_value "$node_status" live)
-if [ "$live" -eq 1 ]; then
+if [[ "$live" = 1 ]]; then
     tap_ok 0 "only the held child vnode remains before dot-dot lookup"
 else
     tap_diag "node status while child is held: $node_status"
@@ -184,7 +185,7 @@ fi
 : >"$BASE/parent.release"
 wait "$PARENT_PID" || parent_failure=1
 got=$(cat "$BASE/parent.result" 2>/dev/null)
-if [ "$parent_failure" -eq 0 ] && [ "$got" = "$MOUNT/dir" ]; then
+if [[ "$parent_failure" -eq 0 ]] && [[ "$got" = "$MOUNT/dir" ]]; then
     tap_ok 0 "dot-dot returns the canonical parent directory"
 else
     tap_diag "parent traversal returned '$got'"
@@ -192,7 +193,8 @@ else
 fi
 
 parent_after=$(request_count 1 5)
-if [ "$parent_after" -gt "$parent_before" ]; then
+if [[ "$parent_after:$parent_before" =~ ^[0-9]+:[0-9]+$ ]] &&
+   [[ "$parent_after" -gt "$parent_before" ]]; then
     tap_ok 0 "parent is resolved through the daemon's current namespace"
 else
     tap_diag "child LOOKUP count before=$parent_before after=$parent_after"
@@ -201,7 +203,7 @@ fi
 
 node_status=$(/usr/sbin/usfs_testctl node-status 2>/dev/null)
 parent_rebuilt=$(status_value "$node_status" parent_rebuilt)
-if [ "$parent_rebuilt" -ge 1 ]; then
+if [[ "$parent_rebuilt" =~ ^[1-9][0-9]*$ ]]; then
     tap_ok 0 "parent rebuild is recorded by vnode lifecycle accounting"
 else
     tap_diag "node status after parent traversal: $node_status"
@@ -210,7 +212,7 @@ fi
 
 holds=$(status_value "$node_status" holds)
 releases=$(status_value "$node_status" releases)
-if [ "$holds" -gt 0 ] && [ "$releases" -gt 0 ]; then
+if [[ "$holds" =~ ^[1-9][0-9]*$ ]] && [[ "$releases" =~ ^[1-9][0-9]*$ ]]; then
     tap_ok 0 "vnode reference acquisition and release paths are both exercised"
 else
     tap_diag "node status before unmount: $node_status"
@@ -251,12 +253,14 @@ root_created=$(status_value "$node_status" root_created)
 root_reclaimed=$(status_value "$node_status" root_reclaimed)
 duplicate_live=$(status_value "$node_status" duplicate_live)
 accounting_errors=$(status_value "$node_status" accounting_errors)
-if [ "$live" -eq 0 ] &&
-   [ "$created" -eq "$reclaimed" ] &&
-   [ $((created + holds)) -eq "$releases" ] &&
-   [ "$root_created" -eq "$root_reclaimed" ] &&
-   [ "$duplicate_live" -eq 0 ] &&
-   [ "$accounting_errors" -eq 0 ]; then
+if [[ "$created:$reclaimed:$holds:$releases" =~ ^[0-9]+:[0-9]+:[0-9]+:[0-9]+$ ]] &&
+   [[ "$root_created:$root_reclaimed" =~ ^[0-9]+:[0-9]+$ ]] &&
+   [[ "$live" = 0 ]] &&
+   [[ "$created" = "$reclaimed" ]] &&
+   [[ $((created + holds)) -eq "$releases" ]] &&
+   [[ "$root_created" = "$root_reclaimed" ]] &&
+   [[ "$duplicate_live" = 0 ]] &&
+   [[ "$accounting_errors" = 0 ]]; then
     tap_ok 0 "final reclaim frees every vnode and balances every reference"
 else
     tap_diag "final node status: $node_status"

@@ -45,8 +45,8 @@ start_daemon()
 stop_daemon()
 {
     umount "$MOUNT" >/dev/null 2>&1 || umount -f "$MOUNT" >/dev/null 2>&1
-    [ "$DAEMON_PID" -eq 0 ] || kill -TERM "$DAEMON_PID" 2>/dev/null
-    [ "$DAEMON_PID" -eq 0 ] || wait "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
 }
 
@@ -107,7 +107,7 @@ tap_ok "$(fault_fired 2; echo $?)" "request allocation fault records one firing"
 
 /usr/sbin/usfs_testctl arm 12 1 12 >"$BASE/arm-node.log" 2>&1
 arm_rc=$?
-if [ "$arm_rc" -eq 0 ] && start_daemon; then
+if [[ "$arm_rc" -eq 0 ]] && start_daemon; then
     if cat "$MOUNT/file" >/dev/null 2>&1; then
         tap_ok 1 "root node allocation failure reaches filesystem caller"
     else

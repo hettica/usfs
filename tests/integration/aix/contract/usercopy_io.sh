@@ -45,8 +45,8 @@ start_daemon()
 stop_daemon()
 {
     umount "$MOUNT" >/dev/null 2>&1 || umount -f "$MOUNT" >/dev/null 2>&1
-    [ "$DAEMON_PID" -eq 0 ] || kill -TERM "$DAEMON_PID" 2>/dev/null
-    [ "$DAEMON_PID" -eq 0 ] || wait "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
 }
 
@@ -75,7 +75,7 @@ else
     tap_ok 1 "read rejects an invalid user destination with EFAULT"
 fi
 
-if [ "$(opcode_count 4)" -gt 0 ]; then
+if [[ "$(opcode_count 4)" =~ ^[1-9][0-9]*$ ]]; then
     tap_ok 0 "read copyout failure occurs after a daemon reply"
 else
     tap_ok 1 "read copyout failure occurs after a daemon reply"
@@ -102,7 +102,9 @@ else
     tap_ok 1 "write path recovers after copyin failure"
 fi
 
-if [ "$(opcode_count 17)" -gt "$writes_after" ]; then
+writes_recovered=$(opcode_count 17)
+if [[ "$writes_recovered:$writes_after" =~ ^[0-9]+:[0-9]+$ ]] &&
+   [[ "$writes_recovered" -gt "$writes_after" ]]; then
     tap_ok 0 "recovery write reaches the daemon exactly through the normal path"
 else
     tap_ok 1 "recovery write reaches the daemon exactly through the normal path"

@@ -44,7 +44,7 @@ start_daemon()
     rm -f "$REQUESTS" "$DAEMON_LOG"
     rm -rf "$BARRIERS"
     mkdir -p "$BARRIERS"
-    if [ "$pause_before_read" -eq 1 ]; then
+    if [[ "$pause_before_read" -eq 1 ]]; then
         USFS_SCENARIO_BARRIER_DIR="$BARRIERS" \
         USFS_SCENARIO_PAUSE_BEFORE_READ=1 \
             /usr/sbin/usfs_scenario_daemon "$MOUNT" "$SCENARIO" "$REQUESTS" \
@@ -63,8 +63,8 @@ start_daemon()
 stop_daemon()
 {
     umount "$MOUNT" >/dev/null 2>&1 || umount -f "$MOUNT" >/dev/null 2>&1
-    [ "$DAEMON_PID" -eq 0 ] || kill -TERM "$DAEMON_PID" 2>/dev/null
-    [ "$DAEMON_PID" -eq 0 ] || wait "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
 }
 
@@ -91,7 +91,7 @@ readers_done()
 {
     expected=$1
     count=$(find "$BASE" -name 'reader.*.rc' -print 2>/dev/null | wc -l)
-    [ "$count" -eq "$expected" ]
+    [[ "$count" -eq "$expected" ]]
 }
 
 wait_readers_failed()
@@ -107,7 +107,7 @@ wait_readers_failed()
         wait "$pid" 2>/dev/null
     done
     index=1
-    while [ "$index" -le "$expected" ]; do
+    while [[ "$index" -le "$expected" ]]; do
         rc=$(cat "$BASE/reader.$index.rc" 2>/dev/null)
         case "$rc" in
             ""|*[!0-9]*) failures=$((failures + 1)) ;;
@@ -115,7 +115,7 @@ wait_readers_failed()
         esac
         index=$((index + 1))
     done
-    [ "$failures" -eq 0 ]
+    [[ "$failures" -eq 0 ]]
 }
 
 reset_readers()
@@ -134,14 +134,14 @@ recovery_works()
     content=$(cat "$MOUNT/file" 2>/dev/null)
     rc=$?
     stop_daemon
-    [ "$rc" -eq 0 ] && [ "$content" = "contract-data" ]
+    [[ "$rc" -eq 0 ]] && [[ "$content" = "contract-data" ]]
 }
 
 no_usfs_state()
 {
     mounts=$(mount 2>/dev/null | awk '$3 == "usfs" { n++ } END { print n+0 }')
     daemons=$(ps -ef | grep -c '[u]sfs_scenario_daemon')
-    [ "$mounts" -eq 0 ] && [ "$daemons" -eq 0 ]
+    [[ "$mounts" = 0 ]] && [[ "$daemons" = 0 ]]
 }
 
 trap 'usfs_owned_cleanup; rm -rf "$BASE"' 0 1 2 15
@@ -167,7 +167,7 @@ start_daemon 1 || pending_failure=1
 usfs_wait_until "before-read barrier" 10 \
     test -f "$BARRIERS/before-read.ready" || pending_failure=1
 index=1
-while [ "$index" -le 8 ]; do
+while [[ "$index" -le 8 ]]; do
     spawn_reader "$index"
     index=$((index + 1))
 done
@@ -203,7 +203,7 @@ spawn_reader 1
 usfs_wait_until "mixed after-read barrier" 10 \
     test -f "$BARRIERS/after-read.ready" || mixed_failure=1
 index=2
-while [ "$index" -le 8 ]; do
+while [[ "$index" -le 8 ]]; do
     spawn_reader "$index"
     index=$((index + 1))
 done
@@ -227,11 +227,11 @@ usfs_wait_until "cancellation after-read barrier" 10 \
 kill -TERM "$CANCELED_PID" 2>/dev/null
 touch "$BARRIERS/after-read.release"
 wait "$CANCELED_PID" 2>/dev/null
-[ "$?" -ne 0 ] || cancel_failure=1
+[[ "$?" -ne 0 ]] || cancel_failure=1
 usfs_wait_until "late reply completion" 10 \
     grep -q '^REPLIED ' "$REQUESTS" || cancel_failure=1
 content=$(cat "$MOUNT/file" 2>/dev/null)
-[ "$?" -eq 0 ] && [ "$content" = "contract-data" ] || cancel_failure=1
+[[ "$?" -eq 0 ]] && [[ "$content" = "contract-data" ]] || cancel_failure=1
 stop_daemon
 recovery_works || cancel_failure=1
 tap_ok "$cancel_failure" "delivered reply completes before signaled caller teardown and preserves channel"

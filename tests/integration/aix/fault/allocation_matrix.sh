@@ -46,7 +46,7 @@ wait_for_daemon_outcome()
 {
     elapsed=0
 
-    while [ "$elapsed" -lt 30 ]; do
+    while [[ "$elapsed" -lt 30 ]]; do
         if is_mounted; then
             return 0
         fi
@@ -64,8 +64,8 @@ wait_for_daemon_outcome()
 stop_daemon()
 {
     umount "$MOUNT" >/dev/null 2>&1 || umount -f "$MOUNT" >/dev/null 2>&1
-    [ "$DAEMON_PID" -eq 0 ] || kill -TERM "$DAEMON_PID" 2>/dev/null
-    [ "$DAEMON_PID" -eq 0 ] || wait "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
 }
 
@@ -90,7 +90,7 @@ allocation_case()
     esac
 
     /usr/sbin/usfs_testctl arm "$fault" "$occurrence" 12 >/dev/null 2>&1 || failure=1
-    if [ "$failure" -eq 0 ]; then
+    if [[ "$failure" -eq 0 ]]; then
         rm -f "$REQUESTS" "$DAEMON_LOG"
         /usr/sbin/usfs_scenario_daemon "$MOUNT" "$SCENARIO" "$REQUESTS" \
             >"$DAEMON_LOG" 2>&1 &
@@ -100,18 +100,18 @@ allocation_case()
 
         wait_for_daemon_outcome
         outcome=$?
-        if [ "$outcome" -eq 0 ]; then
+        if [[ "$outcome" -eq 0 ]]; then
             cat "$MOUNT/file" >/dev/null 2>&1 && failure=1
-        elif [ "$outcome" -eq 2 ]; then
+        elif [[ "$outcome" -eq 2 ]]; then
             failure=1
         fi
     fi
     stop_daemon
     status_fired "$occurrence" || failure=1
     start_daemon || failure=1
-    if [ "$failure" -eq 0 ]; then
+    if [[ "$failure" -eq 0 ]]; then
         content=$(cat "$MOUNT/file" 2>/dev/null)
-        [ "$content" = "contract-data" ] || failure=1
+        [[ "$content" = "contract-data" ]] || failure=1
     fi
     stop_daemon
     tap_ok "$failure" "$name fails once, records firing, and recovers"
@@ -123,14 +123,14 @@ write_copy_case()
 
     /usr/sbin/usfs_testctl arm 15 1 14 >/dev/null 2>&1 || failure=1
     start_daemon || failure=1
-    if [ "$failure" -eq 0 ]; then
+    if [[ "$failure" -eq 0 ]]; then
         printf 'first' >"$MOUNT/newfile" 2>/dev/null && failure=1
     fi
     stop_daemon
     status_fired 1 || failure=1
 
     start_daemon || failure=1
-    if [ "$failure" -eq 0 ]; then
+    if [[ "$failure" -eq 0 ]]; then
         printf 'second' >"$MOUNT/newfile" 2>/dev/null || failure=1
     fi
     stop_daemon
@@ -154,28 +154,28 @@ create_atomic_case()
     printf 'USFS-SCENARIO 1\nLOOKUP error 2 1\n' >"$SCENARIO"
     /usr/sbin/usfs_testctl arm 12 2 12 >/dev/null 2>&1 || failure=1
     start_daemon || failure=1
-    if [ "$failure" -eq 0 ]; then
+    if [[ "$failure" -eq 0 ]]; then
         ( : >"$MOUNT/create-cleanup" ) 2>/dev/null
         create_rc=$?
-        [ "$create_rc" -ne 0 ] || failure=1
+        [[ "$create_rc" -ne 0 ]] || failure=1
         grep -q '^9 ' "$REQUESTS" 2>/dev/null && create_seen=1
         grep -q '^5 ' "$REQUESTS" 2>/dev/null && release_seen=1
-        [ "$create_seen" -eq 0 ] || failure=1
-        [ "$release_seen" -eq 0 ] || failure=1
+        [[ "$create_seen" -eq 0 ]] || failure=1
+        [[ "$release_seen" -eq 0 ]] || failure=1
         request_trace=$(awk '!/^REPLIED / { printf "%s%s", separator, $0; separator="; " }' "$REQUESTS" 2>/dev/null)
     fi
     stop_daemon
     status_fired 2 || failure=1
 
     start_daemon || failure=1
-    if [ "$failure" -eq 0 ]; then
+    if [[ "$failure" -eq 0 ]]; then
         : >"$MOUNT/create-recovery" 2>/dev/null
         recovery_rc=$?
-        [ "$recovery_rc" -eq 0 ] || failure=1
+        [[ "$recovery_rc" -eq 0 ]] || failure=1
     fi
     stop_daemon
 
-    if [ "$failure" -ne 0 ]; then
+    if [[ "$failure" -ne 0 ]]; then
         tap_diag "create_rc=$create_rc create_seen=$create_seen release_seen=$release_seen recovery_rc=$recovery_rc"
         tap_diag "fault status: $(/usr/sbin/usfs_testctl status 2>/dev/null)"
         tap_diag "first request trace: $request_trace"

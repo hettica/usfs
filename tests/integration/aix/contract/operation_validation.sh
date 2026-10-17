@@ -45,8 +45,8 @@ start_daemon()
 stop_daemon()
 {
     umount "$MOUNT" >/dev/null 2>&1 || umount -f "$MOUNT" >/dev/null 2>&1
-    [ "$DAEMON_PID" -eq 0 ] || kill -TERM "$DAEMON_PID" 2>/dev/null
-    [ "$DAEMON_PID" -eq 0 ] || wait "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
 }
 
@@ -75,7 +75,7 @@ validation_case()
     occurrence=1
     # Child GETATTR follows the root attribute lookup needed to authorize
     # search of the parent directory.
-    [ "$opcode" != GETATTR ] || occurrence=2
+    [[ "$opcode" != GETATTR ]] || occurrence=2
     printf 'USFS-SCENARIO 1\n%s %s 0 %s\n' \
         "$opcode" "$action" "$occurrence" >"$SCENARIO"
     if ! start_daemon; then
@@ -83,23 +83,23 @@ validation_case()
     else
         invoke_operation "$opcode" 2>>"$DAEMON_LOG"
         operation_rc=$?
-        if [ "$expected_success" -eq 1 ]; then
-            [ "$operation_rc" -eq 0 ] || failure=1
+        if [[ "$expected_success" -eq 1 ]]; then
+            [[ "$operation_rc" -eq 0 ]] || failure=1
         else
-            [ "$operation_rc" -ne 0 ] || failure=1
+            [[ "$operation_rc" -ne 0 ]] || failure=1
         fi
         grep -q "^ACTION " "$REQUESTS" 2>/dev/null || failure=1
         content=$(cat "$MOUNT/file" 2>/dev/null)
         case "$opcode" in
             LOOKUP|CREATE_ATTR)
-                [ -z "$content" ] || failure=1
+                [[ -z "$content" ]] || failure=1
                 stop_daemon
                 printf 'USFS-SCENARIO 1\n' >"$SCENARIO"
                 start_daemon || failure=1
                 content=$(cat "$MOUNT/file" 2>/dev/null)
                 ;;
         esac
-        [ "$content" = "contract-data" ] || failure=1
+        [[ "$content" = "contract-data" ]] || failure=1
     fi
     stop_daemon
     tap_ok "$failure" "$4 is contained and the channel recovers"

@@ -48,7 +48,7 @@ if usfs_wait_until "access contract mount" 30 is_mounted; then
 else
     tap_ok 1 "permission-test memfs mounts"
     _n=2
-    while [ "$_n" -le 17 ]; do
+    while [[ "$_n" -le 17 ]]; do
         tap_ok 1 "permission check unavailable"
         _n=$((_n + 1))
     done
@@ -221,7 +221,7 @@ fi
 printf x >"$MOUNT/setid-write"
 chmod 6777 "$MOUNT/setid-write"
 if su nobody -c "printf y >>'$MOUNT/setid-write'" &&
-   [ ! -u "$MOUNT/setid-write" ] && [ ! -g "$MOUNT/setid-write" ]; then
+   [[ ! -u "$MOUNT/setid-write" ]] && [[ ! -g "$MOUNT/setid-write" ]]; then
     tap_ok 0 "unprivileged write strips executable set-ID bits"
 else
     tap_ok 1 "unprivileged write strips executable set-ID bits"
@@ -229,20 +229,20 @@ fi
 printf x >"$MOUNT/setid-truncate"
 chmod 6777 "$MOUNT/setid-truncate"
 if su nobody -c ": >'$MOUNT/setid-truncate'" &&
-   [ ! -u "$MOUNT/setid-truncate" ] && [ ! -g "$MOUNT/setid-truncate" ]; then
+   [[ ! -u "$MOUNT/setid-truncate" ]] && [[ ! -g "$MOUNT/setid-truncate" ]]; then
     tap_ok 0 "unprivileged truncate strips executable set-ID bits"
 else
     tap_ok 1 "unprivileged truncate strips executable set-ID bits"
 fi
 printf x >"$MOUNT/setid-owner"
 chmod 6777 "$MOUNT/setid-owner"
-if chown nobody "$MOUNT/setid-owner" && [ -u "$MOUNT/setid-owner" ] && [ -g "$MOUNT/setid-owner" ]; then
+if chown nobody "$MOUNT/setid-owner" && [[ -u "$MOUNT/setid-owner" ]] && [[ -g "$MOUNT/setid-owner" ]]; then
     tap_ok 0 "privileged ownership change preserves set-ID as on native AIX"
 else
     tap_ok 1 "privileged ownership change preserves set-ID as on native AIX"
 fi
 if su nobody -c "chgrp nobody '$MOUNT/setid-owner'" &&
-   [ ! -u "$MOUNT/setid-owner" ] && [ ! -g "$MOUNT/setid-owner" ]; then
+   [[ ! -u "$MOUNT/setid-owner" ]] && [[ ! -g "$MOUNT/setid-owner" ]]; then
     tap_ok 0 "unprivileged group change clears set-ID as on native AIX"
 else
     tap_ok 1 "unprivileged group change clears set-ID as on native AIX"
@@ -251,7 +251,7 @@ fi
 printf x >"$MOUNT/nonexec-setid"
 chmod 6666 "$MOUNT/nonexec-setid"
 if su nobody -c "printf y >>'$MOUNT/nonexec-setid'" &&
-   [ -u "$MOUNT/nonexec-setid" ] && [ -g "$MOUNT/nonexec-setid" ]; then
+   [[ -u "$MOUNT/nonexec-setid" ]] && [[ -g "$MOUNT/nonexec-setid" ]]; then
     tap_ok 0 "writes preserve non-executable set-ID bits as on native AIX"
 else
     tap_ok 1 "writes preserve non-executable set-ID bits as on native AIX"
@@ -259,7 +259,7 @@ fi
 printf x >"$MOUNT/nonmember-setgid"
 chown nobody:staff "$MOUNT/nonmember-setgid"
 if su nobody -c "chmod 2755 '$MOUNT/nonmember-setgid'" >/dev/null 2>&1 ||
-   [ -g "$MOUNT/nonmember-setgid" ]; then
+   [[ -g "$MOUNT/nonmember-setgid" ]]; then
     tap_ok 1 "nonmember cannot enable setgid on a differently grouped file"
 else
     tap_ok 0 "nonmember cannot enable setgid on a differently grouped file"
@@ -267,7 +267,7 @@ fi
 dd if=/dev/zero of="$MOUNT/mapped-setid" bs=4096 count=1 2>/dev/null
 chmod 6777 "$MOUNT/mapped-setid"
 if su nobody -c "/usr/sbin/usfs_io_probe mmap-write-shared '$MOUNT/mapped-setid' 4096 0" >"$BASE/mapped-setid.log" 2>&1 &&
-   [ ! -u "$MOUNT/mapped-setid" ] && [ ! -g "$MOUNT/mapped-setid" ]; then
+   [[ ! -u "$MOUNT/mapped-setid" ]] && [[ ! -g "$MOUNT/mapped-setid" ]]; then
     tap_ok 0 "unprivileged shared mapping removes executable set-ID privileges"
 else
     tap_ok 1 "unprivileged shared mapping removes executable set-ID privileges"

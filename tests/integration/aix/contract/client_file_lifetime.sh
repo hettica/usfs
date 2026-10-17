@@ -51,7 +51,7 @@ stop_path_daemon()
     wait "$DAEMON_PID"
     result=$?
     DAEMON_PID=0
-    [ "$result" -eq "$expected" ]
+    [[ "$result" -eq "$expected" ]]
 }
 
 cleanup_case()
@@ -61,17 +61,17 @@ cleanup_case()
     start_path_daemon "$cleanup_mode" || failure=1
     "$DAEMON" --cleanup-probe "$MOUNT" "$BACKING" >"$PROBE_LOG" 2>&1 || failure=1
     grep -q 'retained for shutdown retry' "$DAEMON_LOG" || failure=1
-    if [ "$cleanup_mode" = transient ]; then
+    if [[ "$cleanup_mode" = transient ]]; then
         rm -f "$BACKING/.fault-cleanup"
         stop_path_daemon 0 || failure=1
         remaining=$(find "$BACKING" -name '.fuse_hidden*' -print | wc -l)
-        [ "$remaining" -eq 0 ] || failure=1
+        [[ "$remaining" -eq 0 ]] || failure=1
     else
         stop_path_daemon "$EXPECTED_CLEANUP_FAILURE" || failure=1
         grep -q 'shutdown cleanup unresolved' "$DAEMON_LOG" || failure=1
     fi
     grep 'Failed to remove owned hidden file' "$DAEMON_LOG" | sed 's/^/# /'
-    [ "$failure" -eq 0 ] || cat "$PROBE_LOG" "$DAEMON_LOG"
+    [[ "$failure" -eq 0 ]] || cat "$PROBE_LOG" "$DAEMON_LOG"
     tap_ok "$failure" "$cleanup_mode cleanup failure is tracked, retried and reported without losing unrelated I/O"
 }
 
@@ -82,7 +82,7 @@ start_path_daemon normal || failure=1
 "$DAEMON" --probe "$MOUNT" "$BACKING" >"$PROBE_LOG" 2>&1 || failure=1
 stop_path_daemon 0 || failure=1
 grep 'Failed to replace' "$DAEMON_LOG" | sed 's/^/# /'
-[ "$failure" -eq 0 ] || cat "$PROBE_LOG" "$DAEMON_LOG"
+[[ "$failure" -eq 0 ]] || cat "$PROBE_LOG" "$DAEMON_LOG"
 tap_ok "$failure" "pathname backend passes unlink, replacement, identity, hard-link and rollback journeys"
 cleanup_case transient
 cleanup_case persistent

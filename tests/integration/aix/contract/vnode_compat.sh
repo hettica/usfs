@@ -63,8 +63,8 @@ expect_success()
     description=$2
     target=${3:-$MOUNT/file}
     out=$(/usr/sbin/usfs_io_probe "$operation" "$target")
-    if [ "$(value "$out" result)" -ge 0 ] &&
-       [ "$(value "$out" errno)" -eq 0 ]; then
+    if [[ "$(value "$out" result)" =~ ^[0-9]+$ ]] &&
+       [[ "$(value "$out" errno)" = 0 ]]; then
         tap_ok 0 "$description succeeds after daemon acknowledgement"
     else
         tap_diag "$out"
@@ -78,8 +78,9 @@ expect_eio()
     description=$2
     target=${3:-$MOUNT/file}
     out=$(/usr/sbin/usfs_io_probe "$operation" "$target")
-    if [ "$(value "$out" result)" -eq -1 ] &&
-       [ "$(value "$out" errno)" -eq "$(value "$out" EIO)" ]; then
+    if [[ "$(value "$out" result)" = -1 ]] &&
+       [[ "$(value "$out" errno)" =~ ^[0-9]+$ ]] &&
+       [[ "$(value "$out" errno)" = "$(value "$out" EIO)" ]]; then
         tap_ok 0 "$description propagates daemon EIO"
     else
         tap_diag "$out"
@@ -92,8 +93,9 @@ expect_unsupported()
     operation=$1
     description=$2
     out=$(/usr/sbin/usfs_io_probe "$operation" "$MOUNT/file")
-    if [ "$(value "$out" result)" -eq -1 ] &&
-       [ "$(value "$out" errno)" -eq "$(value "$out" ENOSYS)" ]; then
+    if [[ "$(value "$out" result)" = -1 ]] &&
+       [[ "$(value "$out" errno)" =~ ^[0-9]+$ ]] &&
+       [[ "$(value "$out" errno)" = "$(value "$out" ENOSYS)" ]]; then
         tap_ok 0 "$description fails explicitly with ENOSYS"
     else
         tap_diag "$out"
@@ -107,7 +109,7 @@ expect_request_count()
     expected=$2
     description=$3
     actual=$(grep -c "^$opcode " "$REQUESTS")
-    if [ "$actual" -eq "$expected" ]; then
+    if [[ "$actual" = "$expected" ]]; then
         tap_ok 0 "$description"
     else
         tap_diag "opcode=$opcode expected=$expected actual=$actual"
@@ -121,7 +123,7 @@ expect_force_sync_request_count()
     description=$2
     actual=$(grep -c '^DETAIL 20 1$' "$REQUESTS")
 
-    if [ "$actual" -eq "$expected" ]; then
+    if [[ "$actual" = "$expected" ]]; then
         tap_ok 0 "$description"
     else
         tap_diag "force sync requests expected=$expected actual=$actual"

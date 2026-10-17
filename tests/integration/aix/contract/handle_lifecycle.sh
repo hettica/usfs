@@ -52,8 +52,8 @@ stop_daemon()
 {
     touch "$BARRIERS/after-read.release" 2>/dev/null
     umount "$MOUNT" >/dev/null 2>&1 || umount -f "$MOUNT" >/dev/null 2>&1
-    [ "$DAEMON_PID" -eq 0 ] || kill -TERM "$DAEMON_PID" 2>/dev/null
-    [ "$DAEMON_PID" -eq 0 ] || wait "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
 }
 
@@ -81,7 +81,7 @@ fresh_recovery()
     stop_daemon
     printf 'USFS-SCENARIO 1\n' >"$SCENARIO"
     start_daemon || return 1
-    [ "$(cat "$MOUNT/file" 2>/dev/null)" = "contract-data" ]
+    [[ "$(cat "$MOUNT/file" 2>/dev/null)" = "contract-data" ]]
 }
 
 quarantined_ownership()
@@ -91,11 +91,11 @@ quarantined_ownership()
     usfs_wait_until "malformed ownership daemon exit" 15 \
         sh -c "! ps -p $DAEMON_PID >/dev/null 2>&1" || return 1
     ownership=$(grep '^OWNERSHIP ' "$REQUESTS")
-    [ "$(status_value "$ownership" created)" = "$expected_handles" ] &&
-        [ "$(status_value "$ownership" released)" = 0 ] &&
-        [ "$(status_value "$ownership" closed)" = "$expected_handles" ] &&
-        [ "$(status_value "$ownership" lookup_closed)" -gt 0 ] &&
-        [ "$(status_value "$ownership" errors)" = 0 ] &&
+    [[ "$(status_value "$ownership" created)" = "$expected_handles" ]] &&
+        [[ "$(status_value "$ownership" released)" = 0 ]] &&
+        [[ "$(status_value "$ownership" closed)" = "$expected_handles" ]] &&
+        [[ "$(status_value "$ownership" lookup_closed)" =~ ^[1-9][0-9]*$ ]] &&
+        [[ "$(status_value "$ownership" errors)" = 0 ]] &&
         grep -q "^REPLY_REJECTED errno=$expected_errno\$" "$REQUESTS"
 }
 
@@ -110,7 +110,7 @@ open_validation_case()
     action_observed 3 || failure=1
     cat "$MOUNT/file" >/dev/null 2>&1 && failure=1
     copy_errno=22
-    [ "$action" != reply-copy-fault ] || copy_errno=14
+    [[ "$action" != reply-copy-fault ]] || copy_errno=14
     quarantined_ownership 1 "$copy_errno" || failure=1
     fresh_recovery || failure=1
     stop_daemon
@@ -128,7 +128,7 @@ create_validation_case()
     action_observed 21 || failure=1
     cat "$MOUNT/file" >/dev/null 2>&1 && failure=1
     copy_errno=22
-    [ "$action" != reply-copy-fault ] || copy_errno=14
+    [[ "$action" != reply-copy-fault ]] || copy_errno=14
     quarantined_ownership 1 "$copy_errno" || failure=1
     fresh_recovery || failure=1
     stop_daemon
@@ -162,7 +162,7 @@ for action in short-body invalid-nodeid reply-copy-fault; do
     cat "$MOUNT/file" >/dev/null 2>&1 && failure=1
     cat "$MOUNT/file" >/dev/null 2>&1 && failure=1
     copy_errno=22
-    [ "$action" != reply-copy-fault ] || copy_errno=14
+    [[ "$action" != reply-copy-fault ]] || copy_errno=14
     quarantined_ownership 0 "$copy_errno" || failure=1
     fresh_recovery || failure=1
     stop_daemon
@@ -183,7 +183,7 @@ tap_ok "$failure" "disconnect after a successful OPEN releases kernel ownership 
 failure=0
 printf 'USFS-SCENARIO 1\nRELEASE error 5 1\n' >"$SCENARIO"
 start_daemon || failure=1
-[ "$(cat "$MOUNT/file" 2>/dev/null)" = "contract-data" ] || failure=1
+[[ "$(cat "$MOUNT/file" 2>/dev/null)" = "contract-data" ]] || failure=1
 action_observed 5 || failure=1
 cat "$MOUNT/file" >/dev/null 2>&1 && failure=1
 fresh_recovery || failure=1
@@ -193,7 +193,7 @@ tap_ok "$failure" "failed RELEASE terminates uncertain handle ownership and a fr
 failure=0
 printf 'USFS-SCENARIO 1\nRELEASE wrong-body 0 1\n' >"$SCENARIO"
 start_daemon || failure=1
-[ "$(cat "$MOUNT/file" 2>/dev/null)" = "contract-data" ] || failure=1
+[[ "$(cat "$MOUNT/file" 2>/dev/null)" = "contract-data" ]] || failure=1
 action_observed 5 || failure=1
 cat "$MOUNT/file" >/dev/null 2>&1 && failure=1
 fresh_recovery || failure=1
@@ -203,7 +203,7 @@ tap_ok "$failure" "RELEASE body overflow terminates the bad channel and a fresh 
 failure=0
 printf 'USFS-SCENARIO 1\nRELEASE reply-disconnect 0 1\n' >"$SCENARIO"
 start_daemon || failure=1
-[ "$(cat "$MOUNT/file" 2>/dev/null)" = "contract-data" ] || failure=1
+[[ "$(cat "$MOUNT/file" 2>/dev/null)" = "contract-data" ]] || failure=1
 action_observed 5 || failure=1
 usfs_wait_until "post-release disconnect" 15 \
     sh -c "! ps -p $DAEMON_PID >/dev/null 2>&1" || failure=1
@@ -223,10 +223,10 @@ open_first=$(awk '$1 == 3 { print $2; exit }' "$REQUESTS" 2>/dev/null)
 open_second=$(awk '$1 == 3 { count++; if (count == 2) { print $2; exit } }' \
     "$REQUESTS" 2>/dev/null)
 open_count=$(grep -c '^3 ' "$REQUESTS" 2>/dev/null)
-if [ "$open_count" -eq 2 ] && [ -n "$open_first" ] &&
-   [ -n "$open_second" ] && [ "$open_first" != "$open_second" ] &&
+if [[ "$open_count" = 2 ]] && [[ -n "$open_first" ]] &&
+   [[ -n "$open_second" ]] && [[ "$open_first" != "$open_second" ]] &&
    grep -q "^HANDLE 4 $open_first\$" "$REQUESTS" &&
-   [ "$(grep -c "^HANDLE 17 $open_second\$" "$REQUESTS")" -eq 2 ]; then
+   [[ "$(grep -c "^HANDLE 17 $open_second\$" "$REQUESTS")" = 2 ]]; then
     tap_ok 0 "each open receives and routes its distinct daemon handle"
 else
     tap_diag "open_first=$open_first open_second=$open_second open_count=$open_count"
@@ -234,8 +234,8 @@ else
     tap_ok 1 "each open receives and routes its distinct daemon handle"
 fi
 
-if [ "$(grep -c "^HANDLE 5 $open_first\$" "$REQUESTS")" -eq 1 ] &&
-   [ "$(grep -c "^HANDLE 5 $open_second\$" "$REQUESTS")" -eq 1 ]; then
+if [[ "$(grep -c "^HANDLE 5 $open_first\$" "$REQUESTS")" = 1 ]] &&
+   [[ "$(grep -c "^HANDLE 5 $open_second\$" "$REQUESTS")" = 1 ]]; then
     tap_ok 0 "each open description releases exactly its own handle"
 else
     tap_diag "release trace: $(grep '^HANDLE 5 ' "$REQUESTS" | tr '\n' ';')"
@@ -247,14 +247,14 @@ failure=0
 printf 'USFS-SCENARIO 1\n' >"$SCENARIO"
 start_daemon || failure=1
 /usr/sbin/usfs_io_probe retained-handles "$MOUNT/file" >"$BASE/retained.log" 2>&1 || failure=1
-[ "$failure" -eq 0 ] || sed 's/^/# /' "$BASE/retained.log"
+[[ "$failure" -eq 0 ]] || sed 's/^/# /' "$BASE/retained.log"
 tap_ok "$failure" "getattr, fsync, and first page-in remain valid after descriptor reuse"
 old_handle=$(awk '$1 == 3 { print $2; exit }' "$REQUESTS")
 new_handle=$(awk '$1 == 3 { n++; if (n == 2) { print $2; exit } }' "$REQUESTS")
 failure=0
-[ -n "$old_handle" ] && [ -n "$new_handle" ] || failure=1
-[ "$(grep -c "^HANDLE 5 $old_handle\$" "$REQUESTS")" -eq 1 ] || failure=1
-[ "$(grep -c "^HANDLE 5 $new_handle\$" "$REQUESTS")" -eq 1 ] || failure=1
+[[ -n "$old_handle" ]] && [[ -n "$new_handle" ]] || failure=1
+[[ "$(grep -c "^HANDLE 5 $old_handle\$" "$REQUESTS")" = 1 ]] || failure=1
+[[ "$(grep -c "^HANDLE 5 $new_handle\$" "$REQUESTS")" = 1 ]] || failure=1
 awk -v old="$old_handle" -v replacement="$new_handle" \
     -v pager_read_opcode="$PAGER_READ_OPCODE" -v pager_release_opcode="$PAGER_RELEASE_OPCODE" '
     $1 == "HANDLE" && $2 == 5 && $3 == old { old_release = NR }
@@ -265,7 +265,7 @@ awk -v old="$old_handle" -v replacement="$new_handle" \
                  old_release < pager_read && pager_read < replacement_release &&
                  replacement_release < pager_release) }
 ' "$REQUESTS" || failure=1
-[ "$failure" -eq 0 ] || sed 's/^/# /' "$REQUESTS"
+[[ "$failure" -eq 0 ]] || sed 's/^/# /' "$REQUESTS"
 tap_ok "$failure" "closed handles release independently while the pager lease survives faults until segment teardown"
 stop_daemon
 
@@ -288,15 +288,15 @@ for operation in open create; do
     kill -USR1 "$probe_pid" || failure=1
     touch "$BARRIERS/after-read.release"
     wait "$probe_pid" 2>/dev/null
-    [ "$?" -eq 143 ] || failure=1
+    [[ "$?" -eq 143 ]] || failure=1
     grep -q '^result=0 errno=0 signal=1$' "$BASE/signaled.out" || failure=1
     handle=$(awk -v op="$opcode" '$1 == op { print $2; exit }' "$REQUESTS")
-    [ "$opcode" -ne 21 ] || handle=$((handle + 100))
-    [ -n "$handle" ] &&
-        [ "$(grep -c "^HANDLE 5 $handle\$" "$REQUESTS")" -eq 1 ] || failure=1
+    [[ "$opcode" -ne 21 ]] || handle=$((handle + 100))
+    [[ -n "$handle" ]] &&
+        [[ "$(grep -c "^HANDLE 5 $handle\$" "$REQUESTS")" = 1 ]] || failure=1
     /usr/sbin/usfs_io_probe stat "$MOUNT/file" >"$BASE/after-signal.out" 2>&1
     grep -q '^result=0 errno=0$' "$BASE/after-signal.out" || failure=1
-    [ "$failure" -eq 0 ] || {
+    [[ "$failure" -eq 0 ]] || {
         sed 's/^/# /' "$BASE/signaled.out"
         sed 's/^/# /' "$REQUESTS"
     }
@@ -309,30 +309,30 @@ USFS_MT_CREATE_FLAGS=1 /usr/sbin/usfs_mt_test_daemon -s "$MOUNT" >"$DAEMON_LOG" 
 DAEMON_PID=$!
 usfs_track_pid "$DAEMON_PID"
 usfs_wait_until "client CREATE access modes" 30 is_mounted || failure=1
-if [ "$failure" -eq 0 ]; then
+if [[ "$failure" -eq 0 ]]; then
     /usr/sbin/usfs_io_probe create-flags "$MOUNT" >"$BASE/create-flags.log" 2>&1 || failure=1
 fi
 tap_ok "$failure" "created read-only write-only and read-write descriptions enforce their access modes"
 for mode in 0 1 2; do
     handle=$((mode + 1))
-    [ "$(grep -c "^CREATE $mode flags=$mode fh=$handle$" "$DAEMON_LOG")" -eq 1 ] || failure=1
-    [ "$(grep -c "^RELEASE $mode flags=$mode fh=$handle valid=1$" "$DAEMON_LOG")" -eq 1 ] || failure=1
+    [[ "$(grep -c "^CREATE $mode flags=$mode fh=$handle$" "$DAEMON_LOG")" = 1 ]] || failure=1
+    [[ "$(grep -c "^RELEASE $mode flags=$mode fh=$handle valid=1$" "$DAEMON_LOG")" = 1 ]] || failure=1
 done
-[ "$(grep -c '^CREATE ' "$DAEMON_LOG")" -eq 3 ] || failure=1
-[ "$(grep -c '^RELEASE ' "$DAEMON_LOG")" -eq 3 ] || failure=1
-[ "$failure" -eq 0 ] || cat "$BASE/create-flags.log" "$DAEMON_LOG"
+[[ "$(grep -c '^CREATE ' "$DAEMON_LOG")" = 3 ]] || failure=1
+[[ "$(grep -c '^RELEASE ' "$DAEMON_LOG")" = 3 ]] || failure=1
+[[ "$failure" -eq 0 ]] || cat "$BASE/create-flags.log" "$DAEMON_LOG"
 stop_daemon
 tap_ok "$failure" "client callbacks receive matching CREATE and exactly-once RELEASE flags without unsupported mutation"
 
 for action in error disconnect; do
     failure=0
-    if [ "$action" = error ]; then value=5; else value=0; fi
+    if [[ "$action" = error ]]; then value=5; else value=0; fi
     printf 'USFS-SCENARIO 1\nFORGET %s %s 1\n' "$action" "$value" >"$SCENARIO"
     start_daemon || failure=1
     /usr/sbin/usfs_io_probe stat "$MOUNT/file" >"$BASE/forget.out" 2>&1
     action_observed 22 || failure=1
     cat "$MOUNT/file" >/dev/null 2>&1 && failure=1
-    [ "$failure" -eq 0 ] || sed 's/^/# /' "$REQUESTS"
+    [[ "$failure" -eq 0 ]] || sed 's/^/# /' "$REQUESTS"
     fresh_recovery || failure=1
     stop_daemon
     tap_ok "$failure" "FORGET $action terminates uncertain ownership and a fresh channel recovers"
@@ -341,11 +341,11 @@ done
 failure=0
 printf 'USFS-SCENARIO 1\n' >"$SCENARIO"
 start_daemon || failure=1
-[ "$(cat "$MOUNT/file" 2>/dev/null)" = contract-data ] || failure=1
+[[ "$(cat "$MOUNT/file" 2>/dev/null)" = contract-data ]] || failure=1
 umount "$MOUNT" >/dev/null 2>&1 || failure=1
 usfs_wait_until "raw daemon orderly EOF" 15 \
     sh -c "! ps -p $DAEMON_PID >/dev/null 2>&1" || failure=1
-if [ "$failure" -eq 0 ]; then
+if [[ "$failure" -eq 0 ]]; then
     wait "$DAEMON_PID" || failure=1
     DAEMON_PID=0
 fi
@@ -362,11 +362,12 @@ holds=$(status_value "$node_status" holds)
 releases=$(status_value "$node_status" releases)
 duplicate_live=$(status_value "$node_status" duplicate_live)
 accounting_errors=$(status_value "$node_status" accounting_errors)
-if [ "$live" -eq 0 ] &&
-   [ "$created" -eq "$reclaimed" ] &&
-   [ $((created + holds)) -eq "$releases" ] &&
-   [ "$duplicate_live" -eq 0 ] &&
-   [ "$accounting_errors" -eq 0 ]; then
+if [[ "$created:$reclaimed:$holds:$releases" =~ ^[0-9]+:[0-9]+:[0-9]+:[0-9]+$ ]] &&
+   [[ "$live" = 0 ]] &&
+   [[ "$created" = "$reclaimed" ]] &&
+   [[ $((created + holds)) -eq "$releases" ]] &&
+   [[ "$duplicate_live" = 0 ]] &&
+   [[ "$accounting_errors" = 0 ]]; then
     tap_ok 0 "all handle edge cases finish with balanced vnode ownership"
 else
     tap_diag "node status: $node_status"

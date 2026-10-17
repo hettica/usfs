@@ -52,7 +52,7 @@ awk '{$5=1; print}' "$BASE/state.saved" >/var/adm/ras/usfs.trace.state
 /usr/sbin/usfsctl trace pause >/dev/null 2>&1
 stale_rc=$?
 cp "$BASE/state.saved" /var/adm/ras/usfs.trace.state
-tap_ok $(test "$stale_rc" -eq 2; echo $?) \
+tap_ok $([[ "$stale_rc" -eq 2 ]]; echo $?) \
     "stale daemon ownership is refused without touching channel 0"
 
 /usr/sbin/usfsctl trace pause >/dev/null 2>&1 &&
@@ -63,7 +63,7 @@ tap_ok "$?" "owned trace pauses and resumes"
 /usr/sbin/usfsctl >/dev/null 2>&1
 /usr/sbin/usfs_probe >/dev/null 2>&1
 /usr/sbin/usfsctl trace stop >"$BASE/stop.out" 2>"$BASE/stop.err"
-tap_ok $(test -s "$RAW" -a -s "$REPORT"; echo $?) \
+tap_ok $([[ -s "$RAW" && -s "$REPORT" ]]; echo $?) \
     "stop retains raw and human-readable artifacts"
 
 tap_ok $(for event in 'schema trace_abi=' 'kext state' 'registration component=' \
@@ -82,21 +82,21 @@ tap_ok $(grep -q 'USFS CONTROL' "$REPORT" &&
 
 /usr/sbin/usfsctl trace report "$RAW" --output "$EXPLICIT" \
     >"$BASE/report.out" 2>"$BASE/report.err"
-tap_ok $(test -s "$EXPLICIT"; echo $?) \
+tap_ok $([[ -s "$EXPLICIT" ]]; echo $?) \
     "saved raw trace can be explicitly reformatted"
 
 touch "$BASE/existing.trc"
 /usr/sbin/usfsctl trace start --output "$BASE/existing.trc" >/dev/null 2>&1
-tap_ok $(test "$?" -eq 2 -a ! -e /var/adm/ras/usfs.trace.state; echo $?) \
+tap_ok $([[ "$?" -eq 2 && ! -e /var/adm/ras/usfs.trace.state ]]; echo $?) \
     "an existing requested output is never overwritten"
 
 /usr/bin/trace -a -d -j F5F1 -o "$OTHER" >/dev/null 2>&1
 /usr/sbin/usfsctl trace start --output "$BASE/conflict.trc" >/dev/null 2>&1
 occupied_rc=$?
 owned_state=0
-test -e /var/adm/ras/usfs.trace.state && owned_state=1
+[[ -e /var/adm/ras/usfs.trace.state ]] && owned_state=1
 /usr/bin/trcstop -d >/dev/null 2>&1
-tap_ok $(test "$occupied_rc" -eq 2 -a "$owned_state" -eq 0 -a -s "$OTHER"; \
+tap_ok $([[ "$occupied_rc" -eq 2 && "$owned_state" -eq 0 && -s "$OTHER" ]]; \
          echo $?) "an occupied channel is refused and left to native administration"
 
 tap_finish

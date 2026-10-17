@@ -82,7 +82,7 @@ run_bounded_command()
     local timeout_seconds=$2
     shift 2
 
-    if [ "$COMMAND_PID" -ne 0 ]; then
+    if [[ "$COMMAND_PID" -ne 0 ]]; then
         tap_diag "cannot start $description while an earlier command is active: pid=$COMMAND_PID"
         return 1
     fi
@@ -112,15 +112,15 @@ stop_backend()
 
     if is_mounted; then
         if ! bounded_unmount "FID clean unmount" "$MOUNT" >/dev/null 2>&1; then
-            if [ "$recovery_mode" != daemon-loss ]; then stop_failed=1; fi
-            if [ "$COMMAND_PID" -ne 0 ] ||
+            if [[ "$recovery_mode" != daemon-loss ]]; then stop_failed=1; fi
+            if [[ "$COMMAND_PID" -ne 0 ]] ||
                ! bounded_unmount "FID forced cleanup unmount" -f "$MOUNT" >/dev/null 2>&1; then
                 stop_failed=1
             fi
         fi
     fi
 
-    if [ "$DAEMON_PID" -ne 0 ]; then
+    if [[ "$DAEMON_PID" -ne 0 ]]; then
         stop_owned_process "FID daemon" "$DAEMON_PID" || stop_failed=1
         if process_finished "$DAEMON_PID"; then DAEMON_PID=0; fi
     fi
@@ -144,33 +144,33 @@ restore_device()
 cleanup()
 {
     local cleanup_failed=0
-    if [ "$CASE_PID" -ne 0 ]; then
+    if [[ "$CASE_PID" -ne 0 ]]; then
         stop_owned_process "FID probe" "$CASE_PID" || cleanup_failed=1
         if process_finished "$CASE_PID"; then CASE_PID=0; fi
     fi
-    if [ "$LOOKUP_PID" -ne 0 ]; then
+    if [[ "$LOOKUP_PID" -ne 0 ]]; then
         stop_owned_process "FID lookup probe" "$LOOKUP_PID" || cleanup_failed=1
         if process_finished "$LOOKUP_PID"; then LOOKUP_PID=0; fi
     fi
-    if [ "$RESOLVE_PID" -ne 0 ]; then
+    if [[ "$RESOLVE_PID" -ne 0 ]]; then
         stop_owned_process "FID resolve probe" "$RESOLVE_PID" || cleanup_failed=1
         if process_finished "$RESOLVE_PID"; then RESOLVE_PID=0; fi
     fi
-    if [ "$CAPTURE_PID" -ne 0 ]; then
+    if [[ "$CAPTURE_PID" -ne 0 ]]; then
         stop_owned_process "FID capture probe" "$CAPTURE_PID" || cleanup_failed=1
         if process_finished "$CAPTURE_PID"; then CAPTURE_PID=0; fi
     fi
-    if [ "$COMMAND_PID" -ne 0 ]; then
+    if [[ "$COMMAND_PID" -ne 0 ]]; then
         stop_owned_process "FID command" "$COMMAND_PID" || cleanup_failed=1
     fi
-    if [ "$COMMAND_PID" -ne 0 ] && process_finished "$COMMAND_PID"; then COMMAND_PID=0; fi
+    if [[ "$COMMAND_PID" -ne 0 ]] && process_finished "$COMMAND_PID"; then COMMAND_PID=0; fi
 
-    if [ "$HELD_FILE_OPEN" -eq 1 ]; then exec 3<&-; fi
+    if [[ "$HELD_FILE_OPEN" -eq 1 ]]; then exec 3<&-; fi
     stop_backend || cleanup_failed=1
     restore_device || cleanup_failed=1
-    if ! is_mounted && [ "$DAEMON_PID" -eq 0 ] && [ "$CASE_PID" -eq 0 ] &&
-       [ "$LOOKUP_PID" -eq 0 ] && [ "$RESOLVE_PID" -eq 0 ] &&
-       [ "$CAPTURE_PID" -eq 0 ] && [ "$COMMAND_PID" -eq 0 ]; then
+    if ! is_mounted && [[ "$DAEMON_PID" -eq 0 ]] && [[ "$CASE_PID" -eq 0 ]] &&
+       [[ "$LOOKUP_PID" -eq 0 ]] && [[ "$RESOLVE_PID" -eq 0 ]] &&
+       [[ "$CAPTURE_PID" -eq 0 ]] && [[ "$COMMAND_PID" -eq 0 ]]; then
         rm -rf "$BASE"
     fi
     return "$cleanup_failed"
@@ -199,7 +199,7 @@ run_case()
     local case_failed=$?
     tap_ok "$case_failed" "$description"
 
-    if [ "$CASE_PID" -ne 0 ]; then exit 1; fi
+    if [[ "$CASE_PID" -ne 0 ]]; then exit 1; fi
 }
 
 run_probe_status()
@@ -213,7 +213,7 @@ run_probe_status()
     wait_owned_process "$description" "$CASE_PID" "$CASE_TIMEOUT_SECONDS" || case_failed=1
     if process_finished "$CASE_PID"; then CASE_PID=0; fi
 
-    if [ "$case_failed" -ne 0 ]; then sed 's/^/# /' "$BASE/case.log"; fi
+    if [[ "$case_failed" -ne 0 ]]; then sed 's/^/# /' "$BASE/case.log"; fi
     return "$case_failed"
 }
 
@@ -248,9 +248,9 @@ verify_eviction_progress()
     local previous_created=$1
     local previous_reclaimed=$2
 
-    if [ "$NODE_LIVE" -ne 0 ] || [ "$NODE_CREATED" -le "$previous_created" ] ||
-       [ "$NODE_RECLAIMED" -le "$previous_reclaimed" ] ||
-       [ $((NODE_CREATED - previous_created)) -ne $((NODE_RECLAIMED - previous_reclaimed)) ]; then
+    if [[ "$NODE_LIVE" -ne 0 ]] || [[ "$NODE_CREATED" -le "$previous_created" ]] ||
+       [[ "$NODE_RECLAIMED" -le "$previous_reclaimed" ]] ||
+       [[ $((NODE_CREATED - previous_created)) -ne $((NODE_RECLAIMED - previous_reclaimed)) ]]; then
         tap_diag "native FID eviction counters: created=$NODE_CREATED reclaimed=$NODE_RECLAIMED live=$NODE_LIVE; previous_created=$previous_created previous_reclaimed=$previous_reclaimed"
         return 1
     fi
@@ -265,7 +265,7 @@ verify_native_eviction()
         return 1
     fi
 
-    if [ "$NODE_LIVE" -ne 0 ]; then
+    if [[ "$NODE_LIVE" -ne 0 ]]; then
         tap_diag "empty-file baseline retained $NODE_LIVE live vnodes; expected zero: $(cat "$BASE/node-status.log")"
         return 1
     fi
@@ -296,18 +296,18 @@ native_eviction_case()
     local case_failed=0
 
     run_bounded_command "create empty FID eviction file" 10 touch "$MOUNT/eviction" >"$BASE/eviction-create.log" 2>&1 || case_failed=1
-    if [ "$case_failed" -eq 0 ]; then verify_native_eviction || case_failed=1; fi
+    if [[ "$case_failed" -eq 0 ]]; then verify_native_eviction || case_failed=1; fi
 
-    if [ "$CASE_PID" -ne 0 ] || [ "$COMMAND_PID" -ne 0 ]; then
+    if [[ "$CASE_PID" -ne 0 ]] || [[ "$COMMAND_PID" -ne 0 ]]; then
         tap_ok 1 "native FID reconstructs an evicted vnode on capture and resolve"
         exit 1
     fi
 
     run_bounded_command "remove FID eviction file" 10 rm -f "$MOUNT/eviction" >"$BASE/eviction-remove.log" 2>&1 || case_failed=1
-    if [ "$case_failed" -ne 0 ]; then sed 's/^/# /' "$BASE/node-status.log" "$BASE/eviction-create.log" "$BASE/eviction-remove.log" 2>/dev/null; fi
+    if [[ "$case_failed" -ne 0 ]]; then sed 's/^/# /' "$BASE/node-status.log" "$BASE/eviction-create.log" "$BASE/eviction-remove.log" 2>/dev/null; fi
     tap_ok "$case_failed" "native FID reconstructs an evicted vnode on capture and resolve"
 
-    if [ "$COMMAND_PID" -ne 0 ]; then exit 1; fi
+    if [[ "$COMMAND_PID" -ne 0 ]]; then exit 1; fi
 }
 
 parallel_lookup_and_vget()
@@ -324,12 +324,12 @@ parallel_lookup_and_vget()
     wait_owned_process "parallel native vget" "$RESOLVE_PID" "$CASE_TIMEOUT_SECONDS" || parallel_failed=1
     if process_finished "$RESOLVE_PID"; then RESOLVE_PID=0; fi
 
-    if [ "$parallel_failed" -ne 0 ]; then
+    if [[ "$parallel_failed" -ne 0 ]]; then
         sed 's/^/# /' "$BASE/lookup.log" "$BASE/resolve.log"
     fi
     tap_ok "$parallel_failed" "parallel pathname lookup and vget share canonical identity"
 
-    if [ "$LOOKUP_PID" -ne 0 ] || [ "$RESOLVE_PID" -ne 0 ]; then exit 1; fi
+    if [[ "$LOOKUP_PID" -ne 0 ]] || [[ "$RESOLVE_PID" -ne 0 ]]; then exit 1; fi
 }
 
 vget_reserved()
@@ -361,13 +361,13 @@ concurrent_forced_unmount()
         *) race_failed=1 ;;
     esac
 
-    if [ "$race_failed" -ne 0 ]; then
+    if [[ "$race_failed" -ne 0 ]]; then
         sed 's/^/# /' "$BASE/race.log" "$BASE/race-umount.log" 2>/dev/null
         tap_diag "FID race schedule status: $schedule_status"
     fi
     tap_ok "$race_failed" "concurrent native VGET and forced unmount drain without publication after detach"
 
-    if [ "$CAPTURE_PID" -ne 0 ] || [ "$COMMAND_PID" -ne 0 ]; then exit 1; fi
+    if [[ "$CAPTURE_PID" -ne 0 ]] || [[ "$COMMAND_PID" -ne 0 ]]; then exit 1; fi
 }
 
 tap_plan 23
@@ -421,9 +421,9 @@ stop_backend daemon-loss || exit 1
 
 schedule_failure=0
 run_bounded_command "native VGET race schedule arm" 10 /usr/sbin/usfs_testctl schedule 6 >"$BASE/race-arm.log" 2>&1 || schedule_failure=1
-if [ "$schedule_failure" -ne 0 ]; then sed 's/^/# /' "$BASE/race-arm.log"; fi
+if [[ "$schedule_failure" -ne 0 ]]; then sed 's/^/# /' "$BASE/race-arm.log"; fi
 tap_ok "$schedule_failure" "native VGET race schedule arms before mounting"
-if [ "$schedule_failure" -ne 0 ]; then exit 1; fi
+if [[ "$schedule_failure" -ne 0 ]]; then exit 1; fi
 
 start_backend /usr/sbin/usfs_memfs || exit 1
 printf 'race-data\n' >"$MOUNT/file" || exit 1
@@ -440,9 +440,9 @@ usfs_coverage_checkpoint file-identifiers-pre-term || reload_result=1
 usfs_coverage_expect_export file-identifiers-term || reload_result=1
 USFS_COVERAGE_EVENT=file-identifiers-term \
     run_bounded_command "FID device removal" "$CASE_TIMEOUT_SECONDS" rmdev -l usfs0 >"$BASE/reload.log" 2>&1 || reload_result=1
-if [ "$reload_result" -eq 0 ]; then
+if [[ "$reload_result" -eq 0 ]]; then
     run_bounded_command "FID device reconfiguration" "$CASE_TIMEOUT_SECONDS" mkdev -l usfs0 >>"$BASE/reload.log" 2>&1 || reload_result=1
 fi
-if [ "$reload_result" -ne 0 ]; then cat "$BASE/reload.log"; fi
+if [[ "$reload_result" -ne 0 ]]; then cat "$BASE/reload.log"; fi
 tap_ok "$reload_result" "all native FID references drain before clean unload and reload"
 tap_finish

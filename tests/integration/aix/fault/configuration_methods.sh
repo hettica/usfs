@@ -17,7 +17,7 @@ set -u
 
 tap_plan 10
 
-if [ -x /usr/sbin/usfs_coverage ]; then
+if [[ -x /usr/sbin/usfs_coverage ]]; then
     for name in \
         "post-load configure rollback" \
         "post-device configure rollback" \
@@ -44,15 +44,15 @@ vfs_count()
 
 is_available()
 {
-    [ "$(lsdev -l usfs0 -F status 2>/dev/null)" = "Available" ] &&
-    [ -c /dev/usfs0 ] && [ "$(vfs_count)" -eq 1 ] &&
+    [[ "$(lsdev -l usfs0 -F status 2>/dev/null)" = "Available" ]] &&
+    [[ -c /dev/usfs0 ]] && [[ "$(vfs_count)" = 1 ]] &&
     /usr/sbin/usfs_testctl info >/dev/null 2>&1
 }
 
 is_defined()
 {
-    [ "$(lsdev -l usfs0 -F status 2>/dev/null)" = "Defined" ] &&
-    [ ! -e /dev/usfs0 ] && [ "$(vfs_count)" -eq 0 ]
+    [[ "$(lsdev -l usfs0 -F status 2>/dev/null)" = "Defined" ]] &&
+    [[ ! -e /dev/usfs0 ]] && [[ "$(vfs_count)" = 0 ]]
 }
 
 restore_available()
@@ -114,7 +114,7 @@ unconfigure_failure_case 7 "post-vfs-unregister failure is retryable through rmd
 idempotent_failure=0
 /usr/lib/methods/usfs/cfgusfs -l usfs0 >/dev/null 2>&1 || idempotent_failure=1
 /usr/lib/methods/usfs/cfgusfs -l usfs0 >/dev/null 2>&1 || idempotent_failure=1
-[ "$(vfs_count)" -eq 1 ] || idempotent_failure=1
+[[ "$(vfs_count)" = 1 ]] || idempotent_failure=1
 /usr/lib/methods/usfs/ucfgusfs -l usfs0 >/dev/null 2>&1 || idempotent_failure=1
 /usr/lib/methods/usfs/ucfgusfs -l usfs0 >/dev/null 2>&1 || idempotent_failure=1
 is_defined || idempotent_failure=1
@@ -125,12 +125,12 @@ rollback_failure=0
 rmdev -l usfs0 >/dev/null 2>&1 || rollback_failure=1
 USFS_TEST_INIT_FAULT=5 USFS_TEST_INIT_ERRNO=16 USFS_TEST_METHOD_FAULT=8 \
     mkdev -l usfs0 >/tmp/usfs-method-config.log 2>&1 && rollback_failure=1
-[ -c /dev/usfs0 ] || rollback_failure=1
+[[ -c /dev/usfs0 ]] || rollback_failure=1
 owned_number=$(ls -ln /dev/usfs0 2>/dev/null | awk '{ print $5 $6 }')
-[ -n "$owned_number" ] || rollback_failure=1
+[[ -n "$owned_number" ]] || rollback_failure=1
 # A retry cannot replace a registration whose rollback has not completed.
 /usr/lib/methods/usfs/cfgusfs -l usfs0 >/dev/null 2>&1 && rollback_failure=1
-[ "$(ls -ln /dev/usfs0 2>/dev/null | awk '{ print $5 $6 }')" = "$owned_number" ] || rollback_failure=1
+[[ "$(ls -ln /dev/usfs0 2>/dev/null | awk '{ print $5 $6 }')" = "$owned_number" ]] || rollback_failure=1
 /usr/lib/methods/usfs/ucfgusfs -l usfs0 >/dev/null 2>&1 || rollback_failure=1
 is_defined || rollback_failure=1
 restore_available || rollback_failure=1
@@ -142,7 +142,7 @@ owned_number=$(ls -ln /dev/usfs0 | awk '{ print $5 $6 }')
 USFS_TEST_METHOD_FAULT=9 rmdev -l usfs0 \
     >/tmp/usfs-method-unconfig.log 2>&1 && query_failure=1
 is_available || query_failure=1
-[ "$(ls -ln /dev/usfs0 | awk '{ print $5 $6 }')" = "$owned_number" ] || query_failure=1
+[[ "$(ls -ln /dev/usfs0 | awk '{ print $5 $6 }')" = "$owned_number" ]] || query_failure=1
 rmdev -l usfs0 >/dev/null 2>&1 || query_failure=1
 is_defined || query_failure=1
 restore_available || query_failure=1
@@ -170,7 +170,7 @@ printf '# USFS registry preservation fixture\n' >>"$registry_base/unrelated"
 cat "$registry_base/unrelated" >/etc/vfs
 printf 'usfs 999 none none\nusfs 998 wrong wrong\n' >>/etc/vfs
 /usr/lib/methods/usfs/cfgusfs -l usfs0 >/dev/null 2>&1 || registry_failure=1
-[ "$(vfs_count)" -eq 1 ] || registry_failure=1
+[[ "$(vfs_count)" = 1 ]] || registry_failure=1
 awk -v expected="$expected_type" '$1 == "usfs" { if (NF != 4 || $2 != expected || $3 != "none" || $4 != "none") bad=1 } END { exit bad }' /etc/vfs || registry_failure=1
 awk '$1 != "usfs" { print }' /etc/vfs >"$registry_base/after"
 cmp "$registry_base/unrelated" "$registry_base/after" || registry_failure=1
