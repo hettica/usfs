@@ -34,8 +34,8 @@ USFS_TEST_MOUNTS=""
 usfs_coverage_checkpoint()
 {
     label=$1
-    [ -n "${USFS_COVERAGE_SUITE:-}" ] || return 0
-    [ -x /usr/sbin/usfs_coverage ] || return 0
+    [[ -n "${USFS_COVERAGE_SUITE:-}" ]] || return 0
+    [[ -x /usr/sbin/usfs_coverage ]] || return 0
     bash "${USFS_SOURCE_DIR:?}/scripts/aix/coverage-checkpoint.sh" snapshot \
         "$USFS_COVERAGE_SUITE" "$label"
 }
@@ -43,8 +43,8 @@ usfs_coverage_checkpoint()
 usfs_coverage_expect_export()
 {
     label=$1
-    [ -n "${USFS_COVERAGE_SUITE:-}" ] || return 0
-    [ -x /usr/sbin/usfs_coverage ] || return 0
+    [[ -n "${USFS_COVERAGE_SUITE:-}" ]] || return 0
+    [[ -x /usr/sbin/usfs_coverage ]] || return 0
     bash "${USFS_SOURCE_DIR:?}/scripts/aix/coverage-checkpoint.sh" expect-export \
         "$USFS_COVERAGE_SUITE" "$label"
 }
@@ -53,62 +53,79 @@ usfs_coverage_expect_profile()
 {
     workload=$1
     pid=$2
-    [ -n "${USFS_COVERAGE_SUITE:-}" ] || return 0
-    [ -x /usr/sbin/usfs_coverage ] || return 0
+    [[ -n "${USFS_COVERAGE_SUITE:-}" ]] || return 0
+    [[ -x /usr/sbin/usfs_coverage ]] || return 0
     bash "${USFS_SOURCE_DIR:?}/scripts/aix/coverage-checkpoint.sh" expect-profile \
         "$USFS_COVERAGE_SUITE" "$workload" "$pid"
 }
 
 tap_plan()
 {
-    USFS_TAP_PLANNED=$1
+    local planned_count=$1
+
+    [[ "$planned_count" =~ ^[0-9]+$ ]] || return 2
+    planned_count=${planned_count#"${planned_count%%[!0]*}"}
+    USFS_TAP_PLANNED=${planned_count:-0}
     echo "TAP version 13"
-    echo "1..$1"
+    echo "1..$USFS_TAP_PLANNED"
+    return "$?"
 }
 
 tap_diag()
 {
     printf '# %s\n' "$*"
+    return "$?"
 }
 
 tap_ok()
 {
+    local result=$1
+    local description=$2
+
     USFS_TAP_EXECUTED=$((USFS_TAP_EXECUTED + 1))
-    if [ "$1" -eq 0 ]; then
-        printf 'ok %d - %s\n' "$USFS_TAP_EXECUTED" "$2"
+    if [[ "$result" =~ ^[+-]?0+$ ]]; then
+        printf 'ok %d - %s\n' "$USFS_TAP_EXECUTED" "$description"
     else
-        printf 'not ok %d - %s\n' "$USFS_TAP_EXECUTED" "$2"
+        printf 'not ok %d - %s\n' "$USFS_TAP_EXECUTED" "$description"
         USFS_TAP_FAILED=$((USFS_TAP_FAILED + 1))
     fi
+    return "$?"
 }
 
 tap_is()
 {
-    if [ "$1" = "$2" ]; then
-        tap_ok 0 "$3"
+    local actual=$1
+    local expected=$2
+    local description=$3
+
+    if [[ "$actual" = "$expected" ]]; then
+        tap_ok 0 "$description"
     else
-        tap_diag "$3: actual='$1' expected='$2'"
-        tap_ok 1 "$3"
+        tap_diag "$description: actual='$actual' expected='$expected'"
+        tap_ok 1 "$description"
     fi
+    return "$?"
 }
 
 tap_finish()
 {
-    if [ "$USFS_TAP_EXECUTED" -ne "$USFS_TAP_PLANNED" ]; then
+    if [[ "$USFS_TAP_EXECUTED" -ne "$USFS_TAP_PLANNED" ]]; then
         tap_diag "plan mismatch: planned=$USFS_TAP_PLANNED executed=$USFS_TAP_EXECUTED"
         return 2
     fi
-    [ "$USFS_TAP_FAILED" -eq 0 ]
+    [[ "$USFS_TAP_FAILED" -eq 0 ]]
 }
 
 usfs_track_pid()
 {
     USFS_TEST_PIDS="$USFS_TEST_PIDS $1"
+    return "$?"
 }
 
 usfs_track_mount()
 {
     USFS_TEST_MOUNTS="$USFS_TEST_MOUNTS $1"
+    return "$?"
 }
 
 usfs_owned_cleanup()
@@ -119,6 +136,7 @@ usfs_owned_cleanup()
     for pid in $USFS_TEST_PIDS; do
         kill -TERM "$pid" 2>/dev/null
     done
+    return "$?"
 }
 
 usfs_wait_until()
@@ -128,12 +146,12 @@ usfs_wait_until()
     shift 2
     deadline=$(( $(date +%s) + timeout ))
     next_heartbeat=$(( $(date +%s) + 15 ))
-    while [ "$(date +%s)" -lt "$deadline" ]; do
+    while [[ "$(date +%s)" -lt "$deadline" ]]; do
         if "$@"; then
             return 0
         fi
         now=$(date +%s)
-        if [ "$now" -ge "$next_heartbeat" ]; then
+        if [[ "$now" -ge "$next_heartbeat" ]]; then
             tap_diag "heartbeat: waiting for $description"
             next_heartbeat=$((now + 15))
         fi
@@ -151,18 +169,29 @@ usfs_namespace_case()
     ns_base="/tmp/usfs-namespace.$$"
     ns_mount="$ns_base/mnt"
     ns_pids=""
-    ns_mounted() { mount | grep -q " $ns_mount "; }
-    ns_gone() { ! kill -0 "$1" 2>/dev/null; }
+    ns_mounted()
+    {
+        mount | grep -q " $ns_mount "
+        return "$?"
+    }
+    ns_gone()
+    {
+        local process_id=$1
+
+        ! kill -0 "$process_id" 2>/dev/null
+        return "$?"
+    }
     ns_stat_waiting()
     {
         grep -q "^USFS_NAMESPACE_WAITING pid=$ns_holder exclusive=0$" "$ns_base/daemon.log"
+        return "$?"
     }
     ns_cleanup()
     {
         ns_cleanup_status=0
         # Release the callback before stopping its worker, including failures
         # before the normal publication step. A regular file never blocks here.
-        if [ -d "$ns_base" ]; then
+        if [[ -d "$ns_base" ]]; then
             : >"$ns_base/rename.release" || ns_cleanup_status=1
         fi
 
@@ -180,7 +209,7 @@ usfs_namespace_case()
         if ns_mounted; then ns_cleanup_status=1; else rm -rf "$ns_base"; fi
         return "$ns_cleanup_status"
     }
-    trap 'ns_status=$?; trap - 0; if [ "$ns_status" -ne 0 ]; then cat "$ns_base"/*.log 2>/dev/null; fi; ns_cleanup || ns_status=1; exit "$ns_status"' 0
+    trap 'ns_status=$?; trap - 0; if [[ "$ns_status" -ne 0 ]]; then cat "$ns_base"/*.log 2>/dev/null; fi; ns_cleanup || ns_status=1; exit "$ns_status"' 0
     trap 'exit 1' 1 2 15
     mkdir -p "$ns_mount" || exit 1
     mkfifo "$ns_base/stat" || exit 1
@@ -229,6 +258,9 @@ usfs_mount_owner_case()
 (
     owner_mode=$1
     owner_layers=$2
+    [[ "$owner_layers" =~ ^[0-9]+$ ]] || exit 1
+    owner_layers=${owner_layers#"${owner_layers%%[!0]*}"}
+    owner_layers=${owner_layers:-0}
     owner_base="/tmp/usfs-mount-owner.$$.${owner_mode}.${owner_layers}"
     owner_mount="$owner_base/mnt"
     owner_pids=""
@@ -237,16 +269,32 @@ usfs_mount_owner_case()
     owner_count()
     {
         mount | awk -v path="$owner_mount" '{ for (i=1;i<=NF;i++) if ($i==path) { n++; break } } END { print n+0 }'
+        return "$?"
     }
-    owner_has_count() { [ "$(owner_count)" -eq "$1" ]; }
-    owner_gone() { ! kill -0 "$1" 2>/dev/null; }
+    owner_has_count()
+    {
+        local expected_count=$1
+        local actual_count
+
+        actual_count=$(owner_count) || return 1
+        [[ "$actual_count" =~ ^[0-9]+$ && "$expected_count" =~ ^[0-9]+$ ]] || return 1
+        [[ "10#$actual_count" -eq "10#$expected_count" ]]
+        return "$?"
+    }
+    owner_gone()
+    {
+        local process_id=$1
+
+        ! kill -0 "$process_id" 2>/dev/null
+        return "$?"
+    }
     owner_cleanup()
     {
         owner_cleanup_status=0
-        if [ "$owner_held_fd" -eq 1 ]; then
+        if [[ "$owner_held_fd" -eq 1 ]]; then
             exec 3<&- || owner_cleanup_status=1
         fi
-        if [ "$owner_holder" -ne 0 ]; then
+        if [[ "$owner_holder" -ne 0 ]]; then
             kill -TERM "$owner_holder" 2>/dev/null || true
             wait "$owner_holder" 2>/dev/null || true
         fi
@@ -287,7 +335,7 @@ usfs_mount_owner_case()
     usfs_wait_until "original daemon signal readiness" 15 grep -q USFS_OWNER_READY "$owner_base/old.log" || exit 1
     case "$owner_mode" in
     retry-*)
-        if [ "$owner_mode" = retry-descriptor ]; then
+        if [[ "$owner_mode" = retry-descriptor ]]; then
             exec 3<"$owner_mount/slow" || exit 1
             owner_held_fd=1
         else
@@ -307,7 +355,7 @@ usfs_mount_owner_case()
             exit 1
         }
         owner_has_count 1 || exit 1
-        if [ "$owner_held_fd" -eq 1 ]; then
+        if [[ "$owner_held_fd" -eq 1 ]]; then
             exec 3<&- || exit 1
             owner_held_fd=0
         else
@@ -327,15 +375,16 @@ usfs_mount_owner_case()
         owner_has_count 0 && grep -q USFS_RETRY_DONE "$owner_base/old.log"
         exit $?
         ;;
+    *) : ;; # Other modes replace the original mount below.
     esac
-    if [ "$owner_mode" = forced ]; then
+    if [[ "$owner_mode" = forced ]]; then
         umount -f "$owner_mount" || exit 1
     else
         umount "$owner_mount" || exit 1
     fi
     usfs_wait_until "old daemon cleanup barrier" 15 grep -q USFS_CLEANUP_READY "$owner_base/old.log" || exit 1
     owner_layer=1
-    while [ "$owner_layer" -le "$owner_layers" ]; do
+    while [[ "$owner_layer" -le "$owner_layers" ]]; do
         /usr/sbin/usfs_mt_test_daemon -f "$owner_mount" >"$owner_base/new.$owner_layer.log" 2>&1 &
         owner_pids="$owner_pids $!"
         usfs_wait_until "replacement layer $owner_layer" 30 owner_has_count "$owner_layer" || exit 1
@@ -353,5 +402,5 @@ usfs_mount_owner_case()
         cat "$owner_base/old.log"
         exit 1
     }
-    [ "$(cat "$owner_mount/slow")" = parallel-dispatch ] || exit 1
+    [[ "$(cat "$owner_mount/slow")" = parallel-dispatch ]] || exit 1
 )

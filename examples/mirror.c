@@ -48,10 +48,12 @@ static size_t source_directory_path_length;
 static struct stat source_root_attributes;
 static int source_root_identity_known;
 
-static struct options
+struct options
 {
     const char * source; // Source directory supplied through --source.
-} options;
+};
+
+static struct options options;
 
 struct mirror_anchor
 {
@@ -227,16 +229,18 @@ static int read_symbolic_link (const struct usfs_client_request * request, const
     if (buffer_capacity == 0)
         return -EINVAL;
 
-    const ssize_t target_length = readlink (source_path, buffer, buffer_capacity - 1);
+    const size_t target_capacity = buffer_capacity - 1;
+    const ssize_t target_length = readlink (source_path, buffer, target_capacity);
     if (target_length < 0)
         return -errno;
 
-    if ((size_t)target_length >= buffer_capacity)
+    const size_t terminator_offset = (size_t)target_length;
+    if (terminator_offset > target_capacity)
         return -EIO;
 
     /* The high-level API expects a NUL-terminated target and a 0 return,
        not the length. */
-    buffer[target_length] = '\0';
+    buffer[terminator_offset] = '\0';
 
     return 0;
 }
@@ -306,7 +310,13 @@ static int read_directory (
         return -errno;
 
     struct stat attributes;
-    if (fstat (dirfd (directory_stream), &attributes) != 0)
+    const int directory_descriptor = dirfd (directory_stream);
+    if (directory_descriptor < 0)
+    {
+        closedir (directory_stream);
+        return -EBADF;
+    }
+    if (fstat (directory_descriptor, &attributes) != 0)
     {
         const int error = errno;
         closedir (directory_stream);
@@ -455,15 +465,13 @@ static int open_file (const struct usfs_client_request * request, const char * p
 static int get_operation_file_descriptor (
     const struct usfs_client_request * request,
     const char * path,
-    const struct usfs_open_file * file_info,
-    int * file_descriptor
+    const struct usfs_open_file * file_info
 )
 {
     if (has_file_handle (file_info))
     {
         const struct mirror_open * opened = (const struct mirror_open *)(uintptr_t)file_info->value;
-        *file_descriptor = opened->descriptor;
-        return 0;
+        return opened->descriptor < 0 ? -EBADF : opened->descriptor;
     }
 
     const struct usfs_object_identity * identity = usfs_request_object_identity (request);
@@ -474,8 +482,8 @@ static int get_operation_file_descriptor (
 
         if (anchor != NULL)
         {
-            *file_descriptor = dup (anchor->descriptor);
-            const int result = *file_descriptor == -1 ? -errno : 0;
+            const int descriptor = dup (anchor->descriptor);
+            const int result = descriptor == -1 ? -errno : descriptor;
 
             pthread_mutex_unlock (&anchor_lock);
             return result;
@@ -492,25 +500,25 @@ static int get_operation_file_descriptor (
     if (path_result != 0)
         return path_result;
 
-    *file_descriptor = open (source_path, O_RDONLY);
-    if (*file_descriptor == -1)
+    const int file_descriptor = open (source_path, O_RDONLY);
+    if (file_descriptor == -1)
         return -errno;
 
     struct stat attributes;
-    if (fstat (*file_descriptor, &attributes) != 0)
+    if (fstat (file_descriptor, &attributes) != 0)
     {
         const int error = errno;
-        close (*file_descriptor);
+        close (file_descriptor);
         return -error;
     }
 
     if (!object_matches_identity (&attributes, identity, path))
     {
-        close (*file_descriptor);
+        close (file_descriptor);
         return -ESTALE;
     }
 
-    return 0;
+    return file_descriptor;
 }
 
 static ssize_t read_file (
@@ -522,10 +530,9 @@ static ssize_t read_file (
     struct usfs_open_file * file_info
 )
 {
-    int file_descriptor;
-    const int descriptor_result = get_operation_file_descriptor (request, path, file_info, &file_descriptor);
-    if (descriptor_result != 0)
-        return descriptor_result;
+    const int file_descriptor = get_operation_file_descriptor (request, path, file_info);
+    if (file_descriptor < 0)
+        return file_descriptor;
 
     /* Explicit offsets keep concurrent reads independent of the descriptor position. */
     const ssize_t bytes_read = pread (file_descriptor, buffer, requested_bytes, offset);
@@ -583,10 +590,9 @@ static int synchronize_file (
     struct usfs_open_file * file_info
 )
 {
-    int file_descriptor;
-    const int descriptor_result = get_operation_file_descriptor (request, path, file_info, &file_descriptor);
-    if (descriptor_result != 0)
-        return descriptor_result;
+    const int file_descriptor = get_operation_file_descriptor (request, path, file_info);
+    if (file_descriptor < 0)
+        return file_descriptor;
 
     const int operation_result = synchronize_data_only ? fdatasync (file_descriptor) : fsync (file_descriptor);
     const int synchronization_result = operation_result == 0 ? 0 : -errno;
@@ -623,10 +629,9 @@ static int get_filesystem_statistics (const struct usfs_client_request * request
 
 static int acquire_pager_file (const struct usfs_client_request * request, const char * path, struct usfs_pager_file * pager_file)
 {
-    int descriptor = -1;
-    const int rc = get_operation_file_descriptor (request, path, NULL, &descriptor);
-    if (rc != 0)
-        return rc;
+    const int descriptor = get_operation_file_descriptor (request, path, NULL);
+    if (descriptor < 0)
+        return descriptor;
 
     pager_file->value = (uint64_t)descriptor;
 
@@ -662,6 +667,8 @@ static int release_pager_file (const struct usfs_client_request * request, struc
     return close ((int)pager_file->value) == 0 ? 0 : -errno;
 }
 
+/* Callback pointer parameters must match struct usfs_operations in usfs.h.
+   Adding pointee const here would make these function types incompatible. */
 static const struct usfs_operations filesystem_operations = {
     .initialize = initialize_filesystem,
     .shutdown = destroy_filesystem,
@@ -712,7 +719,7 @@ static int resolve_source_directory (void)
         return -1;
     }
 
-    /* realpath also collapses "//", ".", ".." and trailing slashes, and
+    /* realpath also collapses repeated separators, dot components and trailing slashes, and
        resolves a symlinked source, which is what the prefix should be. */
     if (realpath (options.source, resolved_path) == NULL)
     {
@@ -775,11 +782,8 @@ static int is_mountpoint_outside_source (const char * mountpoint_path)
         return true;
 
     const char path_separator = resolved_path[source_directory_path_length];
-    if (path_separator != '/')
-    {
-        if (path_separator != '\0')
-            return true;
-    }
+    if (path_separator != '/' && path_separator != '\0')
+        return true;
 
     fprintf (
         stderr,
@@ -814,7 +818,7 @@ static void remove_automatic_mount_directories (const struct automatic_mount_pat
     (void)rmdir (mount_paths->parent_directory_path);
 }
 
-static int run_filesystem (struct example_arguments * arguments, const struct automatic_mount_paths * mount_paths)
+static int run_filesystem (const struct example_arguments * arguments, const struct automatic_mount_paths * mount_paths)
 {
     const int command_result = run_example_client (arguments, &filesystem_operations);
     remove_automatic_mount_directories (mount_paths);
@@ -864,7 +868,7 @@ static int prepare_mount_arguments (struct example_arguments * arguments, struct
         fprintf (
             stderr,
             "Failed to format automatic mountpoint path: path exceeds %lu bytes\n",
-            (unsigned long)sizeof (mount_paths->mountpoint_path) - 1
+            sizeof (mount_paths->mountpoint_path) - 1
         );
         return -1;
     }
@@ -895,11 +899,13 @@ int main (const int argc, char * argv[])
     struct example_arguments arguments = { 0 };
     struct automatic_mount_paths mount_paths = { 0 };
     arguments.workers = USFS_CLIENT_DEFAULT_WORKERS;
-    for (int index = 1; index < argc; ++index)
+    int index = 1;
+    while (index < argc)
     {
         if (strncmp (argv[index], "--source=", 9) == 0)
         {
             options.source = argv[index] + 9;
+            ++index;
             continue;
         }
         if (parse_example_argument (&arguments, argc, argv, &index) <= 0)
@@ -907,6 +913,7 @@ int main (const int argc, char * argv[])
             fprintf (stderr, "Failed to parse arguments: unsupported option or invalid value\n");
             return EXIT_FAILURE;
         }
+        ++index;
     }
     if (arguments.help)
         print_help ();

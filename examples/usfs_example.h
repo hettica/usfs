@@ -103,7 +103,7 @@ static inline int parse_example_mount_options (struct example_arguments * argume
         return -ENOMEM;
 
     int rc = 0;
-    char * option = options;
+    const char * option = options;
     for (;;)
     {
         char * separator = strchr (option, ',');
@@ -159,7 +159,8 @@ static inline int parse_example_argument (struct example_arguments * arguments, 
 static inline int parse_example_arguments (struct example_arguments * arguments, int argc, char ** argv)
 {
     arguments->workers = USFS_CLIENT_DEFAULT_WORKERS;
-    for (int index = 1; index < argc; ++index)
+    int index = 1;
+    while (index < argc)
     {
         const int rc = parse_example_argument (arguments, argc, argv, &index);
         if (rc <= 0)
@@ -167,6 +168,7 @@ static inline int parse_example_arguments (struct example_arguments * arguments,
             fprintf (stderr, "Failed to parse argument %s: unsupported or invalid value\n", argv[index < argc ? index : argc - 1]);
             return -EINVAL;
         }
+        ++index;
     }
     return 0;
 }

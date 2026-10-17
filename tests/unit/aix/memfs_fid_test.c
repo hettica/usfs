@@ -274,7 +274,7 @@ int main (void)
     struct tap_state tap;
     struct fid_test_fixture fixture = { 0 };
 
-    tap_plan (&tap, 18);
+    tap_plan (&tap, 20);
 
     g_root = inode_new (S_IFDIR | 0755, getuid (), getgid ());
     if (g_root == NULL)
@@ -284,11 +284,18 @@ int main (void)
     }
 
     g_root->nlink = 2;
+    dir_remove (g_root, NULL);
+    tap_ok (&tap, g_root->entries == NULL && g_root->nlink == 2, "removing a null entry from an empty directory is harmless");
     g_next_ino = UINT64_C (0x100000001);
     fixture.original_handle.open_flags = O_RDWR;
     fixture.replacement_handle.open_flags = O_RDWR;
 
     test_initial_identities (&tap, &fixture);
+    const struct mem_dirent * first_entry = g_root->entries;
+    const nlink_t first_links = first_entry->inode->nlink;
+    dir_remove (g_root, NULL);
+    tap_ok (&tap, g_root->entries == first_entry && first_entry->inode->nlink == first_links,
+            "removing a null entry leaves populated directories and link counts unchanged");
     test_rename_and_hardlink (&tap, &fixture);
     test_retirement_and_replacement (&tap, &fixture);
     test_conditional_namespace_mutations (&tap, &fixture);

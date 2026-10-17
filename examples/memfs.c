@@ -106,11 +106,13 @@ static uint64_t g_inode_count;
 static uint64_t g_inode_max = 10000;
 static pthread_mutex_t g_memfs_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static struct options
+struct options
 {
     int size_mb;             // Maximum retained file-buffer capacity in megabytes.
     int inode_limit;         // Maximum number of live inodes.
-} options;
+};
+
+static struct options options;
 
 
 /* ----------------------------------------------------------- *
@@ -205,9 +207,7 @@ static void inode_maybe_free (struct mem_inode * inode)
 
 static struct mem_dirent * find_directory_entry (struct mem_inode * directory_inode, const char * entry_name)
 {
-    struct mem_dirent * directory_entry;
-
-    for (directory_entry = directory_inode->entries; directory_entry != NULL; directory_entry = directory_entry->next)
+    for (struct mem_dirent * directory_entry = directory_inode->entries; directory_entry != NULL; directory_entry = directory_entry->next)
         if (strcmp (directory_entry->name, entry_name) == 0)
             return directory_entry;
 
@@ -265,6 +265,9 @@ static int add_directory_entry (struct mem_inode * directory_inode, const char *
 
 static void dir_remove (struct mem_inode * directory_inode, struct mem_dirent * removed_entry)
 {
+    if (removed_entry == NULL)
+        return;
+
     struct mem_dirent ** entry_link = &directory_inode->entries;
 
     while (*entry_link != NULL && *entry_link != removed_entry)
@@ -296,7 +299,7 @@ static struct mem_inode * resolve (const char * path, struct mem_inode ** parent
     static char path_components[PATH_MAX];
     struct mem_inode * current_inode = g_root;
     char * path_token_context = NULL;
-    char * path_component;
+    const char * path_component;
     char * next_component;
 
     if (parent_inode_output != NULL)
@@ -365,9 +368,7 @@ static struct mem_inode * resolve (const char * path, struct mem_inode ** parent
 
 static struct mem_handle * find_file_handle (const uint64_t handle_id)
 {
-    struct mem_handle * file_handle;
-
-    for (file_handle = g_handles; file_handle != NULL; file_handle = file_handle->next)
+    for (struct mem_handle * file_handle = g_handles; file_handle != NULL; file_handle = file_handle->next)
         if (file_handle->id == handle_id)
             return file_handle;
 
@@ -433,7 +434,7 @@ static struct mem_inode * find_live_inode_by_id (uint64_t token);
 static struct mem_inode * find_operation_inode (
     const struct usfs_client_request * request,
     const char * path,
-    struct usfs_open_file * file_info
+    const struct usfs_open_file * file_info
 )
 {
     if (file_info != NULL)
@@ -512,7 +513,8 @@ static int is_file_accounting_valid (const struct mem_inode * inode)
 /* Grows a file's buffer to at least `need` bytes, honouring the capacity cap. */
 static int reserve_file_capacity (struct mem_inode * inode, const size_t required_capacity)
 {
-    size_t buffer_capacity, maximum_file_capacity;
+    size_t buffer_capacity;
+    size_t maximum_file_capacity;
     char * resized_buffer;
 
     if (!is_file_accounting_valid (inode))
@@ -603,7 +605,7 @@ static int get_file_attributes_locked (
     struct usfs_open_file * file_info
 )
 {
-    struct mem_inode * inode = find_operation_inode (request, path, file_info);
+    const struct mem_inode * inode = find_operation_inode (request, path, file_info);
 
     if (inode == NULL)
         return missing_operation_inode_error (request);
@@ -645,7 +647,7 @@ static struct mem_inode * find_linked_inode_by_id (
     frames[0].next = root->entries;
     struct mem_inode * found = NULL;
 
-    while (frames[0].next != NULL || depth != 0)
+    while (found == NULL && (frames[0].next != NULL || depth != 0))
     {
         struct identity_walk_frame * frame = &frames[depth];
         if (frame->next == NULL)
@@ -673,7 +675,7 @@ static struct mem_inode * find_linked_inode_by_id (
                 *path_error = ENAMETOOLONG;
 
             found = entry->inode;
-            break;
+            continue;
         }
 
         if (!S_ISDIR (entry->inode->mode))
@@ -714,7 +716,7 @@ static int export_object_id_locked (
     if (backend_dev != 0 || backend_ino == 0)
         return -ESTALE;
 
-    struct mem_inode * inode = NULL;
+    const struct mem_inode * inode = NULL;
     if (path_or_null != NULL)
         inode = resolve (path_or_null, NULL, NULL);
     else
@@ -733,7 +735,7 @@ static int export_object_id_locked (
 
 static int resolve_object_id_locked (const uint64_t token, char * path, const size_t path_capacity)
 {
-    struct mem_inode * indexed_inode = find_live_inode_by_id (token);
+    const struct mem_inode * indexed_inode = find_live_inode_by_id (token);
     if (indexed_inode == NULL || indexed_inode->nlink == 0 || g_root == NULL)
         return -ESTALE;
 
@@ -747,7 +749,7 @@ static int resolve_object_id_locked (const uint64_t token, char * path, const si
     }
 
     int path_error = 0;
-    struct mem_inode * inode = find_linked_inode_by_id (g_root, token, path, path_capacity, &path_error);
+    const struct mem_inode * inode = find_linked_inode_by_id (g_root, token, path, path_capacity, &path_error);
     if (inode == NULL)
         return path_error != 0 ? -path_error : -ESTALE;
 
@@ -759,7 +761,7 @@ static int resolve_object_id_locked (const uint64_t token, char * path, const si
 
 static int read_symbolic_link_locked (const char * path, char * buffer, size_t buffer_capacity)
 {
-    struct mem_inode * inode = resolve (path, NULL, NULL);
+    const struct mem_inode * inode = resolve (path, NULL, NULL);
 
     if (inode == NULL)
         return -ENOENT;
@@ -788,7 +790,6 @@ static int read_directory_locked (
         inode = find_live_inode_by_id (identity->backend_ino);
     else if (path != NULL)
         inode = resolve (path, NULL, NULL);
-    struct mem_dirent * directory_entry;
     struct stat file_attributes;
 
 
@@ -809,7 +810,7 @@ static int read_directory_locked (
     if (usfs_directory_add (sink, "..", &file_attributes) != 0)
         return 0;
 
-    for (directory_entry = inode->entries; directory_entry != NULL; directory_entry = directory_entry->next)
+    for (const struct mem_dirent * directory_entry = inode->entries; directory_entry != NULL; directory_entry = directory_entry->next)
     {
         fill_file_attributes (directory_entry->inode, &file_attributes);
         if (usfs_directory_add (sink, directory_entry->name, &file_attributes) != 0)
@@ -1123,7 +1124,7 @@ static int open_directory_locked (const char * path, struct usfs_open_file * fil
 static int read_file_locked (const char * path, char * buffer, size_t requested_bytes, const off_t offset, struct usfs_open_file * file_info)
 {
     struct mem_inode * inode = find_operation_inode (NULL, path, file_info);
-    struct mem_handle * file_handle = (file_info != NULL) ? find_file_handle (file_info->value - 1) : NULL;
+    const struct mem_handle * file_handle = (file_info != NULL) ? find_file_handle (file_info->value - 1) : NULL;
     size_t available_bytes;
 
     if (inode == NULL)
@@ -1319,9 +1320,7 @@ static int validate_rename_destination (
     /* Moving a directory beneath itself would cut the subtree loose. */
     if (S_ISDIR (source_inode->mode))
     {
-        struct mem_inode * ancestor_inode;
-
-        for (ancestor_inode = destination_directory_inode; ancestor_inode != NULL; ancestor_inode = ancestor_inode->parent)
+        for (const struct mem_inode * ancestor_inode = destination_directory_inode; ancestor_inode != NULL; ancestor_inode = ancestor_inode->parent)
             if (ancestor_inode == source_inode)
                 return -EINVAL;
     }
@@ -1441,8 +1440,9 @@ static int rename_entry_locked (
 static int write_file_locked (const char * path, const char * buffer, size_t requested_bytes, const off_t offset, struct usfs_open_file * file_info)
 {
     struct mem_inode * inode = find_operation_inode (NULL, path, file_info);
-    struct mem_handle * file_handle = (file_info != NULL) ? find_file_handle (file_info->value - 1) : NULL;
-    size_t write_end, maximum_file_capacity;
+    const struct mem_handle * file_handle = (file_info != NULL) ? find_file_handle (file_info->value - 1) : NULL;
+    size_t write_end;
+    size_t maximum_file_capacity;
     int operation_result;
 
     if (inode == NULL)
@@ -1981,6 +1981,8 @@ static int memfs_statfs (const struct usfs_client_request * request, const char 
 
 #undef MEMFS_LOCKED_CALL
 
+/* Callback pointer parameters must match struct usfs_operations in usfs.h.
+   Adding pointee const here would make these function types incompatible. */
 static const struct usfs_operations filesystem_operations = {
     .initialize = initialize_filesystem,
     .shutdown = destroy_filesystem,
@@ -2062,7 +2064,7 @@ static void remove_automatic_mount_directories (const struct automatic_mount_pat
     (void)rmdir (mount_paths->parent_directory_path);
 }
 
-static int run_filesystem (struct example_arguments * arguments, const struct automatic_mount_paths * mount_paths)
+static int run_filesystem (const struct example_arguments * arguments, const struct automatic_mount_paths * mount_paths)
 {
     const int command_result = run_example_client (arguments, &filesystem_operations);
     remove_automatic_mount_directories (mount_paths);
@@ -2092,7 +2094,7 @@ static int prepare_mount_arguments (struct example_arguments * arguments, struct
         fprintf (
             stderr,
             "Failed to format automatic mountpoint path: path exceeds %lu bytes\n",
-            (unsigned long)sizeof (mount_paths->mountpoint_path) - 1
+            sizeof (mount_paths->mountpoint_path) - 1
         );
         return -1;
     }
@@ -2151,7 +2153,8 @@ int main (const int argc, char * argv[])
     arguments.workers = USFS_CLIENT_DEFAULT_WORKERS;
     options.size_mb = 64;
     options.inode_limit = 10000;
-    for (int index = 1; index < argc; ++index)
+    int index = 1;
+    while (index < argc)
     {
         const char * value = NULL;
         int * destination = NULL;
@@ -2171,6 +2174,7 @@ int main (const int argc, char * argv[])
             if (parse_example_number (value, INT_MAX, &number) != 0)
                 return EXIT_FAILURE;
             *destination = (int)number;
+            ++index;
             continue;
         }
         if (parse_example_argument (&arguments, argc, argv, &index) <= 0)
@@ -2178,6 +2182,7 @@ int main (const int argc, char * argv[])
             fprintf (stderr, "Failed to parse arguments: unsupported option or invalid value\n");
             return EXIT_FAILURE;
         }
+        ++index;
     }
     if (arguments.help)
         print_help ();

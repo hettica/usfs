@@ -29,6 +29,19 @@ static struct dirent directory_entry;
 static unsigned descriptor_open_calls;
 static unsigned descriptor_stat_calls;
 static unsigned descriptor_close_calls;
+static int directory_descriptor_value;
+static unsigned synchronization_calls;
+static int synchronization_error;
+
+static int synchronize_test_file (int descriptor)
+{
+    if (descriptor != 0)
+        abort ();
+
+    ++synchronization_calls;
+    errno = synchronization_error;
+    return synchronization_error == 0 ? 0 : -1;
+}
 
 static int open_test_file (const char * path, int flags, ...)
 {
@@ -134,13 +147,17 @@ static ssize_t read_test_symbolic_link (const char * path, char * buffer, size_t
 #define fstat(...)         stat_test_file (__VA_ARGS__)
 #define close(...)         close_test_file (__VA_ARGS__)
 #define opendir(...)       open_test_directory (__VA_ARGS__)
-#define dirfd(...)         0
+#define dirfd(...)         directory_descriptor_value
+#define fsync              synchronize_test_file
+#define fdatasync          synchronize_test_file
 #define readdir            read_test_directory
 #define closedir           close_test_directory
 #define usfs_directory_add fill_test_directory
 #define main               mirror_program_main
 #include "../../../examples/mirror.c"
 #undef readlink
+#undef fsync
+#undef fdatasync
 #undef main
 #undef usfs_directory_add
 #undef closedir
@@ -174,6 +191,7 @@ static void reset_directory_case (void)
     read_calls = 0;
     close_calls = 0;
     filled_entries = 0;
+    directory_descriptor_value = 0;
     source_directory_path = "/source";
     memset (&source_root_attributes, 0, sizeof (source_root_attributes));
     source_root_attributes.st_ino = TEST_DIRECTORY_INODE;
@@ -192,7 +210,7 @@ int main (void)
 {
     struct tap_state tap;
 
-    tap_plan (&tap, 17);
+    tap_plan (&tap, 27);
 
     reset_directory_case ();
     const struct usfs_object_identity unknown_identity = { .nodeid = 9 };
@@ -250,6 +268,42 @@ int main (void)
         run_directory_case () == -EACCES && read_calls == 0 && close_calls == 0,
         "open failure returns its error without touching a stream"
     );
+
+    reset_directory_case ();
+    directory_descriptor_value = -1;
+    const unsigned previous_stat_calls = descriptor_stat_calls;
+    tap_ok (&tap, run_directory_case () == -EBADF && close_calls == 1 && descriptor_stat_calls == previous_stat_calls,
+            "invalid directory descriptor closes the stream without calling fstat");
+
+    struct mirror_open opened = { .descriptor = -1 };
+    struct usfs_open_file file_info = { .value = (uint64_t)(uintptr_t)&opened };
+    tap_ok (&tap, synchronize_file (NULL, NULL, 0, &file_info) == -EBADF && synchronization_calls == 0,
+            "invalid borrowed descriptor is rejected before fsync");
+    tap_ok (&tap, synchronize_file (NULL, NULL, 1, &file_info) == -EBADF && synchronization_calls == 0,
+            "invalid borrowed descriptor is rejected before fdatasync");
+    opened.descriptor = 0;
+    tap_ok (&tap, synchronize_file (NULL, NULL, 0, &file_info) == 0 && synchronization_calls == 1 && descriptor_close_calls == 0,
+            "descriptor zero is valid and borrowed handles remain open");
+    tap_ok (&tap, synchronize_file (NULL, NULL, 1, NULL) == -ESTALE && synchronization_calls == 1,
+            "missing identity and path prevent synchronization");
+    synchronization_error = EIO;
+    tap_ok (&tap, synchronize_file (NULL, "/", 1, NULL) == -EIO && synchronization_calls == 2 && descriptor_close_calls == 1,
+            "synchronization failure preserves errno and closes an owned descriptor");
+
+    struct example_arguments arguments = { 0 };
+    char * separated_options[] = { "mirror", "-o", "max_threads=3", "-s", "/mount" };
+    tap_ok (&tap, parse_example_arguments (&arguments, 5, separated_options) == 0 && arguments.workers == 3 && arguments.singlethread &&
+            strcmp (arguments.mountpoint, "/mount") == 0, "separate option arguments do not skip the next switch or mountpoint");
+    memset (&arguments, 0, sizeof (arguments));
+    char * joined_options[] = { "mirror", "-omax_threads=2", "/mount", "--help" };
+    tap_ok (&tap, parse_example_arguments (&arguments, 4, joined_options) == 0 && arguments.workers == 2 && arguments.help &&
+            strcmp (arguments.mountpoint, "/mount") == 0, "joined options and trailing flags are consumed once");
+    memset (&arguments, 0, sizeof (arguments));
+    char * missing_options[] = { "mirror", "-o" };
+    tap_ok (&tap, parse_example_arguments (&arguments, 2, missing_options) == -EINVAL, "missing option argument is rejected");
+    memset (&arguments, 0, sizeof (arguments));
+    char * invalid_options[] = { "mirror", "-omax_threads=0", "/mount" };
+    tap_ok (&tap, parse_example_arguments (&arguments, 3, invalid_options) == -EINVAL, "invalid worker count is rejected");
 
     char link_buffer[4];
 
