@@ -139,17 +139,6 @@ static int is_public_dev_ctl_command (const int command)
     }
 }
 
-// Declaration is used only to exclude the ioctl dispatcher from profile instrumentation. It routes coverage-control
-// commands, so instrumenting it would let coverage collection and reset modify measured counters.
-static int usfs_dev_ioctl (
-    dev_t device_number,
-    int command,
-    void * user_space_buffer,
-    ulong ioctl_flags,
-    chan_t channel,
-    int is_called_from_kernel_extension
-) __attribute__ ((no_profile_instrument_function));
-
 static int usfs_dev_ioctl (
     const dev_t device_number,
     const int command,

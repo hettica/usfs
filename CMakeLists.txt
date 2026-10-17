@@ -243,11 +243,17 @@ function(usfs_add_program target output)
     usfs_set_output(${target} "${USFS_BIN_DIR}" "${output}")
 endfunction()
 
-usfs_add_program(_usfs_probe usfs_probe src/tools/usfs_probe.c)
 usfs_add_program(_usfs_ctl usfsctl src/common/usfs_status.c src/cli/usfsctl.c)
-target_compile_definitions(_usfs_ctl PRIVATE
-    USFS_PACKAGE_VERSION="${USFS_PACKAGE_VERSION}"
-    USFS_BUILD_REVISION="${USFS_BUILD_REVISION}")
+usfs_add_program(_usfs_coverage_ctl usfsctl src/common/usfs_status.c src/cli/usfsctl.c)
+target_compile_options(_usfs_coverage_ctl PRIVATE ${USFS_GCOV_FLAGS})
+target_link_options(_usfs_coverage_ctl PRIVATE ${USFS_GCOV_FLAGS})
+usfs_set_output(_usfs_coverage_ctl "${USFS_COVERAGE_BIN_DIR}" usfsctl)
+
+foreach(_target IN ITEMS _usfs_ctl _usfs_coverage_ctl)
+    target_compile_definitions(${_target} PRIVATE
+        USFS_PACKAGE_VERSION="${USFS_PACKAGE_VERSION}"
+        USFS_BUILD_REVISION="${USFS_BUILD_REVISION}")
+endforeach()
 foreach(_example IN ITEMS mirror memfs)
     usfs_add_program(_usfs_${_example} usfs_${_example} "examples/${_example}.c")
     target_link_libraries(_usfs_${_example} PRIVATE _usfs_client pthreads)
@@ -278,7 +284,7 @@ endif()
 
 add_custom_target(_usfs_release_artifacts DEPENDS
     _usfs_kernel_release _usfs_cfgusfs _usfs_ucfgusfs _usfs_chusfs
-    _usfs_client _usfs_probe _usfs_ctl _usfs_trace_format
+    _usfs_client _usfs_ctl _usfs_trace_format
     _usfs_mirror _usfs_memfs)
 
 # Testing build: the production core is reused, while instrumentation policy,
@@ -312,22 +318,34 @@ add_custom_command(
     COMMAND_EXPAND_LISTS VERBATIM)
 add_custom_target(_usfs_kernel_testing DEPENDS "${USFS_TEST_BIN_DIR}/usfs.kext")
 
-add_library(_usfs_testing_methods OBJECT EXCLUDE_FROM_ALL
-    src/common/usfs_common.c src/common/instrumentation/config_testing.c)
-usfs_common_target(_usfs_testing_methods)
-foreach(_method IN ITEMS cfgusfs ucfgusfs chusfs)
-    if(_method STREQUAL cfgusfs)
-        set(_source src/cli/configure_device.c)
-    elseif(_method STREQUAL ucfgusfs)
-        set(_source src/cli/unconfigure_device.c)
-    else()
-        set(_source src/cli/change_device.c)
+# Test and coverage methods share fault instrumentation; only coverage emits gcov.
+foreach(_variant IN ITEMS testing coverage)
+    add_library(_usfs_${_variant}_methods OBJECT EXCLUDE_FROM_ALL
+        src/common/usfs_common.c src/common/instrumentation/config_testing.c)
+    usfs_common_target(_usfs_${_variant}_methods)
+    if(_variant STREQUAL coverage)
+        target_compile_options(_usfs_${_variant}_methods PRIVATE ${USFS_GCOV_FLAGS})
     endif()
-    add_executable(_usfs_testing_${_method} EXCLUDE_FROM_ALL
-        "${_source}" $<TARGET_OBJECTS:_usfs_testing_methods>)
-    usfs_common_target(_usfs_testing_${_method})
-    target_link_libraries(_usfs_testing_${_method} PRIVATE cfg odm)
-    usfs_set_output(_usfs_testing_${_method} "${USFS_TEST_BIN_DIR}" "${_method}")
+
+    foreach(_method IN ITEMS cfgusfs ucfgusfs chusfs)
+        if(_method STREQUAL cfgusfs)
+            set(_source src/cli/configure_device.c)
+        elseif(_method STREQUAL ucfgusfs)
+            set(_source src/cli/unconfigure_device.c)
+        else()
+            set(_source src/cli/change_device.c)
+        endif()
+        add_executable(_usfs_${_variant}_${_method} EXCLUDE_FROM_ALL
+            "${_source}" $<TARGET_OBJECTS:_usfs_${_variant}_methods>)
+        usfs_common_target(_usfs_${_variant}_${_method})
+        target_link_libraries(_usfs_${_variant}_${_method} PRIVATE cfg odm)
+        if(_variant STREQUAL coverage)
+            target_compile_options(_usfs_${_variant}_${_method} PRIVATE ${USFS_GCOV_FLAGS})
+            target_link_options(_usfs_${_variant}_${_method} PRIVATE ${USFS_GCOV_FLAGS})
+        endif()
+        usfs_set_output(_usfs_${_variant}_${_method}
+            "${CMAKE_BINARY_DIR}/${_variant}/bin" "${_method}")
+    endforeach()
 endforeach()
 
 function(usfs_add_test_tool name)
@@ -337,21 +355,22 @@ function(usfs_add_test_tool name)
         "${CMAKE_SOURCE_DIR}/tests/harness")
     usfs_set_output(_usfs_testing_${name} "${USFS_TEST_BIN_DIR}" "${name}")
 endfunction()
-usfs_add_test_tool(usfs_testctl src/tools/usfs_testctl.c)
-usfs_add_test_tool(usfs_scenario_daemon src/tools/usfs_scenario_daemon.c src/common/usfs_validate.c)
+usfs_add_test_tool(usfs_probe tests/tools/usfs_probe.c)
+usfs_add_test_tool(usfs_testctl tests/tools/usfs_testctl.c)
+usfs_add_test_tool(usfs_scenario_daemon tests/tools/usfs_scenario_daemon.c src/common/usfs_validate.c)
 usfs_add_test_tool(usfs_usercopy_test tests/harness/tap.c
-    src/common/usfs_status.c src/tools/usfs_usercopy_test.c)
-usfs_add_test_tool(usfs_io_probe src/tools/usfs_io_probe.c)
-usfs_add_test_tool(usfs_fid_probe src/tools/usfs_fid_probe.c)
-usfs_add_test_tool(usfs_access_probe src/tools/usfs_access_probe.c)
+    src/common/usfs_status.c tests/tools/usfs_usercopy_test.c)
+usfs_add_test_tool(usfs_io_probe tests/tools/usfs_io_probe.c)
+usfs_add_test_tool(usfs_fid_probe tests/tools/usfs_fid_probe.c)
+usfs_add_test_tool(usfs_access_probe tests/tools/usfs_access_probe.c)
 usfs_add_test_tool(usfs_overhead tests/performance/benchmark.c)
 target_link_libraries(_usfs_testing_usfs_overhead PRIVATE _usfs_client pthreads)
-usfs_add_test_tool(usfs_mt_test_daemon src/tools/usfs_mt_test_daemon.c
+usfs_add_test_tool(usfs_mt_test_daemon tests/tools/usfs_mt_test_daemon.c
     tests/helpers/namespace_client.c)
 target_link_libraries(_usfs_testing_usfs_mt_test_daemon PRIVATE _usfs_client pthreads)
 target_include_directories(_usfs_testing_usfs_mt_test_daemon PRIVATE
     "${CMAKE_SOURCE_DIR}/src/client/include/usfs")
-usfs_add_test_tool(usfs_path_test_daemon src/tools/usfs_path_test_daemon.c tests/harness/tap.c)
+usfs_add_test_tool(usfs_path_test_daemon tests/tools/usfs_path_test_daemon.c tests/harness/tap.c)
 target_link_libraries(_usfs_testing_usfs_path_test_daemon PRIVATE _usfs_client pthreads)
 
 add_custom_target(_usfs_testing_artifacts DEPENDS
@@ -361,7 +380,7 @@ add_custom_target(_usfs_testing_artifacts DEPENDS
     _usfs_testing_usfs_usercopy_test _usfs_testing_usfs_io_probe _usfs_testing_usfs_fid_probe
     _usfs_testing_usfs_access_probe _usfs_testing_usfs_mt_test_daemon _usfs_testing_usfs_path_test_daemon
     _usfs_testing_usfs_overhead
-    _usfs_mirror _usfs_memfs _usfs_probe _usfs_ctl)
+    _usfs_mirror _usfs_memfs _usfs_testing_usfs_probe _usfs_ctl)
 
 # AIX userspace unit programs.
 set(USFS_UNIT_TARGETS "")
@@ -498,6 +517,7 @@ usfs_kernel_objects(_usfs_kernel_coverage_core ${USFS_KERNEL_CORE_SOURCES})
 target_compile_options(_usfs_kernel_coverage_core PRIVATE ${USFS_GCOV_FLAGS})
 usfs_kernel_objects(_usfs_kernel_coverage_instrumentation
     src/kernel/instrumentation/services.c src/kernel/instrumentation/adapter.c
+    src/kernel/instrumentation/hooks.c
     src/kernel/instrumentation/testing/runtime.c
     src/kernel/instrumentation/testing/fid_probe.c tests/kernel/aix/selftest.c)
 target_compile_options(_usfs_kernel_coverage_instrumentation PRIVATE ${USFS_GCOV_FLAGS})
@@ -547,7 +567,7 @@ add_custom_command(
         $<TARGET_OBJECTS:_usfs_kernel_coverage_instrumentation>
         $<TARGET_OBJECTS:_usfs_kernel_coverage_runtime>
         $<TARGET_OBJECTS:_usfs_kernel_coverage_registry>
-        $<TARGET_OBJECTS:_usfs_kernel_hooks> -lsys -lcsys
+        -lsys -lcsys
     COMMAND bash "${CMAKE_SOURCE_DIR}/scripts/aix/verify-kernel.sh"
         coverage "${USFS_COVERAGE_BIN_DIR}/usfs.kext"
     DEPENDS _usfs_kernel_coverage_core _usfs_kernel_coverage_instrumentation
@@ -556,8 +576,7 @@ add_custom_command(
         $<TARGET_OBJECTS:_usfs_kernel_coverage_instrumentation>
         $<TARGET_OBJECTS:_usfs_kernel_coverage_runtime>
         $<TARGET_OBJECTS:_usfs_kernel_coverage_registry>
-        $<TARGET_OBJECTS:_usfs_kernel_hooks>
-        _usfs_kernel_hooks "${CMAKE_SOURCE_DIR}/scripts/aix/verify-kernel.sh"
+        "${CMAKE_SOURCE_DIR}/scripts/aix/verify-kernel.sh"
     COMMAND_EXPAND_LISTS VERBATIM)
 add_custom_target(_usfs_kernel_coverage DEPENDS "${USFS_COVERAGE_BIN_DIR}/usfs.kext")
 
@@ -579,18 +598,18 @@ foreach(_example IN ITEMS mirror memfs)
     target_link_libraries(_usfs_coverage_${_example} PRIVATE _usfs_client_coverage pthreads)
     usfs_set_output(_usfs_coverage_${_example} "${USFS_COVERAGE_BIN_DIR}" "usfs_${_example}")
 endforeach()
-usfs_add_test_tool(usfs_coverage src/tools/usfs_coverage.c)
+usfs_add_test_tool(usfs_coverage tests/tools/usfs_coverage.c)
 usfs_set_output(_usfs_testing_usfs_coverage "${USFS_COVERAGE_BIN_DIR}" usfs_coverage)
 
 add_custom_target(_usfs_coverage_artifacts DEPENDS
     _usfs_kernel_coverage _usfs_coverage_unit_programs
     _usfs_client_coverage _usfs_coverage_mirror
     _usfs_coverage_memfs _usfs_testing_usfs_coverage
-    _usfs_testing_cfgusfs _usfs_testing_ucfgusfs _usfs_testing_chusfs
+    _usfs_coverage_cfgusfs _usfs_coverage_ucfgusfs _usfs_coverage_chusfs
     _usfs_testing_usfs_testctl _usfs_testing_usfs_scenario_daemon
     _usfs_testing_usfs_usercopy_test _usfs_testing_usfs_io_probe _usfs_testing_usfs_fid_probe
     _usfs_testing_usfs_access_probe _usfs_testing_usfs_mt_test_daemon _usfs_testing_usfs_path_test_daemon
-    _usfs_probe _usfs_ctl)
+    _usfs_testing_usfs_probe _usfs_coverage_ctl)
 
 set(USFS_RPM_FILE
     "usfs-${USFS_PACKAGE_VERSION}-${USFS_PACKAGE_RELEASE}.aix${CMAKE_HOST_SYSTEM_VERSION}.ppc.rpm")
@@ -632,7 +651,7 @@ set(USFS_SOAK_NAME
 set(USFS_SOAK_PATH "${USFS_PACKAGES_DIR}/${USFS_SOAK_NAME}.tar.gz")
 foreach(_tool IN ITEMS usfs_scenario_daemon usfs_io_probe usfs_soak_worker usfs_admin_probe)
     string(REPLACE "usfs_" "" _short "${_tool}")
-    add_executable(_usfs_soak_${_short} EXCLUDE_FROM_ALL "src/tools/${_tool}.c")
+    add_executable(_usfs_soak_${_short} EXCLUDE_FROM_ALL "tests/tools/${_tool}.c")
     usfs_common_target(_usfs_soak_${_short})
     usfs_set_output(_usfs_soak_${_short} "${CMAKE_BINARY_DIR}/soak-bin" "${_tool}")
 endforeach()

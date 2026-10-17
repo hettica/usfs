@@ -15,6 +15,10 @@ generate_aix_coverage_reports()
         cmake -S . -B build -DUSFS_COVERAGE_RUN=ci
         cd build
         make coverage
+        if ! grep -qx complete coverage/ci/report-status.txt; then
+            echo 'Failed to publish coverage: collection is incomplete' >&2
+            exit 1
+        fi
         perl '../tests/ci/lcov-to-sonar.pl' \
             '$AIX_SOURCE_DIR' coverage/ci/all.info \
             > coverage/ci/sonar-coverage.xml

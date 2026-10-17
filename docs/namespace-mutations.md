@@ -20,6 +20,6 @@ must be able to exclude every other writer to that backing namespace for the ful
 `stat` and later calling pathname `unlink` or `rename` while another writer can replace names does **not** satisfy the
 contract. If the backend cannot guarantee the atomic comparison, leave the callback unsupported and return `-ENOSYS`.
 
-The read-only mirror does not implement these callbacks. The pathname daemon under `src/tools` is a test fixture for a
+The read-only mirror does not implement these callbacks. The pathname daemon under `tests/tools` is a test fixture for a
 private backing tree and serializes its own namespace writes; it must not be used as a general-purpose mutable backend
 over a tree that other processes can edit.

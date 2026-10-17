@@ -58,42 +58,34 @@ capture()
         lcov "${lcov_options[@]}" --capture --gcov-tool gcov \
             --directory "$directory" \
             --output-file "$report/$component.unfiltered.info"
-        lcov "${lcov_options[@]}" --remove "$report/$component.unfiltered.info" \
-            '/usr/include/*' '/opt/freeware/*' \
-            --output-file "$report/$component.info"
+        # Tests execute production code, but their own counters must never enter
+        # component, merged, HTML, or Sonar coverage metrics.
+        lcov "${lcov_options[@]}" --extract "$report/$component.unfiltered.info" \
+            "$USFS_SOURCE_DIR/src/*" "$USFS_SOURCE_DIR/examples/*" \
+            --output-file "$work/$component.product.info"
+        lcov "${lcov_options[@]}" --remove "$work/$component.product.info" \
+            "${product_exclusions[@]}" --output-file "$report/$component.info"
         rm -f "$report/$component.unfiltered.info"
     else
         printf 'TN:\n' >"$report/$component.info"
     fi
 }
 
-capture kernel
-capture client
-capture examples
-capture aix-unit
-
+# Keep these exclusions aligned with sonar.coverage.exclusions.
 product_exclusions=(
-    "$USFS_SOURCE_DIR/src/common/instrumentation/*"
-    "$USFS_SOURCE_DIR/src/kernel/instrumentation/adapter.c"
-    "$USFS_SOURCE_DIR/src/kernel/instrumentation/hooks.c"
+    "$USFS_SOURCE_DIR/src/common/instrumentation/config_testing.c"
     "$USFS_SOURCE_DIR/src/kernel/instrumentation/coverage/*"
     "$USFS_SOURCE_DIR/src/kernel/instrumentation/testing/*"
 )
-if grep -q '^SF:' "$report/kernel.info"; then
-    mv "$report/kernel.info" "$work/kernel.full.info"
-    lcov "${lcov_options[@]}" --remove "$work/kernel.full.info" "${product_exclusions[@]}" \
-        --output-file "$report/kernel.info"
-fi
-if grep -q '^SF:' "$report/aix-unit.info"; then
-    mv "$report/aix-unit.info" "$work/aix-unit.full.info"
-    lcov "${lcov_options[@]}" --extract "$work/aix-unit.full.info" "$USFS_SOURCE_DIR/src/*" "$USFS_SOURCE_DIR/examples/*" \
-        --output-file "$work/aix-unit-product.full.info"
-    lcov "${lcov_options[@]}" --remove "$work/aix-unit-product.full.info" "${product_exclusions[@]}" \
-        --output-file "$report/aix-unit.info"
-fi
+
+capture kernel
+capture client
+capture cli
+capture examples
+capture aix-unit
 
 trace_args=()
-for component in kernel client examples; do
+for component in kernel client cli examples; do
     if grep -q '^SF:' "$report/$component.info"; then
         trace_args+=(--add-tracefile "$report/$component.info")
     fi

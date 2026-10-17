@@ -3,7 +3,7 @@
  */
 #include "tap.h"
 #define main coverage_tool_main
-#include "../../../src/tools/usfs_coverage.c"
+#include "../../tools/usfs_coverage.c"
 #undef main
 
 static int create_fixture_file (const char * path, const char * contents)

@@ -4,7 +4,7 @@
 #define _LARGE_FILES
 #include "tap.h"
 #define main io_probe_program_main
-#include "../../../src/tools/usfs_io_probe.c"
+#include "../../tools/usfs_io_probe.c"
 #undef main
 
 int main (void)

@@ -36,7 +36,7 @@ case "$variant" in
         kernel="$build_root/bin/usfs.kext"
         methods="$build_root/bin"
         examples="$build_root/bin"
-        rm -f /usr/sbin/usfs_testctl /usr/sbin/usfs_scenario_daemon \
+        rm -f /usr/sbin/usfs_probe /usr/sbin/usfs_testctl /usr/sbin/usfs_scenario_daemon \
             /usr/sbin/usfs_usercopy_test /usr/sbin/usfs_io_probe /usr/sbin/usfs_fid_probe \
             /usr/sbin/usfs_access_probe /usr/sbin/usfs_mt_test_daemon /usr/sbin/usfs_path_test_daemon \
             /usr/sbin/usfs_coverage
@@ -49,7 +49,7 @@ case "$variant" in
         ;;
     coverage)
         kernel="$build_root/coverage/bin/usfs.kext"
-        methods="$build_root/testing/bin"
+        methods="$build_root/coverage/bin"
         examples="$build_root/coverage/bin"
         ;;
     *) echo "unknown install variant: $variant" >&2; exit 2 ;;
@@ -58,11 +58,14 @@ esac
 cp "$kernel" /usr/lib/drivers/usfs/usfs.kext
 cp "$methods/cfgusfs" "$methods/ucfgusfs" "$methods/chusfs" /usr/lib/methods/usfs/
 cp "$examples/usfs_mirror" "$examples/usfs_memfs" /usr/sbin/
-cp "$build_root/bin/usfs_probe" "$build_root/bin/usfsctl" /usr/sbin/
+control="$build_root/bin/usfsctl"
+[ "$variant" != coverage ] || control="$build_root/coverage/bin/usfsctl"
+cp "$control" /usr/sbin/usfsctl
 rm -f /usr/sbin/usfs_logdump
 
 if [ "$variant" != release ]; then
-    cp "$build_root/testing/bin/usfs_testctl" \
+    cp "$build_root/testing/bin/usfs_probe" \
+        "$build_root/testing/bin/usfs_testctl" \
         "$build_root/testing/bin/usfs_scenario_daemon" \
         "$build_root/testing/bin/usfs_usercopy_test" \
         "$build_root/testing/bin/usfs_io_probe" \
@@ -79,9 +82,8 @@ fi
 
 ln -sf /usr/lib/methods/usfs/chusfs /usr/sbin/chusfs
 chmod 550 /usr/lib/drivers/usfs/usfs.kext /usr/lib/methods/usfs/*
-chmod 555 /usr/sbin/usfs_mirror /usr/sbin/usfs_memfs \
-    /usr/sbin/usfs_probe /usr/sbin/usfsctl
-[ "$variant" = release ] || chmod 555 /usr/sbin/usfs_testctl \
+chmod 555 /usr/sbin/usfs_mirror /usr/sbin/usfs_memfs /usr/sbin/usfsctl
+[ "$variant" = release ] || chmod 555 /usr/sbin/usfs_probe /usr/sbin/usfs_testctl \
     /usr/sbin/usfs_scenario_daemon /usr/sbin/usfs_usercopy_test \
     /usr/sbin/usfs_io_probe /usr/sbin/usfs_fid_probe /usr/sbin/usfs_access_probe \
     /usr/sbin/usfs_mt_test_daemon /usr/sbin/usfs_path_test_daemon

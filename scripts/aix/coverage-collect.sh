@@ -52,7 +52,7 @@ fi
 
 rm -rf "$destination" "$report/graphs" "$validation"
 mkdir -p "$destination" "$destination/client" \
-    "$destination/examples" "$destination/aix-unit" \
+    "$destination/examples" "$destination/aix-unit" "$destination/cli" \
     "$report/graphs/kernel" \
     "$report/graphs/client" "$report/graphs/examples" "$validation"
 
@@ -104,6 +104,24 @@ if [ "$collection_status" = complete ]; then
         exit 1
     }
 fi
+
+# CLI executables run directly through ODM and administrative test commands.
+# Their normal-exit profiles remain in the instrumented CMake object trees.
+for program in methods cfgusfs ucfgusfs chusfs ctl; do
+    object_tree="$USFS_BINARY_DIR/CMakeFiles/_usfs_coverage_$program.dir"
+    [ -d "$object_tree" ] || {
+        echo "Failed to collect CLI coverage: missing object tree $object_tree" >&2
+        exit 1
+    }
+    cp -R "$object_tree" "$destination/cli/$program"
+    if [ "$collection_status" = complete ]; then
+        find "$destination/cli/$program" -name '*.gcda' -print | grep -q . || {
+            echo "Failed to collect CLI coverage: missing profiles for $program" >&2
+            exit 1
+        }
+    fi
+done
+
 for metadata in "$kernel_data"/lifecycle/*.meta; do
     [ -f "$metadata" ] || continue
     container=${metadata%.meta}
@@ -293,6 +311,7 @@ fi
     echo "kernel_checkpoints_end"
     echo "client_profiles=$(find "$destination/client" -name '*.gcda' | wc -l)"
     echo "example_profiles=$(find "$destination/examples" -name '*.gcda' | wc -l)"
+    echo "cli_profiles=$(find "$destination/cli" -name '*.gcda' | wc -l)"
     echo "aix_unit_profiles=$(find "$destination/aix-unit" -name '*.gcda' | wc -l)"
     if [ -f "$ledger" ] &&
        grep -E 'planned[	]e2e($|-)' "$ledger" >/dev/null; then

@@ -36,6 +36,23 @@ the ordinary gate because their instrumented counterparts deliberately skip
 those cases. Their pass/fail outcomes are retained alongside coverage evidence.
 Coverage is optional information; no percentage or threshold decides success.
 
+Coverage metrics include only production files under `src/` and `examples/`.
+All diagnostic and test tools live under `tests/tools/`, including `usfs_probe`;
+none is installed by the production RPM. Every component report excludes
+`tests/` and test-only instrumentation before merging. Under `src/`, the only
+excluded paths are `common/instrumentation/config_testing.c`,
+`kernel/instrumentation/testing/`, and `kernel/instrumentation/coverage/`.
+These implement fault injection, test control, and coverage collection, and are
+absent from the production build. Shared production instrumentation, including
+`adapter.c`, `hooks.c`, `services.c`, `ras.c`, and `config_normal.c`, remains in
+scope. The coverage kernel instruments its compatibility hooks and device ioctl
+dispatcher too. Production-code hits from unit tests and kernel self-tests are retained. SonarCloud uses the same exclusions so test infrastructure
+does not enter its coverage denominator. Raw profiles remain available as evidence.
+
+The coverage variant instruments `cfgusfs`, `ucfgusfs`, `chusfs`, and `usfsctl`.
+Their normal-exit profiles are collected into `coverage/cli.info` and merged
+with kernel, client, example, and userspace-unit evidence.
+
 The final transfer downloads `usfs-coverage-<timestamp>-<pid>.tar.gz` into
 `out/coverage/` by default. Extract it locally to review or publish selected files:
 
@@ -44,7 +61,7 @@ The final transfer downloads `usfs-coverage-<timestamp>-<pid>.tar.gz` into
 | `coverage.lcov` | Merged line, branch and function coverage with repository-relative paths. |
 | `sonarqube.xml` | The same line/branch evidence in SonarQube generic coverage format. |
 | `coverage/all-html/index.html` | Combined HTML report for local review. |
-| `coverage/html/index.html` | Live kernel/client/example HTML without userspace-unit evidence. |
+| `coverage/html/index.html` | Live kernel/client/CLI/example HTML without userspace-unit evidence. |
 | `coverage/raw/`, `coverage/graphs/` | Validated gcda/gcno profiles and graphs. |
 | `coverage/*.info`, `coverage/manifest.txt` | Component traces, provenance, suite ledger and collection status. |
 | `logs/`, `test-results.tsv`, `status.txt` | Build/test logs, exit statuses and overall workflow result. |

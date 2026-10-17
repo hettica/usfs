@@ -62,7 +62,6 @@ gencat %{buildroot}/usr/lib/nls/msg/en_US/usfs.cat %{usfs_source_root}/packaging
 
 cp %{usfs_build_root}/bin/usfs_mirror %{buildroot}/usr/sbin/usfs_mirror
 cp %{usfs_build_root}/bin/usfs_memfs %{buildroot}/usr/sbin/usfs_memfs
-cp %{usfs_build_root}/bin/usfs_probe %{buildroot}/usr/sbin/usfs_probe
 cp %{usfs_build_root}/bin/usfsctl %{buildroot}/usr/sbin/usfsctl
 cp %{usfs_build_root}/bin/chusfs %{buildroot}/usr/sbin/chusfs
 cp %{usfs_build_root}/bin/libusfs.a %{buildroot}/usr/lib/libusfs.a
@@ -95,7 +94,7 @@ chmod 444 %{buildroot}/usr/lib/libusfs.a %{buildroot}/usr/include/usfs/usfs.h \
         usr/lib/methods/usfs/ucfgusfs \
         usr/lib/methods/usfs/chusfs \
         usr/sbin/usfs_mirror usr/sbin/usfs_memfs \
-        usr/sbin/usfs_probe usr/sbin/usfsctl \
+        usr/sbin/usfsctl \
         usr/sbin/chusfs usr/lib/objrepos/usfs.err \
         usr/lib/objrepos/usfs.err.undo usr/lib/ras/usfs.trcfmt \
         usr/lib/ras/usfs_trace.trc usr/lib/ras/usfs_trace_remove.trc \
@@ -157,7 +156,6 @@ exit 0
 %attr(0444,root,system) /usr/lib/ras/usfs_trace_remove.trc
 %attr(0555,root,system) /usr/sbin/usfs_mirror
 %attr(0555,root,system) /usr/sbin/usfs_memfs
-%attr(0555,root,system) /usr/sbin/usfs_probe
 %attr(0555,root,system) /usr/sbin/usfsctl
 %attr(0555,root,system) /usr/sbin/chusfs
 %attr(0444,root,system) /usr/lib/libusfs.a

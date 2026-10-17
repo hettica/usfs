@@ -120,7 +120,11 @@ mkdir -p "$USFS_BINARY_DIR/coverage"
         "$USFS_BINARY_DIR/coverage/bin/usfs.kext" \
         "$USFS_BINARY_DIR/coverage/bin/libusfs.a" \
         "$USFS_BINARY_DIR/coverage/bin/usfs_mirror" \
-        "$USFS_BINARY_DIR/coverage/bin/usfs_memfs"
+        "$USFS_BINARY_DIR/coverage/bin/usfs_memfs" \
+        "$USFS_BINARY_DIR/coverage/bin/cfgusfs" \
+        "$USFS_BINARY_DIR/coverage/bin/ucfgusfs" \
+        "$USFS_BINARY_DIR/coverage/bin/chusfs" \
+        "$USFS_BINARY_DIR/coverage/bin/usfsctl"
     echo source_manifest_begin
     (cd "$USFS_SOURCE_DIR" && bash scripts/aix/source-manifest.sh)
     echo source_manifest_end

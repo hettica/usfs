@@ -4,7 +4,7 @@
  */
 
 #define main usfs_soak_worker_program
-#include "../../src/tools/usfs_soak_worker.c"
+#include "../tools/usfs_soak_worker.c"
 #undef main
 
 #include "tap.h"

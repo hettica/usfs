@@ -53,6 +53,10 @@ sub read_coverage
             die "Failed to parse coverage report: counters have no source file\n";
         }
 
+        # Only production source roots belong in a Sonar coverage report.
+        # Keep source-path validation above, even for excluded test records.
+        next unless $source_path =~ m{^(?:src|examples)/};
+
         if ($record =~ /^DA:([1-9][0-9]*),([0-9]+)(?:,[^,]+)?$/) {
             my ($line_number, $hits) = ($1, $2);
             $files{$source_path}{$line_number}{covered} ||= ($hits > 0 ? 1 : 0);
