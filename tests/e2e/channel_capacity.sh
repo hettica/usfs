@@ -66,7 +66,7 @@ done
 tap_ok "$status_failed" "concurrent status queries do not need backend slots"
 
 recovery_failed=0
-if [ "${#CHANNEL_FDS[@]}" -gt 0 ]; then
+if [[ "${#CHANNEL_FDS[@]}" -gt 0 ]]; then
     first_descriptor=${CHANNEL_FDS[0]}
     eval "exec ${first_descriptor}>&-"
     CHANNEL_FDS=("${CHANNEL_FDS[@]:1}")

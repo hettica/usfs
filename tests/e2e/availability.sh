@@ -24,8 +24,19 @@ CHUSFS=/usr/lib/methods/usfs/chusfs
 DAEMON_PID=0
 PROBE_PIDS=""
 
-is_mounted() { mount 2>/dev/null | grep -q " $MOUNT "; }
-probe_done() { test -f "$1"; }
+is_mounted()
+{
+    mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
+}
+
+probe_done()
+{
+    local result_file=$1
+
+    [[ -f "$result_file" ]]
+    return "$?"
+}
 
 start_daemon()
 {
@@ -42,15 +53,17 @@ start_daemon()
     usfs_track_pid "$DAEMON_PID"
     usfs_track_mount "$MOUNT"
     usfs_wait_until "availability mount" 30 is_mounted
+    return "$?"
 }
 
 stop_daemon()
 {
     touch "$BARRIERS/after-read.release" 2>/dev/null
     umount "$MOUNT" >/dev/null 2>&1 || umount -f "$MOUNT" >/dev/null 2>&1
-    [ "$DAEMON_PID" -eq 0 ] || kill -TERM "$DAEMON_PID" 2>/dev/null
-    [ "$DAEMON_PID" -eq 0 ] || wait "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
+    [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
+    return "$?"
 }
 
 spawn_stat()
@@ -64,12 +77,14 @@ spawn_stat()
     pid=$!
     PROBE_PIDS="$PROBE_PIDS $pid"
     usfs_track_pid "$pid"
+    return "$?"
 }
 
 wait_probes()
 {
     for pid in $PROBE_PIDS; do wait "$pid" 2>/dev/null; done
     PROBE_PIDS=""
+    return "$?"
 }
 
 restore_policy()
@@ -78,6 +93,7 @@ restore_policy()
         -a request_timeout_ms=30000 \
         -a pager_timeout_ms=10000 \
         -a max_outstanding_requests=256 >/dev/null 2>&1
+    return "$?"
 }
 
 recovery_works()
@@ -87,14 +103,15 @@ recovery_works()
     /usr/sbin/usfs_io_probe stat "$MOUNT/file" >"$BASE/recovery.out" 2>&1
     recovery_rc=$?
     stop_daemon
-    [ "$recovery_rc" -eq 0 ] && grep -q 'result=0 errno=0' "$BASE/recovery.out"
+    [[ "$recovery_rc" -eq 0 ]] && grep -q 'result=0 errno=0' "$BASE/recovery.out"
 }
 
 no_usfs_state()
 {
     mounts=$(mount 2>/dev/null | awk '$3 == "usfs" { n++ } END { print n+0 }')
     daemons=$(ps -ef | grep -c '[u]sfs_scenario_daemon')
-    [ "$mounts" -eq 0 ] && [ "$daemons" -eq 0 ]
+    [[ "$mounts" = 0 ]] && [[ "$daemons" = 0 ]]
+    return "$?"
 }
 
 trap 'stop_daemon; usfs_owned_cleanup; restore_policy; rm -rf "$BASE"' 0 1 2 15
@@ -108,7 +125,7 @@ before=$("$CHUSFS" -l usfs0 2>/dev/null) || config_failure=1
 su nobody -c "$CHUSFS -l usfs0 -a request_timeout_ms=1000" \
     >/dev/null 2>&1 && config_failure=1
 after=$("$CHUSFS" -l usfs0 2>/dev/null) || config_failure=1
-[ "$before" = "$after" ] || config_failure=1
+[[ "$before" = "$after" ]] || config_failure=1
 echo "$after" | grep -q '^request_timeout_ms=30000$' || config_failure=1
 echo "$after" | grep -q '^pager_timeout_ms=10000$' || config_failure=1
 echo "$after" | grep -q '^max_outstanding_requests=256$' || config_failure=1
@@ -135,17 +152,17 @@ for attempt in 1 2 3 4 5; do
     if echo "$health" | grep -q '^outstanding_requests=2$'; then reserve_observed=1; break; fi
     sleep 1
 done
-[ "$reserve_observed" -eq 1 ] || cleanup_failure=1
+[[ "$reserve_observed" -eq 1 ]] || cleanup_failure=1
 echo "$health" | grep -q '^active_connections=1$' || cleanup_failure=1
 touch "$BARRIERS/after-read.release"
 usfs_wait_until "reserved RELEASE completed" 10 test -f "$BASE/close.rc" || cleanup_failure=1
 usfs_wait_until "ordinary waiter completed" 10 probe_done "$BASE/stat.cleanup.rc" || cleanup_failure=1
 wait "$close_pid" || cleanup_failure=1
 wait_probes
-[ "$(cat "$BASE/close.rc" 2>/dev/null)" = 0 ] || cleanup_failure=1
+[[ "$(cat "$BASE/close.rc" 2>/dev/null)" = 0 ]] || cleanup_failure=1
 /usr/sbin/usfs_io_probe stat "$MOUNT/file" >"$BASE/after-cleanup.out" 2>&1 || cleanup_failure=1
 grep -q 'result=0 errno=0' "$BASE/after-cleanup.out" || cleanup_failure=1
-if [ "$cleanup_failure" -ne 0 ]; then
+if [[ "$cleanup_failure" -ne 0 ]]; then
     tap_diag "cleanup reserve health: $health"
     tap_diag "cleanup close: $(cat "$BASE/close.out" "$BASE/close.rc" 2>/dev/null)"
     tap_diag "cleanup stat: $(cat "$BASE/stat.cleanup.out" "$BASE/after-cleanup.out" 2>/dev/null)"
@@ -182,13 +199,13 @@ grep -q 'result=-1 errno=5' "$BASE/stat.timeout.out" || timeout_failure=1
 health=$("$CHUSFS" -l usfs0 2>/dev/null) || timeout_failure=1
 echo "$health" | grep -q '^active_connections=0$' || timeout_failure=1
 /usr/sbin/usfsctl >"$BASE/status.timeout.out" 2>"$BASE/status.timeout.err"
-[ "$?" -eq 1 ] || timeout_failure=1
+[[ "$?" -eq 1 ]] || timeout_failure=1
 grep -q '^USFS health: DEGRADED$' "$BASE/status.timeout.out" || timeout_failure=1
 grep -q '^requests: .* [1-9][0-9]* timed out$' "$BASE/status.timeout.out" || timeout_failure=1
 grep -q '^last fault: timeout ' "$BASE/status.timeout.out" || timeout_failure=1
 /usr/sbin/usfs_io_probe stat "$MOUNT/file" >"$BASE/stat.after.out" 2>&1
 grep -q 'result=-1 errno=5' "$BASE/stat.after.out" || timeout_failure=1
-[ "$timeout_failure" -eq 0 ] || {
+[[ "$timeout_failure" -eq 0 ]] || {
     tap_diag "timeout outputs: $(cat "$BASE/stat.timeout.out" 2>/dev/null)"
     tap_diag "health: $health"
     tap_diag "status: $(cat "$BASE/status.timeout.out" 2>/dev/null)"
@@ -211,9 +228,9 @@ usfs_track_pid "$cached_pid"
 usfs_wait_until "cached reads after committed truncate timeout" 20 \
     test -f "$BASE/cached.rc" || cached_failure=1
 wait "$cached_pid" 2>/dev/null
-[ "$(cat "$BASE/cached.rc" 2>/dev/null)" = 0 ] || cached_failure=1
+[[ "$(cat "$BASE/cached.rc" 2>/dev/null)" = 0 ]] || cached_failure=1
 grep -q '^COMMITTED_SIZE 0$' "$REQUESTS" || cached_failure=1
-[ "$cached_failure" -eq 0 ] || sed 's/^/# /' "$BASE/cached.out"
+[[ "$cached_failure" -eq 0 ]] || sed 's/^/# /' "$BASE/cached.out"
 stop_daemon
 tap_ok "$cached_failure" "cached data and cached EOF reject reads after a committed truncate times out"
 
@@ -244,9 +261,10 @@ pager_rc=$(cat "$BASE/pager.rc" 2>/dev/null)
 if ! grep -q 'result=-1' "$BASE/pager.out" 2>/dev/null; then
     case "$pager_rc" in
         ""|0|*[!0-9]*) pager_failure=1 ;;
+        *) : ;; # A nonzero numeric status is expected for a faulted probe.
     esac
 fi
-[ "$pager_failure" -eq 0 ] || {
+[[ "$pager_failure" -eq 0 ]] || {
     tap_diag "pager rc=$pager_rc output=$(cat "$BASE/pager.out" 2>/dev/null)"
     tap_diag "pager requests: $(cat "$REQUESTS" 2>/dev/null)"
 }
@@ -270,7 +288,7 @@ for completion in reply timeout; do
     kill -USR1 "$signal_pid" || signal_failure=1
     /usr/sbin/usfs_io_probe stat "$MOUNT/dir" >"$BASE/signal.excess.out" 2>&1
     grep -q '^result=-1 errno=11$' "$BASE/signal.excess.out" || signal_failure=1
-    if [ "$completion" = reply ]; then
+    if [[ "$completion" = reply ]]; then
         touch "$BARRIERS/after-read.release"
         wait "$signal_pid" || signal_failure=1
         grep -q '^result=0 errno=0 signal=1$' "$BASE/signal.out" || signal_failure=1
@@ -280,11 +298,11 @@ for completion in reply timeout; do
         usfs_wait_until "original deadline after signals" 8 \
             grep -q '^result=-1 errno=78 signal=1$' "$BASE/signal.out" || signal_failure=1
         wait "$signal_pid" 2>/dev/null
-        [ "$?" -eq 1 ] || signal_failure=1
+        [[ "$?" -eq 1 ]] || signal_failure=1
         health=$("$CHUSFS" -l usfs0 2>/dev/null) || signal_failure=1
         echo "$health" | grep -q '^active_connections=0$' || signal_failure=1
     fi
-    [ "$signal_failure" -eq 0 ] || {
+    [[ "$signal_failure" -eq 0 ]] || {
         sed 's/^/# /' "$BASE/signal.out"
         sed 's/^/# /' "$BASE/signal.excess.out"
     }

@@ -37,7 +37,7 @@ USFS_TEST_METHOD_LOCK_MARKER="$second_marker" \
     /usr/lib/methods/usfs/chusfs -l usfs0 >"$second_log" 2>&1 &
 second_pid=$!
 sleep 1
-if [ ! -e "$second_marker" ] && kill -0 "$second_pid" 2>/dev/null; then
+if [[ ! -e "$second_marker" ]] && kill -0 "$second_pid" 2>/dev/null; then
     tap_ok 0 "chusfs waits behind an active configure transaction"
 else
     tap_ok 1 "chusfs waits behind an active configure transaction"
@@ -47,8 +47,8 @@ first_rc=0
 second_rc=0
 wait "$first_pid" || first_rc=$?
 wait "$second_pid" || second_rc=$?
-if [ "$first_rc" -eq 0 ] && [ "$second_rc" -eq 0 ] &&
-   [ -e "$second_marker" ]; then
+if [[ "$first_rc" -eq 0 ]] && [[ "$second_rc" -eq 0 ]] &&
+   [[ -e "$second_marker" ]]; then
     tap_ok 0 "serialized configuration commands both complete"
 else
     sed 's/^/# /' "$first_log" 2>/dev/null
@@ -62,19 +62,19 @@ usfs_coverage_expect_export configuration-term || lifecycle_failure=1
 USFS_COVERAGE_EVENT=configuration-term \
     rmdev -l usfs0 >/dev/null 2>&1 || lifecycle_failure=1
 /usr/lib/methods/usfs/ucfgusfs -l usfs0 >/dev/null 2>&1 || lifecycle_failure=1
-[ "$(lsdev -l usfs0 -F status 2>/dev/null)" = "Defined" ] || lifecycle_failure=1
-[ ! -e /dev/usfs0 ] || lifecycle_failure=1
+[[ "$(lsdev -l usfs0 -F status 2>/dev/null)" = "Defined" ]] || lifecycle_failure=1
+[[ ! -e /dev/usfs0 ]] || lifecycle_failure=1
 mkdev -l usfs0 >/dev/null 2>&1 || lifecycle_failure=1
 mkdev -l usfs0 >/dev/null 2>&1 || lifecycle_failure=1
-[ "$(lsdev -l usfs0 -F status 2>/dev/null)" = "Available" ] || lifecycle_failure=1
-[ -c /dev/usfs0 ] || lifecycle_failure=1
-[ "$(awk '$1 == "usfs" { count += 1 } END { print count + 0 }' /etc/vfs)" -eq 1 ] || lifecycle_failure=1
+[[ "$(lsdev -l usfs0 -F status 2>/dev/null)" = "Available" ]] || lifecycle_failure=1
+[[ -c /dev/usfs0 ]] || lifecycle_failure=1
+[[ "$(awk '$1 == "usfs" { count += 1 } END { print count + 0 }' /etc/vfs)" = 1 ]] || lifecycle_failure=1
 /usr/lib/methods/usfs/chusfs -l usfs0 >/dev/null 2>&1 || lifecycle_failure=1
 tap_ok "$lifecycle_failure" "repeated teardown and configure converge to one usable device"
 
 install_failure=0
 install_variant=testing
-[ ! -x /usr/sbin/usfs_coverage ] || install_variant=coverage
+[[ ! -x /usr/sbin/usfs_coverage ]] || install_variant=coverage
 usfs_coverage_checkpoint configuration-pre-install || install_failure=1
 usfs_coverage_expect_export configuration-install || install_failure=1
 if USFS_COVERAGE_EVENT=configuration-install rmdev -l usfs0 >/dev/null 2>&1; then
@@ -85,8 +85,8 @@ if USFS_COVERAGE_EVENT=configuration-install rmdev -l usfs0 >/dev/null 2>&1; the
     bash "$USFS_SOURCE_DIR/scripts/aix/install-variant.sh" "$install_variant" \
         "$USFS_SOURCE_DIR" "${USFS_BINARY_DIR:?}" \
         >"$first_log" 2>&1 || install_failure=1
-    [ -x /usr/lib/methods/usfs/package_lifecycle ] || install_failure=1
-    [ -x /usr/lib/methods/usfs/boot_rule ] || install_failure=1
+    [[ -x /usr/lib/methods/usfs/package_lifecycle ]] || install_failure=1
+    [[ -x /usr/lib/methods/usfs/boot_rule ]] || install_failure=1
     # Recovery must remain possible when running this regression before the fix.
     chmod 550 /usr/lib/methods/usfs/package_lifecycle \
         /usr/lib/methods/usfs/boot_rule || install_failure=1
@@ -94,7 +94,7 @@ if USFS_COVERAGE_EVENT=configuration-install rmdev -l usfs0 >/dev/null 2>&1; the
 else
     install_failure=1
 fi
-[ "$install_failure" -eq 0 ] || sed 's/^/# /' "$first_log" 2>/dev/null
+[[ "$install_failure" -eq 0 ]] || sed 's/^/# /' "$first_log" 2>/dev/null
 tap_ok "$install_failure" "variant installation prepares executable methods before use"
 
 owner_failure=0

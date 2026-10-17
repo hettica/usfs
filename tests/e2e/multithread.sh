@@ -26,23 +26,26 @@ FAILURES=0
 say()
 {
     echo "$*"
+    return "$?"
 }
 
 fail()
 {
     FAILURES=$((FAILURES + 1))
     say "FAIL: $*"
+    return "$?"
 }
 
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 wait_mounted()
 {
     deadline=$(( $(date +%s) + 30 ))
-    while [ "$(date +%s)" -lt "$deadline" ]; do
+    while [[ "$(date +%s)" -lt "$deadline" ]]; do
         is_mounted && return 0
         sleep 1
     done
@@ -51,10 +54,10 @@ wait_mounted()
 
 stop_daemon()
 {
-    [ -n "$DAEMON_PID" ] || return 0
+    [[ -n "$DAEMON_PID" ]] || return 0
     kill -TERM "$DAEMON_PID" 2>/dev/null || true
     deadline=$(( $(date +%s) + 30 ))
-    while [ "$(date +%s)" -lt "$deadline" ]; do
+    while [[ "$(date +%s)" -lt "$deadline" ]]; do
         if ! ps -p "$DAEMON_PID" >/dev/null 2>&1; then
             wait "$DAEMON_PID" 2>/dev/null || true
             DAEMON_PID=
@@ -74,6 +77,7 @@ cleanup()
         umount "$MOUNT" 2>/dev/null || true
     fi
     rm -rf "$BASE"
+    return "$?"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -82,22 +86,22 @@ run_readers()
     count=$1
     pids=
     i=1
-    while [ "$i" -le "$count" ]; do
-        if [ "$((i % 2))" -eq 0 ]; then read_path=other; else read_path=slow; fi
+    while [[ "$i" -le "$count" ]]; do
+        if [[ "$((i % 2))" = 0 ]]; then read_path=other; else read_path=slow; fi
         cat "$MOUNT/$read_path" >"$BASE/read.$i" 2>"$BASE/read.$i.err" &
         pids="$pids $!"
         i=$((i + 1))
     done
 
     deadline=$(( $(date +%s) + 20 ))
-    while [ "$(date +%s)" -lt "$deadline" ]; do
+    while [[ "$(date +%s)" -lt "$deadline" ]]; do
         alive=0
         for pid in $pids; do
             if ps -p "$pid" >/dev/null 2>&1; then
                 alive=1
             fi
         done
-        [ "$alive" -eq 0 ] && break
+        [[ "$alive" -eq 0 ]] && break
         sleep 1
     done
 
@@ -110,12 +114,13 @@ run_readers()
     done
 
     i=1
-    while [ "$i" -le "$count" ]; do
-        if [ "$(cat "$BASE/read.$i" 2>/dev/null)" != "parallel-dispatch" ]; then
+    while [[ "$i" -le "$count" ]]; do
+        if [[ "$(cat "$BASE/read.$i" 2>/dev/null)" != "parallel-dispatch" ]]; then
             fail "reader $i returned incorrect content"
         fi
         i=$((i + 1))
     done
+    return "$?"
 }
 
 start_daemon()
@@ -142,7 +147,7 @@ if start_daemon -f -o max_threads=2; then
     run_readers 4
     maximum=$(sed -n 's/^max_active=//p' "$STATUS" 2>/dev/null)
     collision=$(sed -n 's/^context_collision=//p' "$STATUS" 2>/dev/null)
-    if [ "$maximum" = 2 ] && [ "$collision" = 0 ]; then
+    if [[ "$maximum" = 2 ]] && [[ "$collision" = 0 ]]; then
         say "OK   callbacks overlap with private contexts and respect max_threads=2"
     else
         fail "expected max_active=2/context_collision=0, got ${maximum:-missing}/${collision:-missing}"
@@ -162,7 +167,7 @@ if start_daemon -f -s; then
     fi
     stop_daemon
     callback_count=$(grep -c USFS_LARGE_READDIR_CALLBACK "$BASE/daemon.log")
-    [ "$callback_count" -eq 1 ] || fail "large directory used $callback_count backend enumerations"
+    [[ "$callback_count" = 1 ]] || fail "large directory used $callback_count backend enumerations"
     is_mounted && fail "large directory mount remained after daemon exit"
 fi
 unset USFS_MT_LARGE_DIRECTORY
@@ -172,7 +177,7 @@ if start_daemon -f -s; then
     run_readers 2
     maximum=$(sed -n 's/^max_active=//p' "$STATUS" 2>/dev/null)
     collision=$(sed -n 's/^context_collision=//p' "$STATUS" 2>/dev/null)
-    if [ "$maximum" = 1 ] && [ "$collision" = 0 ]; then
+    if [[ "$maximum" = 1 ]] && [[ "$collision" = 0 ]]; then
         say "OK   -s keeps callbacks single-threaded"
     else
         fail "expected single-thread max_active=1, got ${maximum:-missing}"
@@ -195,7 +200,7 @@ if start_daemon -f -o max_threads=2; then
     reader=$!
     usfs_track_pid "$reader"
     deadline=$(( $(date +%s) + 15 ))
-    while ps -p "$DAEMON_PID" >/dev/null 2>&1 && [ "$(date +%s)" -lt "$deadline" ]; do
+    while ps -p "$DAEMON_PID" >/dev/null 2>&1 && [[ "$(date +%s)" -lt "$deadline" ]]; do
         sleep 1
     done
     if ps -p "$DAEMON_PID" >/dev/null 2>&1; then
@@ -216,11 +221,11 @@ unset USFS_MT_EXIT_FROM_READ
 say "STEP thread-requested idle exit, repeated notifications, and exec isolation"
 for mode in single multi; do
     extra=
-    [ "$mode" = single ] && extra=-s
+    [[ "$mode" = single ]] && extra=-s
     USFS_MT_IDLE_EXIT=1 "$DAEMON" -f $extra "$MOUNT" >"$BASE/idle.$mode.log" 2>&1 &
     DAEMON_PID=$!
     deadline=$(( $(date +%s) + 20 ))
-    while ps -p "$DAEMON_PID" >/dev/null 2>&1 && [ "$(date +%s)" -lt "$deadline" ]; do
+    while ps -p "$DAEMON_PID" >/dev/null 2>&1 && [[ "$(date +%s)" -lt "$deadline" ]]; do
         sleep 1
     done
     if ps -p "$DAEMON_PID" >/dev/null 2>&1; then
@@ -245,9 +250,9 @@ if start_daemon -f -o max_threads=2; then
         usfs_track_pid "$!"
     done
     deadline=$(( $(date +%s) + 10 ))
-    while [ "$(grep -c USFS_CALLBACK_HELD "$BASE/daemon.log")" -lt 2 ] &&
-          [ "$(date +%s)" -lt "$deadline" ]; do sleep 1; done
-    [ "$(grep -c USFS_CALLBACK_HELD "$BASE/daemon.log")" -eq 2 ] || fail "both workers did not enter held callbacks"
+    while [[ "$(grep -c USFS_CALLBACK_HELD "$BASE/daemon.log")" -lt 2 ]] &&
+          [[ "$(date +%s)" -lt "$deadline" ]]; do sleep 1; done
+    [[ "$(grep -c USFS_CALLBACK_HELD "$BASE/daemon.log")" = 2 ]] || fail "both workers did not enter held callbacks"
     queued_readers=
     for index in 1 2 3 4 5 6 7 8 9 10 11 12; do
         /usr/sbin/usfs_io_probe stat "$MOUNT/slow" >"$BASE/queued.$index" 2>&1 &
@@ -263,17 +268,18 @@ if start_daemon -f -o max_threads=2; then
     grep -q USFS_DESTROY_CALLED "$BASE/daemon.log" && fail "exit destroyed live callback state"
     touch "$USFS_MT_HELD_READ"
     deadline=$(( $(date +%s) + 20 ))
-    while ps -p "$DAEMON_PID" >/dev/null 2>&1 && [ "$(date +%s)" -lt "$deadline" ]; do sleep 1; done
+    while ps -p "$DAEMON_PID" >/dev/null 2>&1 && [[ "$(date +%s)" -lt "$deadline" ]]; do sleep 1; done
     if ps -p "$DAEMON_PID" >/dev/null 2>&1; then
         fail "full queue exit did not join completed callbacks"
         kill -KILL "$DAEMON_PID" 2>/dev/null || true
     fi
     wait "$DAEMON_PID" 2>/dev/null || fail "full queue daemon returned failure"
     DAEMON_PID=
-    [ "$(grep -c USFS_GETATTR_ENTERED "$BASE/daemon.log")" -eq "$callbacks_before" ] ||
+    [[ "$callbacks_before" =~ ^[0-9]+$ ]] &&
+        [[ "$(grep -c USFS_GETATTR_ENTERED "$BASE/daemon.log")" = "$callbacks_before" ]] ||
         fail "queued metadata callbacks ran after exit"
-    [ "$(grep -c USFS_CALLBACK_HELD "$BASE/daemon.log")" -eq 2 ] || fail "new read callback ran after exit"
-    [ "$(grep -c USFS_DESTROY_CALLED "$BASE/daemon.log")" -eq 1 ] || fail "full queue cleanup did not destroy exactly once"
+    [[ "$(grep -c USFS_CALLBACK_HELD "$BASE/daemon.log")" = 2 ]] || fail "new read callback ran after exit"
+    [[ "$(grep -c USFS_DESTROY_CALLED "$BASE/daemon.log")" = 1 ]] || fail "full queue cleanup did not destroy exactly once"
     for reader in $held_readers $queued_readers; do
         kill -KILL "$reader" 2>/dev/null || true
         wait "$reader" 2>/dev/null || true
@@ -293,7 +299,7 @@ if start_daemon -f -o max_threads=2; then
         usfs_track_pid "$!"
     done
     deadline=$(( $(date +%s) + 10 ))
-    while ! grep -q USFS_CALLBACK_STUCK "$BASE/daemon.log" && [ "$(date +%s)" -lt "$deadline" ]; do sleep 1; done
+    while ! grep -q USFS_CALLBACK_STUCK "$BASE/daemon.log" && [[ "$(date +%s)" -lt "$deadline" ]]; do sleep 1; done
     grep -q USFS_CALLBACK_STUCK "$BASE/daemon.log" || fail "stuck callback never started"
     kill -TERM "$DAEMON_PID"
     sleep 2
@@ -316,7 +322,7 @@ say "STEP external ordinary unmount wakes idle single and multithreaded daemons"
 export USFS_MT_EXTERNAL_UNMOUNT=1
 for mode in single multi; do
     extra=
-    [ "$mode" = single ] && extra=-s
+    [[ "$mode" = single ]] && extra=-s
     if start_daemon -f $extra; then
         rm -f "$BASE/cwd.ready"
         (cd "$MOUNT" && touch "$BASE/cwd.ready" && exec sleep 30) &
@@ -325,12 +331,12 @@ for mode in single multi; do
         usfs_wait_until "busy unmount holder" 10 test -f "$BASE/cwd.ready" || fail "$mode holder did not start"
         umount "$MOUNT" >"$BASE/busy.log" 2>&1 && fail "$mode busy unmount succeeded"
         is_mounted || fail "$mode busy unmount removed the mount"
-        [ "$(cat "$MOUNT/slow" 2>/dev/null)" = parallel-dispatch ] || fail "$mode busy unmount stopped service"
+        [[ "$(cat "$MOUNT/slow" 2>/dev/null)" = parallel-dispatch ]] || fail "$mode busy unmount stopped service"
         kill -TERM "$holder" 2>/dev/null || true
         wait "$holder" 2>/dev/null || true
         umount "$MOUNT" >"$BASE/unmount.log" 2>&1 || fail "$mode ordinary unmount failed"
         deadline=$(( $(date +%s) + 15 ))
-        while ps -p "$DAEMON_PID" >/dev/null 2>&1 && [ "$(date +%s)" -lt "$deadline" ]; do sleep 1; done
+        while ps -p "$DAEMON_PID" >/dev/null 2>&1 && [[ "$(date +%s)" -lt "$deadline" ]]; do sleep 1; done
         if ps -p "$DAEMON_PID" >/dev/null 2>&1; then
             fail "$mode daemon did not exit after external unmount"
             stop_daemon
@@ -338,7 +344,7 @@ for mode in single multi; do
             wait "$DAEMON_PID" || fail "$mode external unmount returned a fatal session result"
             DAEMON_PID=
         fi
-        [ "$(grep -c USFS_DESTROY_CALLED "$BASE/daemon.log")" -eq 1 ] ||
+        [[ "$(grep -c USFS_DESTROY_CALLED "$BASE/daemon.log")" = 1 ]] ||
             fail "$mode external unmount did not destroy exactly once"
         /usr/sbin/usfsctl >"$BASE/health.log" 2>&1 || fail "$mode orderly unmount left degraded health"
         usfs_coverage_expect_export "multithread-$mode-term" || fail "$mode teardown coverage expectation could not be recorded"
@@ -349,7 +355,7 @@ for mode in single multi; do
 done
 unset USFS_MT_EXTERNAL_UNMOUNT
 
-if [ "$FAILURES" -ne 0 ]; then
+if [[ "$FAILURES" -ne 0 ]]; then
     say "multithreaded dispatch test failed: $FAILURES error(s)"
     exit 1
 fi

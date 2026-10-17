@@ -17,17 +17,22 @@ BASE=/tmp/usfs-observability.$$
 MOUNT=$BASE/mnt
 DAEMON_PID=0
 
-is_mounted() { mount 2>/dev/null | grep -q " $MOUNT "; }
+is_mounted()
+{
+    mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
+}
 
 cleanup()
 {
-    if [ "$DAEMON_PID" -ne 0 ]; then
+    if [[ "$DAEMON_PID" -ne 0 ]]; then
         kill -KILL "$DAEMON_PID" 2>/dev/null
         wait "$DAEMON_PID" 2>/dev/null
     fi
     umount "$MOUNT" >/dev/null 2>&1 || umount -f "$MOUNT" >/dev/null 2>&1
     usfs_owned_cleanup
     rm -rf "$BASE"
+    return "$?"
 }
 
 trap cleanup 0 1 2 15
@@ -61,7 +66,7 @@ sleep 1
 failure=0
 /usr/sbin/usfsctl >"$BASE/degraded.out" 2>"$BASE/degraded.err"
 rc=$?
-[ "$rc" -eq 1 ] || failure=1
+[[ "$rc" -eq 1 ]] || failure=1
 grep -q '^USFS health: DEGRADED$' "$BASE/degraded.out" || failure=1
 grep -q '^daemons: 0 active, 1 unhealthy$' "$BASE/degraded.out" || failure=1
 grep -q '^last fault: daemon-lost ' "$BASE/degraded.out" || failure=1
@@ -82,7 +87,7 @@ tap_ok "$failure" "ordinary cleanup clears current degradation without erasing h
 
 failure=0
 /usr/sbin/usfsctl status >/dev/null 2>&1
-[ "$?" -eq 0 ] || failure=1
+[[ "$?" -eq 0 ]] || failure=1
 tap_ok "$failure" "explicit usfsctl status preserves the health interface"
 
 tap_finish

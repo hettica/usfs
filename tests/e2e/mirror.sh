@@ -47,6 +47,16 @@ N_ENTRIES=${N_ENTRIES:-400}
 N_DAEMONS=${N_DAEMONS:-2}
 ITERATIONS=${ITERATIONS:-2}
 N_READERS=${N_READERS:-2}
+# Treat public count settings as decimal, including values with leading zeros.
+for count_name in N_DAEMONS ITERATIONS N_READERS; do
+    count_value=${!count_name}
+    if [[ ! "$count_value" =~ ^[0-9]+$ ]]; then
+        printf '%s must be a nonnegative decimal integer\n' "$count_name" >&2
+        exit 1
+    fi
+    count_value=${count_value#"${count_value%%[!0]*}"}
+    printf -v "$count_name" '%s' "${count_value:-0}"
+done
 MOUNT_WAIT=${MOUNT_WAIT:-90}
 READ_WAIT=${READ_WAIT:-240}
 STOP_WAIT=${STOP_WAIT:-60}
@@ -54,7 +64,7 @@ FIXTURE=${FIXTURE:-/tmp/usfs_fixture}
 LOGFILE=${LOGFILE:-/tmp/usfs_mirror.log}
 
 DAEMON=/usr/sbin/usfs_mirror
-if [ -n "${USFS_COVERAGE_SUITE:-}" ]; then
+if [[ -n "${USFS_COVERAGE_SUITE:-}" ]]; then
     export USFS_COVERAGE_DAEMON=$DAEMON
     DAEMON="bash ${USFS_SOURCE_DIR:?}/scripts/aix/coverage-exec.sh"
 fi
@@ -63,8 +73,8 @@ DAEMON_RE='[u]sfs_mirror'
 coverage_expect_profile()
 {
     _pid=$1
-    [ -n "${USFS_COVERAGE_SUITE:-}" ] || return 0
-    [ -x /usr/sbin/usfs_coverage ] || return 0
+    [[ -n "${USFS_COVERAGE_SUITE:-}" ]] || return 0
+    [[ -x /usr/sbin/usfs_coverage ]] || return 0
     bash "${USFS_SOURCE_DIR:?}/scripts/aix/coverage-checkpoint.sh" expect-profile \
         "$USFS_COVERAGE_SUITE" mirror "$_pid"
 }
@@ -78,12 +88,14 @@ say()
 {
     now=$(date +%s)
     printf '[T+%04d] %s\n' "$((now - START))" "$*" | tee -a "$LOGFILE"
+    return "$?"
 }
 
 fail()
 {
     failures=$((failures + 1))
     say "FAIL: $*"
+    return "$?"
 }
 
 snapshot()
@@ -91,28 +103,37 @@ snapshot()
     d=$(ps -ef | grep -cE "$DAEMON_RE")
     m=$(mount 2>/dev/null | awk '$3 == "usfs" { print $2 }' | wc -l | tr -d ' ')
     say "STATE daemons=$d mounts=$m ($*)"
+    return "$?"
 }
 
 phase_enabled()
 {
+    local phase_name=$1
+
     case "$MIRROR_PHASES" in
         all) return 0 ;;
-        *"$1"*) return 0 ;;
+        *"$phase_name"*) return 0 ;;
         *) return 1 ;;
     esac
 }
 
 is_mounted()
 {
-    mount 2>/dev/null | awk '$3 == "usfs" { print $2 }' | grep -qx "$1"
+    local mountpoint=$1
+
+    mount 2>/dev/null | awk '$3 == "usfs" { print $2 }' | grep -qx "$mountpoint"
+    return "$?"
 }
 
 # Waits until $1 is mounted or $2 seconds elapse. Non-zero on timeout.
 wait_mounted()
 {
-    _deadline=$(( $(date +%s) + $2 ))
-    while [ "$(date +%s)" -lt "$_deadline" ]; do
-        if is_mounted "$1"; then
+    local mountpoint=$1
+    local timeout_seconds=$2
+
+    _deadline=$(( $(date +%s) + $timeout_seconds ))
+    while [[ "$(date +%s)" -lt "$_deadline" ]]; do
+        if is_mounted "$mountpoint"; then
             return 0
         fi
         sleep 2
@@ -123,9 +144,12 @@ wait_mounted()
 # Waits until process $1 exits or $2 seconds elapse.
 wait_gone()
 {
-    _deadline=$(( $(date +%s) + $2 ))
-    while [ "$(date +%s)" -lt "$_deadline" ]; do
-        if ! ps -p "$1" >/dev/null 2>&1; then
+    local process_id=$1
+    local timeout_seconds=$2
+
+    _deadline=$(( $(date +%s) + $timeout_seconds ))
+    while [[ "$(date +%s)" -lt "$_deadline" ]]; do
+        if ! ps -p "$process_id" >/dev/null 2>&1; then
             return 0
         fi
         sleep 2
@@ -153,10 +177,14 @@ start_mirror()
 
 stop_mirror()
 {
-    coverage_expect_profile "$1" || fail "record graceful profile $1"
-    kill -TERM "$1" 2>/dev/null
-    wait_gone "$1" "$STOP_WAIT"
-    rmdir "$2" "/mnt/$1" 2>/dev/null
+    local process_id=$1
+    local mountpoint=$2
+
+    coverage_expect_profile "$process_id" || fail "record graceful profile $process_id"
+    kill -TERM "$process_id" 2>/dev/null
+    wait_gone "$process_id" "$STOP_WAIT"
+    rmdir "$mountpoint" "/mnt/$process_id" 2>/dev/null
+    return "$?"
 }
 
 # ---------------------------------------------------------------------------
@@ -173,7 +201,7 @@ build_fixture()
     # Larger than USFS_MAX_DATA (64 KiB) so reads are split into chunks.
     i=0
     : > "$FIXTURE/big.bin"
-    while [ $i -lt 256 ]; do
+    while [[ $i -lt 256 ]]; do
         dd if=/dev/zero bs=1024 count=1 2>/dev/null | tr '\0' 'x' >> "$FIXTURE/big.bin"
         i=$((i + 1))
     done
@@ -187,7 +215,7 @@ build_fixture()
     # Enough entries that a listing spans several readdir windows.
     mkdir -p "$FIXTURE/many"
     i=0
-    while [ $i -lt 300 ]; do
+    while [[ $i -lt 300 ]]; do
         echo "$i" > "$FIXTURE/many/file_$i"
         i=$((i + 1))
     done
@@ -201,11 +229,13 @@ build_fixture()
 
 phase_structure()
 {
+    local mountpoint=$1
+
     say "STEP structure: comparing the tree against the source"
 
     # No -follow: absolute symlinks in the source resolve outside the mirror.
     ( cd "$FIXTURE" && find . | sort ) > /tmp/usfs_src.list 2>/dev/null
-    ( cd "$1" && find . | sort ) > /tmp/usfs_mnt.list 2>/dev/null
+    ( cd "$mountpoint" && find . | sort ) > /tmp/usfs_mnt.list 2>/dev/null
 
     if diff /tmp/usfs_src.list /tmp/usfs_mnt.list > /tmp/usfs_diff.txt 2>&1; then
         say "OK   structure matches ($(wc -l < /tmp/usfs_src.list | tr -d ' ') paths)"
@@ -217,57 +247,66 @@ phase_structure()
     say "STEP structure: symlink targets"
     for link in link_to_file link_to_dir dangling; do
         want=$(ls -l "$FIXTURE/$link" 2>/dev/null | sed 's/.*-> //')
-        got=$(ls -l "$1/$link" 2>/dev/null | sed 's/.*-> //')
+        got=$(ls -l "$mountpoint/$link" 2>/dev/null | sed 's/.*-> //')
 
-        if [ -n "$got" ] && [ "$want" = "$got" ]; then
+        if [[ -n "$got" ]] && [[ "$want" = "$got" ]]; then
             say "OK   $link -> $got"
         else
             fail "$link target is '$got', expected '$want'"
         fi
     done
+    return "$?"
 }
 
 phase_content()
 {
+    local mountpoint=$1
+
     say "STEP content: comparing file contents"
 
     for f in small.txt big.bin a/b/c/d/e/f/deep.txt; do
         # Piped through cat so nothing tries to mmap the mirrored file.
         want=$(cat "$FIXTURE/$f" 2>/dev/null | cksum)
-        got=$(cat "$1/$f" 2>/dev/null | cksum)
+        got=$(cat "$mountpoint/$f" 2>/dev/null | cksum)
 
-        if [ "$want" = "$got" ]; then
+        if [[ "$want" = "$got" ]]; then
             say "OK   $f matches ($want)"
         else
             fail "$f differs: mirror '$got' vs source '$want'"
         fi
     done
+    return "$?"
 }
 
 phase_dotdot()
 {
+    local mountpoint=$1
+
     say "STEP dotdot: parent traversal"
 
-    got=$(cd "$1/a/b/c/d/e/f" 2>/dev/null && cd ../../.. && pwd)
-    if [ "$got" = "$1/a/b/c" ]; then
+    got=$(cd "$mountpoint/a/b/c/d/e/f" 2>/dev/null && cd ../../.. && pwd)
+    if [[ "$got" = "$mountpoint/a/b/c" ]]; then
         say "OK   cd ../../.. resolves to $got"
     else
-        fail "cd ../../.. gave '$got', expected '$1/a/b/c'"
+        fail "cd ../../.. gave '$got', expected '$mountpoint/a/b/c'"
     fi
 
     # Leaving the mount root must land on the covered directory, not loop back
     # into the mount.
-    got=$(cd "$1" 2>/dev/null && cd .. && pwd)
-    want=$(dirname "$1")
-    if [ "$got" = "$want" ]; then
+    got=$(cd "$mountpoint" 2>/dev/null && cd .. && pwd)
+    want=$(dirname "$mountpoint")
+    if [[ "$got" = "$want" ]]; then
         say "OK   cd .. from the mount root resolves to $got"
     else
         fail "cd .. from the mount root gave '$got', expected '$want'"
     fi
+    return "$?"
 }
 
 phase_mutations()
 {
+    local mountpoint=$1
+
     say "STEP mutations: every write must be refused"
 
     # A mutation must fail. AIX renders EROFS as "The file system has read
@@ -292,23 +331,23 @@ phase_mutations()
         fi
     }
 
-    _check "touch new file"   touch "$1/newfile"
-    _check "mkdir"            mkdir "$1/newdir"
-    _check "rm existing file" rm -f "$1/small.txt"
-    _check "symlink"          ln -s target "$1/newlink"
-    _check "rename"           mv "$1/small.txt" "$1/renamed.txt"
-    _check "chmod"            chmod 777 "$1/small.txt"
+    _check "touch new file"   touch "$mountpoint/newfile"
+    _check "mkdir"            mkdir "$mountpoint/newdir"
+    _check "rm existing file" rm -f "$mountpoint/small.txt"
+    _check "symlink"          ln -s target "$mountpoint/newlink"
+    _check "rename"           mv "$mountpoint/small.txt" "$mountpoint/renamed.txt"
+    _check "chmod"            chmod 777 "$mountpoint/small.txt"
 
-    _err=$( (echo data > "$1/small.txt") 2>&1 )
-    if [ $? -eq 0 ]; then
+    _err=$( (echo data > "$mountpoint/small.txt") 2>&1 )
+    if [[ $? -eq 0 ]]; then
         fail "redirect into an existing file unexpectedly succeeded"
     else
         say "OK   redirect refused: $_err"
     fi
 
     # The source must be untouched by all of the above.
-    if [ -e "$FIXTURE/newfile" ] || [ -d "$FIXTURE/newdir" ] ||
-       [ ! -f "$FIXTURE/small.txt" ] || [ -e "$FIXTURE/renamed.txt" ]; then
+    if [[ -e "$FIXTURE/newfile" ]] || [[ -d "$FIXTURE/newdir" ]] ||
+       [[ ! -f "$FIXTURE/small.txt" ]] || [[ -e "$FIXTURE/renamed.txt" ]]; then
         fail "the source tree was modified through the mirror"
     else
         say "OK   source tree is unchanged"
@@ -317,58 +356,66 @@ phase_mutations()
 
 phase_bigdir()
 {
+    local mountpoint=$1
+
     say "STEP bigdir: listing a directory with many entries"
 
     want=$(ls "$FIXTURE/many" | wc -l | tr -d ' ')
 
     t0=$(date +%s)
-    got=$(ls "$1/many" | wc -l | tr -d ' ')
+    got=$(ls "$mountpoint/many" | wc -l | tr -d ' ')
     t1=$(date +%s)
 
-    if [ "$want" = "$got" ]; then
+    if [[ "$want" = "$got" ]]; then
         say "OK   listed $got entries in $((t1 - t0))s"
     else
         fail "listed $got entries, expected $want"
     fi
+    return "$?"
 }
 
 phase_identity()
 {
+    local mountpoint=$1
+
     say "STEP identity: alternating directory readers, close, seek, dup, and fork"
 
-    if /usr/sbin/usfs_io_probe serial-two-open "$1/many" >>"$LOGFILE" 2>&1; then
+    if /usr/sbin/usfs_io_probe serial-two-open "$mountpoint/many" >>"$LOGFILE" 2>&1; then
         say "OK   serial two-open reproducer returns every entry"
     else
         fail "serial two-open reproducer lost directory entries"
     fi
 
-    if /usr/sbin/usfs_io_probe directory-readers "$1/many" >>"$LOGFILE" 2>&1; then
+    if /usr/sbin/usfs_io_probe directory-readers "$mountpoint/many" >>"$LOGFILE" 2>&1; then
         say "OK   directory readers retain their own cursor state"
     else
         fail "directory reader identity or continuation failed"
     fi
 
     say "STEP identity: reading objects after source rename, removal, and replacement"
-    if /usr/sbin/usfs_io_probe mirror-detached-objects "$FIXTURE" "$1" >>"$LOGFILE" 2>&1; then
+    if /usr/sbin/usfs_io_probe mirror-detached-objects "$FIXTURE" "$mountpoint" >>"$LOGFILE" 2>&1; then
         say "OK   held mirror objects survive source name changes"
     else
         fail "mirror selected a replacement or lost a detached object"
     fi
+    return "$?"
 }
 
 phase_concurrent()
 {
+    local mountpoint=$1
+
     say "STEP concurrent: $N_READERS readers against one mount"
 
     reader_pids=""
     i=1
-    while [ "$i" -le "$N_READERS" ]; do
+    while [[ "$i" -le "$N_READERS" ]]; do
         (
             n=0
-            while [ $n -lt 3 ]; do
-                cat "$1/small.txt" >/dev/null 2>&1 || exit 1
-                cat "$1/big.bin"   >/dev/null 2>&1 || exit 1
-                ls "$1/many"       >/dev/null 2>&1 || exit 1
+            while [[ $n -lt 3 ]]; do
+                cat "$mountpoint/small.txt" >/dev/null 2>&1 || exit 1
+                cat "$mountpoint/big.bin"   >/dev/null 2>&1 || exit 1
+                ls "$mountpoint/many"       >/dev/null 2>&1 || exit 1
                 n=$((n + 1))
             done
         ) &
@@ -378,7 +425,7 @@ phase_concurrent()
 
     deadline=$(( $(date +%s) + READ_WAIT ))
     for rp in $reader_pids; do
-        while ps -p "$rp" >/dev/null 2>&1 && [ "$(date +%s)" -lt "$deadline" ]; do
+        while ps -p "$rp" >/dev/null 2>&1 && [[ "$(date +%s)" -lt "$deadline" ]]; do
             sleep 2
         done
         if ps -p "$rp" >/dev/null 2>&1; then
@@ -394,26 +441,31 @@ phase_concurrent()
 
 phase_statfs()
 {
+    local mountpoint=$1
+
     say "STEP statfs: df should describe the source, not a placeholder"
 
     # Field 2 of df -k is the total size in KB. The mirror reports the numbers
     # of the file system the source lives on.
     want=$(df -k "$FIXTURE" 2>/dev/null | tail -1 | awk '{ print $2 }')
-    got=$(df -k "$1" 2>/dev/null | tail -1 | awk '{ print $2 }')
+    got=$(df -k "$mountpoint" 2>/dev/null | tail -1 | awk '{ print $2 }')
 
     say "df source=$want mirror=$got"
 
-    if [ -z "$got" ]; then
+    if [[ -z "$got" ]]; then
         fail "df on the mirror produced nothing"
-    elif [ "$want" = "$got" ]; then
+    elif [[ "$want" = "$got" ]]; then
         say "OK   df matches the source file system"
     else
         fail "df reports $got, expected $want"
     fi
+    return "$?"
 }
 
 phase_exec()
 {
+    local mountpoint=$1
+
     # Two cases that need different things from the file system:
     #   a shell script  - the interpreter only read()s it
     #   a real binary   - the loader maps it, which needs paging support
@@ -423,8 +475,8 @@ phase_exec()
     printf '#!/bin/sh\necho script_ran\n' > "$FIXTURE/script.sh"
     chmod 555 "$FIXTURE/script.sh"
 
-    out=$("$1/script.sh" 2>&1)
-    if [ "$out" = "script_ran" ]; then
+    out=$("$mountpoint/script.sh" 2>&1)
+    if [[ "$out" = "script_ran" ]]; then
         say "OK   shell script ran from the mirror"
     else
         say "NOTE shell script did not run: $out"
@@ -433,8 +485,8 @@ phase_exec()
     say "STEP exec: running a binary from the mirror"
 
     bin=/usr/bin/true
-    [ -x "$bin" ] || bin=/bin/true
-    if [ ! -x "$bin" ]; then
+    [[ -x "$bin" ]] || bin=/bin/true
+    if [[ ! -x "$bin" ]]; then
         say "SKIP no true(1) binary to copy"
         return
     fi
@@ -449,10 +501,10 @@ phase_exec()
         return
     fi
 
-    out=$("$1/true_copy" 2>&1)
+    out=$("$mountpoint/true_copy" 2>&1)
     rc=$?
 
-    if [ $rc -eq 0 ]; then
+    if [[ $rc -eq 0 ]]; then
         say "OK   executed a small mirrored binary ($(ls -l "$bin" | awk '{print $5}') bytes)"
     else
         fail "cannot execute a small mirrored binary (rc=$rc): $out"
@@ -463,7 +515,7 @@ phase_exec()
     say "STEP exec: running a large mirrored binary"
 
     big=/usr/bin/ksh
-    if [ ! -x "$big" ]; then
+    if [[ ! -x "$big" ]]; then
         say "SKIP no large binary available"
         return
     fi
@@ -471,8 +523,8 @@ phase_exec()
     cp "$big" "$FIXTURE/big_copy" 2>/dev/null
     chmod 555 "$FIXTURE/big_copy" 2>/dev/null
 
-    out=$("$1/big_copy" -c 'echo big_ran' 2>&1)
-    if [ "$out" = "big_ran" ]; then
+    out=$("$mountpoint/big_copy" -c 'echo big_ran' 2>&1)
+    if [[ "$out" = "big_ran" ]]; then
         say "OK   executed a $(ls -l "$big" | awk '{print $5}')-byte mirrored binary"
     else
         fail "cannot execute a large mirrored binary: $out"
@@ -484,7 +536,7 @@ phase_real()
     say "STEP real: mirroring $MIRROR_SRC"
 
     info=$(start_mirror "$MIRROR_SRC")
-    if [ -z "$info" ]; then
+    if [[ -z "$info" ]]; then
         fail "TIMEOUT mirror of $MIRROR_SRC never mounted"
         return
     fi
@@ -507,7 +559,7 @@ phase_real()
     for rel in $sample; do
         want=$(cat "$MIRROR_SRC/$rel" 2>/dev/null | cksum)
         got=$(cat "$mnt/$rel" 2>/dev/null | cksum)
-        if [ "$want" = "$got" ]; then
+        if [[ "$want" = "$got" ]]; then
             say "OK   $rel matches"
         else
             fail "$rel differs"
@@ -520,15 +572,15 @@ phase_real()
 phase_shutdown()
 {
     iter=1
-    while [ "$iter" -le "$ITERATIONS" ]; do
+    while [[ "$iter" -le "$ITERATIONS" ]]; do
         say "=== shutdown iteration $iter/$ITERATIONS"
 
         pids=""
         mnts=""
         i=1
-        while [ "$i" -le "$N_DAEMONS" ]; do
+        while [[ "$i" -le "$N_DAEMONS" ]]; do
             info=$(start_mirror "$FIXTURE")
-            if [ -z "$info" ]; then
+            if [[ -z "$info" ]]; then
                 fail "TIMEOUT daemon $i never mounted"
             else
                 pids="$pids ${info% *}"
@@ -544,7 +596,7 @@ phase_shutdown()
         for pid in $pids; do
             mnt=$(echo "$mnts" | awk -v n="$k" '{ print $n }')
 
-            if [ $((k % 2)) -eq 1 ]; then
+            if [[ $((k % 2)) -eq 1 ]]; then
                 say "STEP kill -9 daemon $pid"
                 kill -9 "$pid" 2>/dev/null
                 wait_gone "$pid" "$STOP_WAIT" || fail "daemon $pid survived SIGKILL"
@@ -583,6 +635,7 @@ phase_shutdown()
         snapshot "after cleanup"
         iter=$((iter + 1))
     done
+    return "$?"
 }
 
 # ---------------------------------------------------------------------------
@@ -616,7 +669,7 @@ if phase_enabled structure || phase_enabled content || phase_enabled dotdot ||
     say "STEP starting mirror of the fixture"
     info=$(start_mirror "$FIXTURE")
 
-    if [ -z "$info" ]; then
+    if [[ -z "$info" ]]; then
         fail "TIMEOUT fixture mirror never mounted"
     else
         fpid=${info% *}
@@ -654,12 +707,12 @@ snapshot "final"
 rm -rf "$FIXTURE"
 
 leftover=$(mount 2>/dev/null | awk '$3 == "usfs" { print $2 }' | wc -l | tr -d ' ')
-if [ "$leftover" -ne 0 ]; then
+if [[ "$leftover" != 0 ]]; then
     fail "$leftover usfs mount(s) left over"
     mount 2>/dev/null | grep usfs | tee -a "$LOGFILE"
 fi
 
-if [ "$failures" -eq 0 ]; then
+if [[ "$failures" -eq 0 ]]; then
     say "ALL TESTS PASSED"
     exit 0
 fi
