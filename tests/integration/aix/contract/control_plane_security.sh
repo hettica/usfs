@@ -15,6 +15,17 @@ set -u
 BASE=/tmp/usfs-security.$$
 NODE=/dev/usfs0
 SCENARIO_DAEMON=${USFS_SCENARIO_DAEMON:-/usr/sbin/usfs_scenario_daemon}
+DAEMON_PROBE=${USFS_PROBE:-/usr/sbin/usfs_probe}
+
+if [ ! -x "$DAEMON_PROBE" ]; then
+    echo "Failed to run control-plane tests: probe is not executable: $DAEMON_PROBE" >&2
+    exit 1
+fi
+
+if ! su nobody -c "test -x '$DAEMON_PROBE'"; then
+    echo "Failed to run control-plane tests: nobody cannot execute probe: $DAEMON_PROBE" >&2
+    exit 1
+fi
 
 restore_mode()
 {
@@ -32,7 +43,7 @@ tap_ok $([[ "${1:-}" = crw-rw---- ]] && [[ "${3:-}" = root ]] &&
           [[ "${4:-}" = system ]]; echo $? ) \
     "control device is explicitly root:system 0660"
 
-if su nobody -c "/usr/sbin/usfs_probe" >"$BASE/probe.log" 2>&1; then
+if su nobody -c "'$DAEMON_PROBE'" >"$BASE/probe.log" 2>&1; then
     tap_ok 1 "unprivileged user cannot allocate a daemon channel"
 else
     tap_ok 0 "unprivileged user cannot allocate a daemon channel"
@@ -44,7 +55,7 @@ else
     tap_ok 0 "unprivileged user cannot open the status channel"
 fi
 
-if /usr/sbin/usfs_probe >"$BASE/root-probe.log" 2>&1; then
+if "$DAEMON_PROBE" >"$BASE/root-probe.log" 2>&1; then
     tap_ok 0 "privileged daemon handshake remains available"
 else
     tap_ok 1 "privileged daemon handshake remains available"

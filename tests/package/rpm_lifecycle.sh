@@ -233,7 +233,7 @@ check "installed USFS errpt and trace templates are registered" remote "errpt -t
 check "foreign trace hook ownership blocks replacement and is cleaned" \
     foreign_trace_collision
 check "installed release 1 inventory verifies" remote "rpm -V usfs"
-check "installed package enforces the control-plane policy" remote "USFS_SOURCE_DIR=$ROOT USFS_SCENARIO_DAEMON=${USFS_BINARY_DIR:?}/testing/bin/usfs_scenario_daemon bash $ROOT/tests/integration/aix/contract/control_plane_security.sh"
+check "installed package enforces the control-plane policy" remote "USFS_SOURCE_DIR=$ROOT USFS_PROBE=${USFS_BINARY_DIR:?}/testing/bin/usfs_probe USFS_SCENARIO_DAEMON=${USFS_BINARY_DIR:?}/testing/bin/usfs_scenario_daemon bash $ROOT/tests/integration/aix/contract/control_plane_security.sh"
 
 check "incoming RPM cleans Defined ACTIVE state despite the legacy helper" retained_registration_case active
 check "incoming RPM cleans Defined CLEANUP_REQUIRED state before replacement" retained_registration_case cleanup
