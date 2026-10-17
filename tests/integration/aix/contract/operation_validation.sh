@@ -29,6 +29,7 @@ DAEMON_PID=0
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 start_daemon()
@@ -40,6 +41,7 @@ start_daemon()
     usfs_track_pid "$DAEMON_PID"
     usfs_track_mount "$MOUNT"
     usfs_wait_until "operation-validation mount" 30 is_mounted
+    return "$?"
 }
 
 stop_daemon()
@@ -48,6 +50,7 @@ stop_daemon()
     [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
     [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
+    return "$?"
 }
 
 invoke_operation()
@@ -67,6 +70,8 @@ invoke_operation()
 
 validation_case()
 {
+    local case_description=$4
+
     opcode=$1
     action=$2
     expected_success=$3
@@ -98,11 +103,13 @@ validation_case()
                 start_daemon || failure=1
                 content=$(cat "$MOUNT/file" 2>/dev/null)
                 ;;
+            *) : ;; # Other invalid replies leave the existing channel usable.
         esac
         [[ "$content" = "contract-data" ]] || failure=1
     fi
     stop_daemon
-    tap_ok "$failure" "$4 is contained and the channel recovers"
+    tap_ok "$failure" "$case_description is contained and the channel recovers"
+    return "$?"
 }
 
 trap 'usfs_owned_cleanup; rm -rf "$BASE"' 0 1 2 15

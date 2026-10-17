@@ -29,6 +29,7 @@ DAEMON_PID=0
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 start_daemon()
@@ -40,6 +41,7 @@ start_daemon()
     usfs_track_pid "$DAEMON_PID"
     usfs_track_mount "$MOUNT"
     usfs_wait_until "allocation-matrix mount" 30 is_mounted
+    return "$?"
 }
 
 wait_for_daemon_outcome()
@@ -67,12 +69,16 @@ stop_daemon()
     [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
     [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
+    return "$?"
 }
 
 status_fired()
 {
+    local expected_occurrence=$1
+
     /usr/sbin/usfs_testctl status 2>/dev/null |
-        grep -q "observed=$1 fired=1 armed=0"
+        grep -q "observed=$expected_occurrence fired=1 armed=0"
+    return "$?"
 }
 
 allocation_case()
@@ -87,6 +93,7 @@ allocation_case()
     # injected allocation failure.
     case "$fault" in
         8|9|10|17) occurrence=2 ;;
+        *) : ;; # Other faults target their first occurrence.
     esac
 
     /usr/sbin/usfs_testctl arm "$fault" "$occurrence" 12 >/dev/null 2>&1 || failure=1
@@ -115,6 +122,7 @@ allocation_case()
     fi
     stop_daemon
     tap_ok "$failure" "$name fails once, records firing, and recovers"
+    return "$?"
 }
 
 write_copy_case()
@@ -137,6 +145,7 @@ write_copy_case()
 
     tap_ok "$failure" \
         "write input copy failure preserves accounting and the next write recovers"
+    return "$?"
 }
 
 create_atomic_case()
@@ -182,6 +191,7 @@ create_atomic_case()
     fi
     tap_ok "$failure" \
         "failed local CREATE allocation occurs before daemon commit and recovers"
+    return "$?"
 }
 
 trap 'usfs_owned_cleanup; rm -rf "$BASE"' 0 1 2 15

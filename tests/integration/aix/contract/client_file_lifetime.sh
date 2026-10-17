@@ -21,11 +21,13 @@ EXPECTED_CLEANUP_FAILURE=1
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 daemon_has_exited()
 {
     ! kill -0 "$DAEMON_PID" 2>/dev/null
+    return "$?"
 }
 
 start_path_daemon()
@@ -41,6 +43,7 @@ start_path_daemon()
     usfs_track_pid "$DAEMON_PID"
     usfs_track_mount "$MOUNT"
     usfs_wait_until "pathname backend mount" "$MOUNT_WAIT_SECONDS" is_mounted
+    return "$?"
 }
 
 stop_path_daemon()
@@ -73,6 +76,7 @@ cleanup_case()
     grep 'Failed to remove owned hidden file' "$DAEMON_LOG" | sed 's/^/# /'
     [[ "$failure" -eq 0 ]] || cat "$PROBE_LOG" "$DAEMON_LOG"
     tap_ok "$failure" "$cleanup_mode cleanup failure is tracked, retried and reported without losing unrelated I/O"
+    return "$?"
 }
 
 trap 'usfs_owned_cleanup; rm -rf "$BASE"' 0 1 2 15

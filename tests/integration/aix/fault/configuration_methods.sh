@@ -40,6 +40,7 @@ fi
 vfs_count()
 {
     awk '$1 == "usfs" { count += 1 } END { print count + 0 }' /etc/vfs
+    return "$?"
 }
 
 is_available()
@@ -47,18 +48,21 @@ is_available()
     [[ "$(lsdev -l usfs0 -F status 2>/dev/null)" = "Available" ]] &&
     [[ -c /dev/usfs0 ]] && [[ "$(vfs_count)" = 1 ]] &&
     /usr/sbin/usfs_testctl info >/dev/null 2>&1
+    return "$?"
 }
 
 is_defined()
 {
     [[ "$(lsdev -l usfs0 -F status 2>/dev/null)" = "Defined" ]] &&
     [[ ! -e /dev/usfs0 ]] && [[ "$(vfs_count)" = 0 ]]
+    return "$?"
 }
 
 restore_available()
 {
     /usr/lib/methods/usfs/ucfgusfs -l usfs0 >/dev/null 2>&1 || true
     mkdev -l usfs0 >/dev/null 2>&1
+    return "$?"
 }
 
 configure_failure_case()

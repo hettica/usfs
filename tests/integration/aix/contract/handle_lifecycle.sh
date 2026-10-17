@@ -32,6 +32,7 @@ PAGER_RELEASE_OPCODE=30
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 start_daemon()
@@ -46,6 +47,7 @@ start_daemon()
     usfs_track_pid "$DAEMON_PID"
     usfs_track_mount "$MOUNT"
     usfs_wait_until "handle-lifecycle mount" 30 is_mounted
+    return "$?"
 }
 
 stop_daemon()
@@ -55,17 +57,24 @@ stop_daemon()
     [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
     [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
+    return "$?"
 }
 
 action_observed()
 {
-    grep -q "^ACTION $1 " "$REQUESTS" 2>/dev/null
+    local action_name=$1
+
+    grep -q "^ACTION $action_name " "$REQUESTS" 2>/dev/null
+    return "$?"
 }
 
 status_value()
 {
-    printf '%s\n' "$1" |
-        awk -v key="$2" '{
+    local status_text=$1
+    local field_name=$2
+
+    printf '%s\n' "$status_text" |
+        awk -v key="$field_name" '{
             for (i = 1; i <= NF; i++) {
                 split($i, pair, "=")
                 if (pair[1] == key) {
@@ -74,6 +83,7 @@ status_value()
                 }
             }
         }'
+    return "$?"
 }
 
 fresh_recovery()
@@ -115,6 +125,7 @@ open_validation_case()
     fresh_recovery || failure=1
     stop_daemon
     tap_ok "$failure" "$case_label quarantines ownership and a fresh channel recovers"
+    return "$?"
 }
 
 create_validation_case()
@@ -133,6 +144,7 @@ create_validation_case()
     fresh_recovery || failure=1
     stop_daemon
     tap_ok "$failure" "$case_label quarantines ownership and a fresh channel recovers"
+    return "$?"
 }
 
 trap 'usfs_owned_cleanup; rm -rf "$BASE"' 0 1 2 15
@@ -274,6 +286,7 @@ for operation in open create; do
     case "$operation" in
         open) opcode=3; wire_operation=OPEN; filename=file ;;
         create) opcode=21; wire_operation=CREATE_ATTR; filename=signaled-new ;;
+        *) tap_diag "unexpected handle operation: $operation"; exit 1 ;;
     esac
     printf 'USFS-SCENARIO 1\n%s hold 30000 1\n' \
         "$wire_operation" >"$SCENARIO"

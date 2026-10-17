@@ -29,6 +29,7 @@ DAEMON_PID=0
 daemon_exited()
 {
     ! ps -p "$DAEMON_PID" >/dev/null 2>&1
+    return "$?"
 }
 
 cleanup()
@@ -40,6 +41,7 @@ cleanup()
     fi
     /usr/sbin/usfs_testctl reset >/dev/null 2>&1
     rm -rf "$BASE"
+    return "$?"
 }
 
 trap cleanup 0 1 2 15

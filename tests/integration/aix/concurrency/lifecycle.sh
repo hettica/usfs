@@ -41,6 +41,7 @@ PROCESS_WAIT_TIMEOUT=124
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 mount_reservation_reached()
@@ -57,11 +58,15 @@ mount_reservation_reached()
 device_status()
 {
     lsdev -l usfs0 -F status 2>/dev/null
+    return "$?"
 }
 
 process_finished()
 {
-    ! kill -0 "$1" 2>/dev/null
+    local process_id=$1
+
+    ! kill -0 "$process_id" 2>/dev/null
+    return "$?"
 }
 
 stop_owned_process()
@@ -127,6 +132,7 @@ bounded_unmount()
     local description=$1
     shift
     run_bounded_command "$description" "$COMMAND_TIMEOUT_SECONDS" umount "$@"
+    return "$?"
 }
 
 restore_device()
@@ -144,12 +150,10 @@ stop_daemon()
 {
     local stop_failed=0
 
-    if is_mounted; then
-        if ! bounded_unmount "lifecycle clean unmount" "$MOUNT" >/dev/null 2>&1; then
-            stop_failed=1
-            if [[ "$COMMAND_PID" -eq 0 ]]; then
-                bounded_unmount "lifecycle forced cleanup unmount" -f "$MOUNT" >/dev/null 2>&1 || stop_failed=1
-            fi
+    if is_mounted && ! bounded_unmount "lifecycle clean unmount" "$MOUNT" >/dev/null 2>&1; then
+        stop_failed=1
+        if [[ "$COMMAND_PID" -eq 0 ]]; then
+            bounded_unmount "lifecycle forced cleanup unmount" -f "$MOUNT" >/dev/null 2>&1 || stop_failed=1
         fi
     fi
 
@@ -201,6 +205,7 @@ no_usfs_state()
     daemons=$(ps -ef | grep -c '[u]sfs_scenario_daemon')
     users=$(fuser /dev/usfs0 2>/dev/null | wc -w | tr -d ' ')
     [[ "$mounts" = 0 ]] && [[ "$daemons" = 0 ]] && [[ "$users" = 0 ]]
+    return "$?"
 }
 
 trap 'result=$?; trap - 0; cleanup || result=1; exit "$result"' 0

@@ -29,25 +29,34 @@ DAEMON_PID=0
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 lookup_waiting()
 {
     /usr/sbin/usfs_testctl schedule-status 2>/dev/null |
         grep -q 'lookup_post=1'
+    return "$?"
 }
 
 request_count()
 {
-    awk -v opcode="$1" -v nodeid="$2" \
+    local requested_opcode=$1
+    local requested_node_id=$2
+
+    awk -v opcode="$requested_opcode" -v nodeid="$requested_node_id" \
         '$1 == opcode && $3 == nodeid { count++ }
          END { print count+0 }' "$REQUESTS" 2>/dev/null
+    return "$?"
 }
 
 status_value()
 {
-    printf '%s\n' "$1" |
-        awk -v key="$2" '
+    local status_text=$1
+    local field_name=$2
+
+    printf '%s\n' "$status_text" |
+        awk -v key="$field_name" '
             {
                 for (i = 1; i <= NF; i++) {
                     split($i, pair, "=")
@@ -59,6 +68,7 @@ status_value()
             }
             END { if (!found) print -1 }
         '
+    return "$?"
 }
 
 start_daemon()
@@ -70,6 +80,7 @@ start_daemon()
     usfs_track_pid "$DAEMON_PID"
     usfs_track_mount "$MOUNT"
     usfs_wait_until "vnode identity mount" 30 is_mounted
+    return "$?"
 }
 
 stop_daemon()
@@ -78,6 +89,7 @@ stop_daemon()
     [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
     [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
+    return "$?"
 }
 
 trap 'usfs_owned_cleanup; rm -rf "$BASE"' 0 1 2 15

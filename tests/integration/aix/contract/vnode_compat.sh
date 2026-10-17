@@ -30,6 +30,7 @@ DAEMON_PID=0
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 start_daemon()
@@ -41,12 +42,16 @@ start_daemon()
     usfs_track_pid "$DAEMON_PID"
     usfs_track_mount "$MOUNT"
     usfs_wait_until "vnode compatibility mount" 30 is_mounted
+    return "$?"
 }
 
 value()
 {
-    printf '%s\n' "$1" |
-        awk -v key="$2" '{
+    local status_text=$1
+    local field_name=$2
+
+    printf '%s\n' "$status_text" |
+        awk -v key="$field_name" '{
             for (i = 1; i <= NF; i++) {
                 split($i, pair, "=")
                 if (pair[1] == key) {
@@ -55,6 +60,7 @@ value()
                 }
             }
         }'
+    return "$?"
 }
 
 expect_success()
@@ -70,6 +76,7 @@ expect_success()
         tap_diag "$out"
         tap_ok 1 "$description succeeds after daemon acknowledgement"
     fi
+    return "$?"
 }
 
 expect_eio()
@@ -86,6 +93,7 @@ expect_eio()
         tap_diag "$out"
         tap_ok 1 "$description propagates daemon EIO"
     fi
+    return "$?"
 }
 
 expect_unsupported()
@@ -101,6 +109,7 @@ expect_unsupported()
         tap_diag "$out"
         tap_ok 1 "$description fails explicitly with ENOSYS"
     fi
+    return "$?"
 }
 
 expect_request_count()
@@ -115,6 +124,7 @@ expect_request_count()
         tap_diag "opcode=$opcode expected=$expected actual=$actual"
         tap_ok 1 "$description"
     fi
+    return "$?"
 }
 
 expect_force_sync_request_count()
@@ -129,6 +139,7 @@ expect_force_sync_request_count()
         tap_diag "force sync requests expected=$expected actual=$actual"
         tap_ok 1 "$description"
     fi
+    return "$?"
 }
 
 expect_log_line()
@@ -142,6 +153,7 @@ expect_log_line()
         tap_diag "durability details: $(grep '^DETAIL 1[89] ' "$REQUESTS" | tr '\n' ';')"
         tap_ok 1 "$description"
     fi
+    return "$?"
 }
 
 trap 'usfs_owned_cleanup; rm -rf "$BASE"' 0 1 2 15

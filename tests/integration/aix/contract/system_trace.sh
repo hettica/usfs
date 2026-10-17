@@ -23,6 +23,7 @@ cleanup()
     /usr/sbin/usfsctl trace status >/dev/null 2>&1 &&
         /usr/sbin/usfsctl trace stop >/dev/null 2>&1
     rm -rf "$BASE"
+    return "$?"
 }
 trap cleanup 0 1 2 15
 mkdir -p "$BASE"

@@ -29,6 +29,7 @@ DAEMON_PID=0
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 start_daemon()
@@ -40,6 +41,7 @@ start_daemon()
     usfs_track_pid "$DAEMON_PID"
     usfs_track_mount "$MOUNT"
     usfs_wait_until "fault-test mount" 30 is_mounted
+    return "$?"
 }
 
 stop_daemon()
@@ -48,12 +50,16 @@ stop_daemon()
     [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
     [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
+    return "$?"
 }
 
 fault_fired()
 {
+    local expected_occurrence=$1
+
     /usr/sbin/usfs_testctl status 2>/dev/null |
-        grep -q "observed=$1 fired=1 armed=0"
+        grep -q "observed=$expected_occurrence fired=1 armed=0"
+    return "$?"
 }
 
 trap 'usfs_owned_cleanup; rm -rf "$BASE"' 0 1 2 15

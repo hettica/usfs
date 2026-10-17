@@ -29,11 +29,13 @@ FD_OPEN=0
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 daemon_exited()
 {
     ! kill -0 "$DAEMON_PID" 2>/dev/null
+    return "$?"
 }
 
 close_stale_fd()
@@ -47,6 +49,7 @@ close_stale_fd()
     exec 2>&4
     exec 4>&-
     FD_OPEN=0
+    return "$?"
 }
 
 cleanup()
@@ -56,6 +59,7 @@ cleanup()
     fi
     usfs_owned_cleanup
     rm -rf "$BASE"
+    return "$?"
 }
 
 trap cleanup 0 1 2 15
@@ -173,15 +177,18 @@ done
 pair_ready()
 {
     [[ -f "$BASE/ready-read" ]] && [[ -f "$BASE/ready-write" ]]
+    return "$?"
 }
 pair_done()
 {
     ! kill -0 "$READ_PID" 2>/dev/null && ! kill -0 "$WRITE_PID" 2>/dev/null
+    return "$?"
 }
 no_stale_mounts()
 {
     /usr/sbin/usfsctl >"$BASE/status.log" 2>&1 &&
         grep -q '^mounts: 0 active, 0 stale$' "$BASE/status.log"
+    return "$?"
 }
 pair_failure=0
 for iteration in 1 2 3 4; do

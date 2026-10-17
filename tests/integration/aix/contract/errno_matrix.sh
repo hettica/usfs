@@ -29,6 +29,7 @@ DAEMON_PID=0
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 start_daemon()
@@ -40,6 +41,7 @@ start_daemon()
     usfs_track_pid "$DAEMON_PID"
     usfs_track_mount "$MOUNT"
     usfs_wait_until "errno scenario mount" 30 is_mounted
+    return "$?"
 }
 
 stop_daemon()
@@ -48,6 +50,7 @@ stop_daemon()
     [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
     [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
+    return "$?"
 }
 
 trigger()
@@ -84,7 +87,9 @@ opcode_name()
         10) echo MKDIR ;; 11) echo UNLINK ;; 12) echo RMDIR ;;
         13) echo RENAME ;; 14) echo SYMLINK ;; 15) echo LINK ;;
         16) echo SETATTR ;; 17) echo WRITE ;;
+        *) return 1 ;;
     esac
+    return "$?"
 }
 
 trap 'usfs_owned_cleanup; rm -rf "$BASE"' 0 1 2 15

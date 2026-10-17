@@ -31,11 +31,15 @@ LOOP_ITERATIONS=12
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 process_finished()
 {
-    ! kill -0 "$1" 2>/dev/null
+    local process_id=$1
+
+    ! kill -0 "$process_id" 2>/dev/null
+    return "$?"
 }
 
 stop_owned_process()
@@ -103,6 +107,7 @@ bounded_unmount()
     local description=$1
     shift
     run_bounded_command "$description" "$CASE_TIMEOUT_SECONDS" umount "$@"
+    return "$?"
 }
 
 stop_backend()
@@ -110,13 +115,11 @@ stop_backend()
     local recovery_mode=${1:-clean}
     local stop_failed=0
 
-    if is_mounted; then
-        if ! bounded_unmount "FID clean unmount" "$MOUNT" >/dev/null 2>&1; then
-            if [[ "$recovery_mode" != daemon-loss ]]; then stop_failed=1; fi
-            if [[ "$COMMAND_PID" -ne 0 ]] ||
-               ! bounded_unmount "FID forced cleanup unmount" -f "$MOUNT" >/dev/null 2>&1; then
-                stop_failed=1
-            fi
+    if is_mounted && ! bounded_unmount "FID clean unmount" "$MOUNT" >/dev/null 2>&1; then
+        if [[ "$recovery_mode" != daemon-loss ]]; then stop_failed=1; fi
+        if [[ "$COMMAND_PID" -ne 0 ]] ||
+           ! bounded_unmount "FID forced cleanup unmount" -f "$MOUNT" >/dev/null 2>&1; then
+            stop_failed=1
         fi
     fi
 
@@ -233,11 +236,13 @@ read_node_counts()
             created=*) NODE_CREATED=${field#created=} ;;
             reclaimed=*) NODE_RECLAIMED=${field#reclaimed=} ;;
             live=*) NODE_LIVE=${field#live=} ;;
+            *) : ;; # Ignore status fields unrelated to node accounting.
         esac
     done
 
     case "$NODE_CREATED:$NODE_RECLAIMED:$NODE_LIVE" in
         *[!0-9:]* | :* | *::* | *:) return 1 ;;
+        *) : ;; # All three accounting values are present and numeric.
     esac
 
     return 0

@@ -22,7 +22,10 @@ RESTORE_NEEDED=1
 
 remote()
 {
-    bash -c "$1"
+    local command_text=$1
+
+    bash -c "$command_text"
+    return "$?"
 }
 
 foreign_trace_collision()
@@ -38,6 +41,7 @@ foreign_trace_collision()
              >/dev/null 2>&1; then
             restored=1
         fi
+        return "$?"
     }
     trap cleanup_foreign EXIT HUP INT TERM
     /usr/bin/trcupdate -o /usr/lib/ras/usfs_trace_remove >/dev/null || return 1
@@ -48,7 +52,7 @@ foreign_trace_collision()
     fi
     cleanup_foreign
     trap - EXIT HUP INT TERM
-    [ "$restored" -eq 1 ]
+    [[ "$restored" -eq 1 ]]
 )
 
 build_release()
@@ -75,13 +79,13 @@ retained_registration_case()
     case_root="$BUILD_ROOT/recovery-$kind"
     methods=/usr/lib/methods/usfs
     mkdir -p "$case_root"
-    if [ "$kind" = cleanup ]; then
-        test -x "${USFS_BINARY_DIR:?}/testing/bin/cfgusfs"
+    if [[ "$kind" = cleanup ]]; then
+        [[ -x "${USFS_BINARY_DIR:?}/testing/bin/cfgusfs" ]]
         "$methods/ucfgusfs" -l usfs0
         bash "$ROOT/scripts/aix/install-variant.sh" testing "$ROOT" "$USFS_BINARY_DIR"
         if USFS_TEST_INIT_FAULT=18 USFS_TEST_INIT_ERRNO=16 mkdev -l usfs0 \
             >"$case_root/init.log" 2>&1; then exit 1; fi
-        test -c /dev/usfs0
+        [[ -c /dev/usfs0 ]]
     else
         # DEFINED=0 and AVAILABLE=1 in AIX /usr/include/sys/cfgdb.h.
         # Change only ODM's view, retaining the active production registration.
@@ -91,7 +95,7 @@ retained_registration_case()
         /usr/sbin/usfsctl >"$case_root/active.log"
         grep -q '^kext: ACTIVE$' "$case_root/active.log"
     fi
-    test "$(lsdev -l usfs0 -F status)" = Defined
+    [[ "$(lsdev -l usfs0 -F status)" = Defined ]]
     cp -p "$methods/ucfgusfs" "$case_root/ucfgusfs"
     restore_case()
     {
@@ -112,16 +116,16 @@ if echo "$line" | grep -q Available; then /usr/sbin/rmdev -l usfs0 || exit 1; fi
 exit 0
 EOF
     chmod 550 "$methods/package_lifecycle"
-    if [ "$kind" = missing ]; then
+    if [[ "$kind" = missing ]]; then
         chmod 440 "$methods/ucfgusfs"
-    elif [ "$kind" = failed ]; then
+    elif [[ "$kind" = failed ]]; then
         cat >"$methods/ucfgusfs" <<'EOF'
 #!/usr/bin/ksh
 exit 1
 EOF
         chmod 550 "$methods/ucfgusfs"
     fi
-    if [ "$kind" = missing ] || [ "$kind" = failed ]; then
+    if [[ "$kind" = missing ]] || [[ "$kind" = failed ]]; then
         perl "$ROOT/scripts/aix/sha256.pl" /usr/lib/drivers/usfs/usfs.kext \
             "$methods/ucfgusfs" "$methods/package_lifecycle" >"$case_root/before"
         rpm -q usfs >"$case_root/version-before"
@@ -131,7 +135,7 @@ EOF
         rpm -q usfs >"$case_root/version-after"
         cmp "$case_root/before" "$case_root/after"
         cmp "$case_root/version-before" "$case_root/version-after"
-        test "$(lsdev -l usfs0 -F status)" = Defined
+        [[ "$(lsdev -l usfs0 -F status)" = Defined ]]
         cp -p "$case_root/ucfgusfs" "$methods/ucfgusfs"
     fi
     rpm -Uvh --replacepkgs "$R1" >"$case_root/replace.log" 2>&1
@@ -149,7 +153,7 @@ activate_release()
 {
     directory=$1
     bash "$ROOT/scripts/aix/cleanup.sh" >/dev/null 2>&1 || return 1
-    if [ -x /usr/lib/methods/usfs/ucfgusfs ]; then
+    if [[ -x /usr/lib/methods/usfs/ucfgusfs ]]; then
         /usr/lib/methods/usfs/ucfgusfs -l usfs0 >/dev/null || return 1
     fi
     bash "$ROOT/scripts/aix/install-variant.sh" release "$ROOT" "$directory" || return
@@ -160,6 +164,7 @@ ok()
 {
     TEST_NUMBER=$((TEST_NUMBER + 1))
     echo "ok $TEST_NUMBER - $1"
+    return "$?"
 }
 
 not_ok()
@@ -167,6 +172,7 @@ not_ok()
     TEST_NUMBER=$((TEST_NUMBER + 1))
     echo "not ok $TEST_NUMBER - $1"
     TEST_FAILED=1
+    return "$?"
 }
 
 check()
@@ -176,18 +182,19 @@ check()
     # Do not suppress errexit inside transaction-test subshells.
     "$@"
     result=$?
-    if [ "$result" -eq 0 ]; then
+    if [[ "$result" -eq 0 ]]; then
         ok "$description"
     else
         not_ok "$description"
     fi
+    return "$?"
 }
 
 restore_development_install()
 {
     status=$?
     trap - EXIT HUP INT TERM
-    if [ "$RESTORE_NEEDED" -eq 0 ]; then
+    if [[ "$RESTORE_NEEDED" -eq 0 ]]; then
         exit "$status"
     fi
     echo "# restoring ordinary release build" >&2
@@ -262,7 +269,7 @@ erase_defined()
     sed 's/status = 1/status = 0/' "$BUILD_ROOT/erase-device" >"$BUILD_ROOT/erase-defined"
     odmchange -o CuDv -q 'name=usfs0' "$BUILD_ROOT/erase-defined" || return 1
     rpm -e usfs >"$BUILD_ROOT/erase-defined.log" 2>&1 || return 1
-    test ! -e /dev/usfs0 && test ! -e /usr/lib/drivers/usfs/usfs.kext &&
+    [[ ! -e /dev/usfs0 ]] && [[ ! -e /usr/lib/drivers/usfs/usfs.kext ]] &&
         ! grep -q '^usfs[[:space:]]' /etc/vfs
 }
 check "erasure cleans a retained ACTIVE registration even when ODM says Defined" erase_defined
@@ -273,4 +280,4 @@ else
     TEST_FAILED=1
 fi
 
-[ "$TEST_FAILED" -eq 0 ]
+[[ "$TEST_FAILED" -eq 0 ]]

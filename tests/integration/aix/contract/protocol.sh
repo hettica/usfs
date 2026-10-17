@@ -29,6 +29,7 @@ BARRIERS=$BASE/barriers
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 start_daemon()
@@ -43,6 +44,7 @@ start_daemon()
     usfs_track_pid "$DAEMON_PID"
     usfs_track_mount "$MOUNT"
     usfs_wait_until "scenario mount" 30 is_mounted
+    return "$?"
 }
 
 stop_daemon()
@@ -53,11 +55,15 @@ stop_daemon()
     usfs_wait_until "scenario daemon exit" 15 sh -c "! ps -p $DAEMON_PID >/dev/null 2>&1"
     wait "$DAEMON_PID" 2>/dev/null
     rmdir "$MOUNT" 2>/dev/null
+    return "$?"
 }
 
 has_opcode()
 {
-    awk -v opcode="$1" '$1 == opcode { found=1 } END { exit !found }' "$REQUESTS"
+    local requested_opcode=$1
+
+    awk -v opcode="$requested_opcode" '$1 == opcode { found=1 } END { exit !found }' "$REQUESTS"
+    return "$?"
 }
 
 mutation()
@@ -73,6 +79,8 @@ mutation()
 
 rejected_reply_case()
 {
+    local case_description=$2
+
     action=$1
     tap_diag "scenario action=$action"
     rm -f "$REQUESTS" "$DAEMON_LOG"
@@ -84,7 +92,8 @@ rejected_reply_case()
         failure=1
     fi
     stop_daemon >/dev/null 2>&1
-    tap_ok "$failure" "$2"
+    tap_ok "$failure" "$case_description"
+    return "$?"
 }
 
 trap 'usfs_owned_cleanup; rm -rf "$BASE"' 0 1 2 15

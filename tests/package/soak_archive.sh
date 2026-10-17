@@ -35,16 +35,22 @@ report()
         echo "not ok $NUMBER - $description"
         FAILED=1
     fi
+    return "$?"
 }
 
 remote()
 {
-    bash -c "$1"
+    local command_text=$1
+
+    bash -c "$command_text"
+    return "$?"
 }
 
 remote_with_heartbeat()
 {
-    bash -c "$1" &
+    local command_text=$1
+
+    bash -c "$command_text" &
     remote_pid=$!
     elapsed=0
     while kill -0 "$remote_pid" 2>/dev/null; do
@@ -55,6 +61,7 @@ remote_with_heartbeat()
         fi
     done
     wait "$remote_pid"
+    return "$?"
 }
 
 restore()
@@ -66,6 +73,7 @@ restore()
     bash "$ROOT/scripts/aix/install-variant.sh" release "$ROOT" "$BUILD_ROOT" \
         >/dev/null 2>&1 || true
     bash "$ROOT/scripts/aix/setup.sh" >/dev/null 2>&1 || true
+    return "$?"
 }
 trap restore EXIT HUP INT TERM
 
@@ -111,4 +119,4 @@ report "nested and isolated lifecycle journeys pass" remote "cd /var/tmp/$NAME.c
 
 restore
 trap - EXIT HUP INT TERM
-[ "$FAILED" -eq 0 ]
+[[ "$FAILED" -eq 0 ]]

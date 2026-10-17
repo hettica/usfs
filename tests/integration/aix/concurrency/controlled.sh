@@ -29,11 +29,13 @@ DAEMON_PID=0
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 request_seen()
 {
     [[ -f "$REQUESTS" ]] && awk '$1 == 1 { found=1 } END { exit !found }' "$REQUESTS"
+    return "$?"
 }
 
 start_daemon()
@@ -45,6 +47,7 @@ start_daemon()
     usfs_track_pid "$DAEMON_PID"
     usfs_track_mount "$MOUNT"
     usfs_wait_until "concurrency mount" 30 is_mounted
+    return "$?"
 }
 
 stop_daemon()
@@ -53,6 +56,7 @@ stop_daemon()
     [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
     [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
+    return "$?"
 }
 
 no_usfs_state()
@@ -60,6 +64,7 @@ no_usfs_state()
     mounts=$(mount 2>/dev/null | awk '$3 == "usfs" { n++ } END { print n+0 }')
     daemons=$(ps -ef | grep -c '[u]sfs_scenario_daemon')
     [[ "$mounts" = 0 ]] && [[ "$daemons" = 0 ]]
+    return "$?"
 }
 
 trap 'usfs_owned_cleanup; rm -rf "$BASE"' 0 1 2 15

@@ -33,6 +33,7 @@ ensure_defined()
 restore_available()
 {
     mkdev -l usfs0 >/dev/null 2>&1
+    return "$?"
 }
 
 init_failure_case()

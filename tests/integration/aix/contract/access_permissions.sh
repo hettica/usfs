@@ -23,12 +23,14 @@ MOUNT=$BASE/mnt
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 cleanup()
 {
     usfs_owned_cleanup
     rm -rf "$BASE"
+    return "$?"
 }
 
 # This deliberate multiuser fixture grants search, without directory listing,

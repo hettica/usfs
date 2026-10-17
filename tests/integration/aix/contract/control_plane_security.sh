@@ -17,7 +17,7 @@ NODE=/dev/usfs0
 SCENARIO_DAEMON=${USFS_SCENARIO_DAEMON:-/usr/sbin/usfs_scenario_daemon}
 DAEMON_PROBE=${USFS_PROBE:-/usr/sbin/usfs_probe}
 
-if [ ! -x "$DAEMON_PROBE" ]; then
+if [[ ! -x "$DAEMON_PROBE" ]]; then
     echo "Failed to run control-plane tests: probe is not executable: $DAEMON_PROBE" >&2
     exit 1
 fi
@@ -32,6 +32,7 @@ restore_mode()
     chmod 660 "$NODE" 2>/dev/null
     chown root:system "$NODE" 2>/dev/null
     rm -rf "$BASE"
+    return "$?"
 }
 
 trap restore_mode 0 1 2 15

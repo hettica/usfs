@@ -31,11 +31,13 @@ READER_PIDS=""
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 daemon_exited()
 {
     ! ps -p "$DAEMON_PID" >/dev/null 2>&1
+    return "$?"
 }
 
 start_daemon()
@@ -58,6 +60,7 @@ start_daemon()
     usfs_track_pid "$DAEMON_PID"
     usfs_track_mount "$MOUNT"
     usfs_wait_until "disconnect-matrix mount" 30 is_mounted
+    return "$?"
 }
 
 stop_daemon()
@@ -66,12 +69,14 @@ stop_daemon()
     [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
     [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
+    return "$?"
 }
 
 kill_daemon()
 {
     kill -TERM "$DAEMON_PID" 2>/dev/null
     usfs_wait_until "scenario daemon exit" 15 daemon_exited
+    return "$?"
 }
 
 spawn_reader()
@@ -85,6 +90,7 @@ spawn_reader()
     pid=$!
     READER_PIDS="$READER_PIDS $pid"
     usfs_track_pid "$pid"
+    return "$?"
 }
 
 readers_done()
@@ -92,6 +98,7 @@ readers_done()
     expected=$1
     count=$(find "$BASE" -name 'reader.*.rc' -print 2>/dev/null | wc -l)
     [[ "$count" -eq "$expected" ]]
+    return "$?"
 }
 
 wait_readers_failed()
@@ -112,6 +119,7 @@ wait_readers_failed()
         case "$rc" in
             ""|*[!0-9]*) failures=$((failures + 1)) ;;
             0) failures=$((failures + 1)) ;;
+            *) : ;; # A nonzero reader status is expected after disconnect.
         esac
         index=$((index + 1))
     done
@@ -122,6 +130,7 @@ reset_readers()
 {
     READER_PIDS=""
     rm -f "$BASE"/reader.*.out "$BASE"/reader.*.err "$BASE"/reader.*.rc
+    return "$?"
 }
 
 recovery_works()
@@ -142,6 +151,7 @@ no_usfs_state()
     mounts=$(mount 2>/dev/null | awk '$3 == "usfs" { n++ } END { print n+0 }')
     daemons=$(ps -ef | grep -c '[u]sfs_scenario_daemon')
     [[ "$mounts" = 0 ]] && [[ "$daemons" = 0 ]]
+    return "$?"
 }
 
 trap 'usfs_owned_cleanup; rm -rf "$BASE"' 0 1 2 15

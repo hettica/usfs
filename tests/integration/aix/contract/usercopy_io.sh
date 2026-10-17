@@ -29,6 +29,7 @@ DAEMON_PID=0
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 start_daemon()
@@ -40,6 +41,7 @@ start_daemon()
     usfs_track_pid "$DAEMON_PID"
     usfs_track_mount "$MOUNT"
     usfs_wait_until "user-copy mount" 30 is_mounted
+    return "$?"
 }
 
 stop_daemon()
@@ -48,12 +50,16 @@ stop_daemon()
     [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
     [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
+    return "$?"
 }
 
 opcode_count()
 {
-    awk -v opcode="$1" '$1 == opcode { count++ } END { print count+0 }' \
+    local requested_opcode=$1
+
+    awk -v opcode="$requested_opcode" '$1 == opcode { count++ } END { print count+0 }' \
         "$REQUESTS" 2>/dev/null
+    return "$?"
 }
 
 trap 'usfs_owned_cleanup; rm -rf "$BASE"' 0 1 2 15

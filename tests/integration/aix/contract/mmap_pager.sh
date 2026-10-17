@@ -34,26 +34,31 @@ PAGER_WRITE_OPCODE=29
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 daemon_exited()
 {
     ! ps -p "$DAEMON_PID" >/dev/null 2>&1
+    return "$?"
 }
 
 probe_done()
 {
     [[ -f "$BASE/probe.rc" ]]
+    return "$?"
 }
 
 probe_exited()
 {
     ! ps -p "$PROBE_PID" >/dev/null 2>&1
+    return "$?"
 }
 
 background_sync_recorded()
 {
     awk '$1 == 20 && $7 == 0 { found=1 } END { exit !found }' "$REQUESTS"
+    return "$?"
 }
 
 start_daemon()
@@ -71,6 +76,7 @@ start_daemon()
     usfs_track_pid "$DAEMON_PID"
     usfs_track_mount "$MOUNT"
     usfs_wait_until "mmap pager mount" 30 is_mounted
+    return "$?"
 }
 
 stop_daemon()
@@ -79,12 +85,14 @@ stop_daemon()
     [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
     [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
+    return "$?"
 }
 
 kill_daemon()
 {
     kill -TERM "$DAEMON_PID" 2>/dev/null
     usfs_wait_until "scenario daemon exit" 15 daemon_exited
+    return "$?"
 }
 
 spawn_probe()
@@ -96,6 +104,7 @@ spawn_probe()
     ) &
     PROBE_PID=$!
     usfs_track_pid "$PROBE_PID"
+    return "$?"
 }
 
 spawn_probe_direct()
@@ -104,6 +113,7 @@ spawn_probe_direct()
     "$@" >"$BASE/probe.out" 2>"$BASE/probe.err" &
     PROBE_PID=$!
     usfs_track_pid "$PROBE_PID"
+    return "$?"
 }
 
 wait_probe()
@@ -124,6 +134,7 @@ probe_faulted()
 {
     echo "$PROBE_OUT" | grep -q 'result=-1' &&
         echo "$PROBE_OUT" | grep -q 'signal=[1-9]'
+    return "$?"
 }
 
 recovery_works()
@@ -147,6 +158,7 @@ no_usfs_state()
     mounts=$(mount 2>/dev/null | awk '$3 == "usfs" { n++ } END { print n+0 }')
     daemons=$(ps -ef | grep -c '[u]sfs_scenario_daemon')
     [[ "$mounts" = 0 ]] && [[ "$daemons" = 0 ]]
+    return "$?"
 }
 
 trap 'usfs_owned_cleanup; rm -rf "$BASE"' 0 1 2 15
@@ -358,6 +370,7 @@ wait_probe || allocation_failure=1
 if ! probe_faulted; then
     case "$PROBE_RC" in
         ""|0|*[!0-9]*) allocation_failure=1 ;;
+        *) : ;; # A nonzero probe status is expected after the injected fault.
     esac
 fi
 stop_daemon
@@ -386,7 +399,10 @@ for kind in file range filesystem range-zero range-zero-eof range-zero-nocache r
     wait_probe || sync_failure=1
     echo "$PROBE_OUT" | grep -q 'first=0 first_errno=0 second=0 second_errno=0' || sync_failure=1
     sync_probe_pid=$(printf '%s\n' "$PROBE_OUT" | sed -n 's/.* pid=\([0-9][0-9]*\).*/\1/p')
-    case "$sync_probe_pid" in ""|0|*[!0-9]*) sync_failure=1 ;; esac
+    case "$sync_probe_pid" in
+        ""|0|*[!0-9]*) sync_failure=1 ;;
+        *) : ;; # A positive numeric probe PID is valid.
+    esac
     if [[ "$kind" = filesystem ]]; then
         echo "$PROBE_OUT" | grep -q 'descriptors_closed=1' || sync_failure=1
     fi
@@ -410,6 +426,7 @@ for kind in file range filesystem range-zero range-zero-eof range-zero-nocache r
                  }
                  END { exit (!barrier || bad) }' "$REQUESTS" || sync_failure=1
             ;;
+        *) : ;; # Other sync variants do not exercise a zero-length range.
     esac
     [[ "$sync_failure" -eq 0 ]] || {
         tap_diag "$kind sync: rc=$PROBE_RC out=$PROBE_OUT"
@@ -428,7 +445,10 @@ for kind in file range filesystem range-zero range-zero-eof range-zero-nocache r
     wait_probe || sync_failure=1
     echo "$PROBE_OUT" | grep -q 'first=-1 first_errno=5 second=-1 second_errno=5' || sync_failure=1
     sync_probe_pid=$(printf '%s\n' "$PROBE_OUT" | sed -n 's/.* pid=\([0-9][0-9]*\).*/\1/p')
-    case "$sync_probe_pid" in ""|0|*[!0-9]*) sync_failure=1 ;; esac
+    case "$sync_probe_pid" in
+        ""|0|*[!0-9]*) sync_failure=1 ;;
+        *) : ;; # A positive numeric probe PID is valid.
+    esac
     awk -v probe="$sync_probe_pid" '($1 == 19 || $1 == 20) && $7 == probe { found=1 }
         END { exit !found }' "$REQUESTS" && sync_failure=1
     [[ "$sync_failure" -eq 0 ]] || tap_diag "$kind writeback: $PROBE_OUT"

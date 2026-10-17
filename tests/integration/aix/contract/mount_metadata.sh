@@ -29,6 +29,7 @@ DAEMON_PID=0
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 corruption_case()
@@ -69,6 +70,7 @@ corruption_case()
         umount -f "$MOUNT" >/dev/null 2>&1
 
     tap_ok "$failure" "$description is rejected without publishing a mount"
+    return "$?"
 }
 
 normal_mount_recovers()
@@ -97,6 +99,7 @@ normal_mount_recovers()
     tap_ok $(grep -q SECOND_MOUNT_BUSY "$DAEMON_LOG" &&
              ! mount | grep -q " $BASE/second "; echo $?) \
         "same connection rejects a second mount before publication"
+    return "$?"
 }
 
 readonly_mount()
@@ -122,6 +125,7 @@ readonly_mount()
     DAEMON_PID=0
     [[ "$failure" -eq 0 ]] || cat "$DAEMON_LOG" "$REQUESTS"
     tap_ok "$failure" "$policy blocks every mutation while retaining readable data"
+    return "$?"
 }
 
 usfs_track_mount "$BASE/second"
@@ -151,7 +155,10 @@ esac
 count=$(mount | awk -v a="$MOUNT" -v b="$BASE/second" '$2==a || $2==b {n++} END {print n+0}')
 [[ "$count" -eq 1 ]] || race_failure=1
 if [[ -n "$winner" ]]; then
-    case "$winner" in "$MOUNT"|"$BASE/second") umount "$winner" || race_failure=1 ;; esac
+    case "$winner" in
+        "$MOUNT"|"$BASE/second") umount "$winner" || race_failure=1 ;;
+        *) race_failure=1 ;;
+    esac
 fi
 kill -TERM "$DAEMON_PID" 2>/dev/null
 wait "$DAEMON_PID" 2>/dev/null || race_failure=1

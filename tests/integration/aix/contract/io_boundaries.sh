@@ -33,6 +33,7 @@ LAST_OFFSET=9223372036854775806
 is_mounted()
 {
     mount 2>/dev/null | grep -q " $MOUNT "
+    return "$?"
 }
 
 start_daemon()
@@ -59,6 +60,7 @@ start_daemon()
     usfs_track_pid "$DAEMON_PID"
     usfs_track_mount "$MOUNT"
     usfs_wait_until "I/O boundary mount" 30 is_mounted
+    return "$?"
 }
 
 stop_daemon()
@@ -67,12 +69,16 @@ stop_daemon()
     [[ "$DAEMON_PID" -eq 0 ]] || kill -TERM "$DAEMON_PID" 2>/dev/null
     [[ "$DAEMON_PID" -eq 0 ]] || wait "$DAEMON_PID" 2>/dev/null
     DAEMON_PID=0
+    return "$?"
 }
 
 value()
 {
-    printf '%s\n' "$1" |
-        awk -v key="$2" '{
+    local status_text=$1
+    local field_name=$2
+
+    printf '%s\n' "$status_text" |
+        awk -v key="$field_name" '{
             for (i = 1; i <= NF; i++) {
                 split($i, pair, "=")
                 if (pair[1] == key) {
@@ -81,21 +87,28 @@ value()
                 }
             }
         }'
+    return "$?"
 }
 
 detail_count()
 {
-    awk -v opcode="$1" '$1 == "DETAIL" && $2 == opcode { count++ }
+    local requested_opcode=$1
+
+    awk -v opcode="$requested_opcode" '$1 == "DETAIL" && $2 == opcode { count++ }
         END { print count+0 }' "$REQUESTS" 2>/dev/null
+    return "$?"
 }
 
 details_equal()
 {
+    local requested_opcode=$2
+
     expected=$1
-    actual=$(awk -v opcode="$2" '$1 == "DETAIL" && $2 == opcode {
+    actual=$(awk -v opcode="$requested_opcode" '$1 == "DETAIL" && $2 == opcode {
         print $3, $4
     }' "$REQUESTS" 2>/dev/null)
     [[ "$actual" = "$expected" ]]
+    return "$?"
 }
 
 trap 'usfs_owned_cleanup; rm -rf "$BASE"' 0 1 2 15
