@@ -12,7 +12,7 @@ require_environment_variable()
 {
     local variable_name=$1
 
-    if [ -n "${!variable_name:-}" ]; then
+    if [[ -n "${!variable_name:-}" ]]; then
         return
     fi
 
@@ -29,11 +29,13 @@ load_aix_ssh_options()
 
     read -r -a aix_ssh_options <<< "$AIX_SSH_OPTIONS"
     aix_ssh_options+=(-p "$AIX_PORT")
+    return "$?"
 }
 
 run_aix_ssh_command()
 {
     ssh "${aix_ssh_options[@]}" "$AIX_USER@$AIX_HOST" "$@"
+    return "$?"
 }
 
 upload_sources_to_aix()
@@ -42,6 +44,7 @@ upload_sources_to_aix()
 
     tar -C "$RUNNER_SOURCE_DIR" --exclude=.git -cf - . |
         run_aix_ssh_command "cd '$AIX_SOURCE_DIR' && tar -xf -"
+    return "$?"
 }
 
 configure_aix_build()
@@ -51,4 +54,5 @@ configure_aix_build()
         cd '$AIX_SOURCE_DIR'
         cmake -S . -B build
     "
+    return "$?"
 }

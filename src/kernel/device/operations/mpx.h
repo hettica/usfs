@@ -53,7 +53,7 @@ static struct usfs_connection * create_connection (void)
 {
     static const int alignment = 4;
     static const short connection_lock_class = SHRT_MAX - 4;
-    static uint64_t cookie_state = 0x9E3779B97F4A7C15ull;
+    static uint64_t cookie_state = 0x9E3779B97F4A7C15ULL;
 
     struct usfs_connection * connection = usfs_kmalloc (USFS_ALLOC_CONNECTION, sizeof (*connection), alignment, kernel_heap);
     if (connection == NULL)
@@ -78,7 +78,7 @@ static struct usfs_connection * create_connection (void)
     );
 
     // Create a mount cookie (simple pseudo-random number generator, is not cryptographically secure)
-    cookie_state = cookie_state * 6364136223846793005ull + 1442695040888963407ull;
+    cookie_state = cookie_state * 6364136223846793005ULL + 1442695040888963407ULL;
     connection->cookie = cookie_state ^ (unsigned long)connection;
     return connection;
 }
@@ -87,6 +87,25 @@ static void free_connection (struct usfs_connection * connection)
 {
     lock_free (&connection->lock);
     xmfree (connection, kernel_heap);
+}
+
+/* Caller holds both lifecycle and connection-table locks. */
+static int publish_connection (struct usfs_connection * connection, chan_t * output_channel)
+{
+    for (int i = 0; i < USFS_MAX_CONNECTIONS; i++)
+    {
+        if (g_connections[i] != NULL)
+            continue;
+
+        connection->channel = i;
+        connection->request_timeout_ms = g_usfs_runtime_limits.request_timeout_ms;
+        connection->pager_timeout_ms = g_usfs_runtime_limits.pager_timeout_ms;
+        connection->max_outstanding_requests = g_usfs_runtime_limits.max_outstanding_requests;
+        g_connections[i] = connection;
+        *output_channel = i;
+        return 0;
+    }
+    return EBUSY;
 }
 
 static int admit_connection (struct usfs_connection * connection, chan_t * output_channel)
@@ -99,20 +118,7 @@ static int admit_connection (struct usfs_connection * connection, chan_t * outpu
 
         synchronized_with (g_connections_table_lock)
         {
-            for (int i = 0; i < USFS_MAX_CONNECTIONS; i++)
-            {
-                if (g_connections[i] != NULL)
-                    continue;
-
-                // Initialize connection from the current runtime defaults
-                connection->channel = i;
-                connection->request_timeout_ms = g_usfs_runtime_limits.request_timeout_ms;
-                connection->pager_timeout_ms = g_usfs_runtime_limits.pager_timeout_ms;
-                connection->max_outstanding_requests = g_usfs_runtime_limits.max_outstanding_requests;
-                g_connections[i] = connection;
-                *output_channel = i;
-                return 0;
-            }
+            return publish_connection (connection, output_channel);
         }
     }
 
@@ -140,7 +146,8 @@ static int handle_admission_failure (const int admission_rc, struct usfs_connect
 
 static int process_mpx (const dev_t device_number, chan_t * output_value, const char * channel_name)
 {
-    ignore_parameter device_number; //! todo: reject not owning devices
+    if (!usfs_device_number_valid (device_number))
+        return ENXIO;
 
     if (output_value == NULL)
         return EINVAL;

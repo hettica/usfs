@@ -18,7 +18,7 @@ static int usfs_dev_select (const dev_t device_number, const int promoted_events
 
     synchronized_with (connection->lock)
     {
-        if ((events & POLLIN) && connection->pending_requests_head != NULL)
+        if ((events & POLLIN) && connection->requests.pending_requests_head != NULL)
             *returned |= POLLIN;
         if (connection->state == USFS_CONN_CLOSED)
             *returned |= events & (POLLIN | POLLHUP);

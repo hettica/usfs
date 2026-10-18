@@ -11,8 +11,8 @@ readonly build_root=$2
 readonly output_root=$3
 readonly mountpoint=$4
 readonly application_uid=10000
-test "$(uname -s)" = AIX
-test "$(id -u)" -eq 0
+[[ "$(uname -s)" = AIX ]]
+[[ "$(id -u)" -eq 0 ]]
 cmp "$build_root/bin/usfs.kext" /usr/lib/drivers/usfs/usfs.kext
 if mount | awk '$3 == "usfs" { found=1 } END { exit !found }'; then
     echo 'Failed to reserve identity campaign: another USFS mount exists' >&2

@@ -121,9 +121,17 @@ struct usfs_request
     uint64_t started_ns;
 };
 
-// todo: rename to rpc connection?
+/* Owns a multiplexed device channel and its request/reply lifetimes. */
+struct usfs_request_queues
+{
+    struct usfs_request * pending_requests_head;   // First request waiting for delivery to the daemon.
+    struct usfs_request * pending_requests_tail;   // Last request waiting for delivery to the daemon.
+    struct usfs_request * delivered_requests_head; // First delivered request awaiting a daemon reply.
+};
+
 struct usfs_connection
 {
+    struct usfs_request_queues requests;
     Simple_lock lock; // Serializes access to this connection's mutable state.
     int state;        // Current connection lifecycle state.
     chan_t channel;   // Multiplexed device channel that identifies this connection.
@@ -135,9 +143,6 @@ struct usfs_connection
     int mounts_counter;                            // Number of mounts bound to this connection.
     uint64_t next_request_number;                  // Next unique identifier assigned to a request.
     tid_t read_queue_event;                        // Event used to wake daemon readers waiting for requests.
-    struct usfs_request * pending_requests_head;   // First request waiting for delivery to the daemon.
-    struct usfs_request * pending_requests_tail;   // Last request waiting for delivery to the daemon.
-    struct usfs_request * delivered_requests_head; // First delivered request awaiting a daemon reply.
     uint32_t request_timeout_ms;                   // Reply deadline for ordinary filesystem requests.
     uint32_t pager_timeout_ms;                     // Reply deadline for pager requests.
     uint32_t max_outstanding_requests;             // Per-connection limit on accepted requests.
@@ -169,8 +174,15 @@ struct usfs_open_state
     uint32_t operation_refs;
 };
 
+struct usfs_node_lock_occurrences
+{
+    short gn_lock_occurrence;
+    short vn_lock_occurrence;
+};
+
 struct usfs_node
 {
+    struct usfs_node_lock_occurrences lock_occurrences;
     struct usfs_node * next;
     struct gnode * gn;
     struct vnode * vn;
@@ -191,8 +203,6 @@ struct usfs_node
     int writeback_error;
     Complex_lock pageout_lock;  /* backend pageout versus truncate */
     Complex_lock mutation_lock; /* process write syscall and truncate ownership */
-    short gn_lock_occurrence;
-    short vn_lock_occurrence;
 };
 
 struct usfs_mount_data
@@ -370,5 +380,6 @@ int register_fs_implementation (void);
 void init_device_driver_descriptor (void);
 
 int usfs_kext_entry (dev_t device_number, int command, struct uio * user_io_request);
+int usfs_device_number_valid (dev_t device_number);
 
 #endif

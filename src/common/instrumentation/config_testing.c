@@ -100,11 +100,9 @@ int usfs_config_instrumentation_checkpoint (const enum usfs_config_method_checkp
 {
     const char * fault_text = getenv ("USFS_TEST_METHOD_FAULT");
 
-    if (checkpoint == USFS_CONFIG_METHOD_LOCKED)
-    {
-        if (process_locked_checkpoint () != 0)
-            return 1;
-    }
+    if (checkpoint == USFS_CONFIG_METHOD_LOCKED &&
+        process_locked_checkpoint () != 0)
+        return 1;
 
     if (fault_text == NULL)
         return 0;

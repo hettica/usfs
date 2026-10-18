@@ -7,7 +7,7 @@
 static int request_link_target (
     const struct usfs_mount_data * mount_data,
     const struct usfs_node * node,
-    struct ucred * credentials,
+    const struct ucred * credentials,
     struct usfs_request ** result_request
 )
 {

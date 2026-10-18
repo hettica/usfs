@@ -15,7 +15,7 @@ int is_channel_valid (const chan_t channel)
 
 static struct usfs_request ** find_link_to_request (struct usfs_connection * connection, const struct usfs_request * request)
 {
-    struct usfs_request ** current_link = &connection->pending_requests_head;
+    struct usfs_request ** current_link = &connection->requests.pending_requests_head;
 
     while (*current_link != NULL && *current_link != request)
         current_link = &(*current_link)->next;
@@ -45,13 +45,13 @@ int remove_request_from_pending_queue (struct usfs_connection * connection, stru
     if (*request_link != request)
         return false;
 
-    const int removing_tail = connection->pending_requests_tail == request;
+    const int removing_tail = connection->requests.pending_requests_tail == request;
 
     *request_link = request->next;
     request->next = NULL;
 
     if (removing_tail)
-        connection->pending_requests_tail = find_queue_tail (connection->pending_requests_head);
+        connection->requests.pending_requests_tail = find_queue_tail (connection->requests.pending_requests_head);
 
     return true;
 }

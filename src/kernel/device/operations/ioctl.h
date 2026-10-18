@@ -66,7 +66,10 @@ static int get_runtime_config (void * user_space_buffer, const chan_t channel)
 
     struct usfs_connection * const collector = get_connection_by_channel (channel);
 
-    if (collector != NULL) //! todo: properly handle this with corresponding RC; should not be possible tho
+    if (collector == NULL && channel != USFS_STATUS_CHANNEL)
+        return ENXIO;
+
+    if (collector != NULL)
     {
         synchronized_with (collector->lock)
         {
@@ -96,18 +99,8 @@ static int set_runtime_config (void * user_space_buffer)
     return set_kext_runtime_config (&config);
 }
 
-static int process_public_dev_ctl_command (
-    const dev_t device_number,
-    const int command,
-    void * user_space_buffer,
-    const ulong ioctl_flags,
-    const chan_t channel,
-    const int is_called_from_kernel_extension
-)
+static int process_public_dev_ctl_command (const int command, void * user_space_buffer, const chan_t channel)
 {
-    ignore_parameter device_number;                   //! todo: properly validate this parameter, reject not owning devices
-    ignore_parameter ioctl_flags;                     //! todo: properly validate this parameter, reject unsupported flags
-    ignore_parameter is_called_from_kernel_extension; //! todo: properly validate this parameter, reject unsupported flags
 
     if (command == USFS_IOC_CONNECTION_REQUEST)
         return accept_new_connection (user_space_buffer, channel);
@@ -145,9 +138,15 @@ static int usfs_dev_ioctl (
     void * user_space_buffer,
     const ulong ioctl_flags,
     const chan_t channel,
-    const int is_called_from_kernel_extension
+    const int extension
 )
 {
+    if (!usfs_device_number_valid (device_number))
+        return ENXIO;
+    /* ioctlx extensions and kernel-address buffers are not part of this ABI. */
+    if (extension != 0 || (ioctl_flags & DKERNEL) != 0)
+        return EINVAL;
+
     if (channel == USFS_STATUS_CHANNEL)
     {
         if (command != USFS_IOC_GET_KEXT_STATE)
@@ -160,7 +159,7 @@ static int usfs_dev_ioctl (
         return process_instrumentation_dev_ctl_command (command, user_space_buffer, channel);
 
     if (is_public_dev_ctl_command (command))
-        return process_public_dev_ctl_command (device_number, command, user_space_buffer, ioctl_flags, channel, is_called_from_kernel_extension);
+        return process_public_dev_ctl_command (command, user_space_buffer, channel);
 
     return EINVAL;
 }

@@ -4,12 +4,12 @@
 #ifndef USFS_INSTRUMENTATION_TRACE_H
 #define USFS_INSTRUMENTATION_TRACE_H
 
+#include "usfs_trace_abi.h"
+
 /*
  * Stable AIX system-trace ABI. Hook IDs and subhook meanings are permanent
  * once released because saved binary traces are decoded by hook/subhook.
  */
-#define USFS_TRACE_ABI_VERSION 1u
-
 #define USFS_TRACE_CONTROL_HOOK 0xF5F10000UL
 #define USFS_TRACE_REQUEST_HOOK 0xF5F20000UL
 #define USFS_TRACE_FS_HOOK      0xF5F30000UL

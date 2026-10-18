@@ -164,62 +164,42 @@ static int is_expected_schedule_point (const unsigned long schedule, const unsig
 {
     if (schedule == USFS_TEST_SCHEDULE_MOUNT_TERM)
     {
-        if (point == USFS_TEST_POINT_MOUNT_RESERVED)
-            return true;
-
-        if (point == USFS_TEST_POINT_TERM_BEFORE_CLOSE)
-            return true;
-
-        return point == USFS_TEST_POINT_TERM_BUSY_REOPENED;
+        return point == USFS_TEST_POINT_MOUNT_RESERVED ||
+               point == USFS_TEST_POINT_TERM_BEFORE_CLOSE ||
+               point == USFS_TEST_POINT_TERM_BUSY_REOPENED;
     }
 
     if (schedule == USFS_TEST_SCHEDULE_CHANNEL_TERM)
     {
-        if (point == USFS_TEST_POINT_CHANNEL_PRE_ADMISSION)
-            return true;
-
-        if (point == USFS_TEST_POINT_TERM_BEFORE_CLOSE)
-            return true;
-
-        return point == USFS_TEST_POINT_TERM_BUSY_REOPENED;
+        return point == USFS_TEST_POINT_CHANNEL_PRE_ADMISSION ||
+               point == USFS_TEST_POINT_TERM_BEFORE_CLOSE ||
+               point == USFS_TEST_POINT_TERM_BUSY_REOPENED;
     }
 
     if (schedule == USFS_TEST_SCHEDULE_CHANNEL_DEALLOC_TERM)
     {
-        if (point == USFS_TEST_POINT_CHANNEL_UNPUBLISHED)
-            return true;
-
-        if (point == USFS_TEST_POINT_TERM_BEFORE_CLOSE)
-            return true;
-
-        return point == USFS_TEST_POINT_TERM_BUSY_REOPENED;
+        return point == USFS_TEST_POINT_CHANNEL_UNPUBLISHED ||
+               point == USFS_TEST_POINT_TERM_BEFORE_CLOSE ||
+               point == USFS_TEST_POINT_TERM_BUSY_REOPENED;
     }
 
     if (schedule == USFS_TEST_SCHEDULE_LOOKUP_IDENTITY)
     {
-        if (point == USFS_TEST_POINT_LOOKUP_POST_REPLY)
-            return true;
-
-        return point == USFS_TEST_POINT_LOOKUP_RESOLVED;
+        return point == USFS_TEST_POINT_LOOKUP_POST_REPLY ||
+               point == USFS_TEST_POINT_LOOKUP_RESOLVED;
     }
 
     if (schedule == USFS_TEST_SCHEDULE_CACHE_EVICT)
     {
-        if (point == USFS_TEST_POINT_CACHE_BEFORE_EVICT)
-            return true;
-
-        if (point == USFS_TEST_POINT_CACHE_AFTER_WRITE)
-            return true;
-
-        return point == USFS_TEST_POINT_CACHE_EVICT_DONE;
+        return point == USFS_TEST_POINT_CACHE_BEFORE_EVICT ||
+               point == USFS_TEST_POINT_CACHE_AFTER_WRITE ||
+               point == USFS_TEST_POINT_CACHE_EVICT_DONE;
     }
 
     if (schedule == USFS_TEST_SCHEDULE_VGET_FORCE_UNMOUNT)
     {
-        if (point == USFS_TEST_POINT_VGET_RESERVED)
-            return true;
-
-        return point == USFS_TEST_POINT_FORCE_UNMOUNT_STALE;
+        return point == USFS_TEST_POINT_VGET_RESERVED ||
+               point == USFS_TEST_POINT_FORCE_UNMOUNT_STALE;
     }
 
     return false;
@@ -241,10 +221,8 @@ static int is_schedule_condition_satisfied (const unsigned long schedule, const 
 
     if (schedule == USFS_TEST_SCHEDULE_VGET_FORCE_UNMOUNT)
     {
-        if (point == USFS_TEST_POINT_VGET_RESERVED)
-            return (test_schedule_reached & USFS_TEST_POINT_FORCE_UNMOUNT_STALE) != 0;
-
-        return true;
+        return point != USFS_TEST_POINT_VGET_RESERVED ||
+               (test_schedule_reached & USFS_TEST_POINT_FORCE_UNMOUNT_STALE) != 0;
     }
 
     if (schedule == USFS_TEST_SCHEDULE_MOUNT_TERM)
@@ -434,7 +412,7 @@ int usfs_test_schedule_point (const unsigned point)
     return wait_for_schedule_condition (schedule, point);
 }
 
-void usfs_test_node_created (struct usfs_mount_data * mount_data, const uint64_t node_id)
+void usfs_test_node_created (const struct usfs_mount_data * mount_data, const uint64_t node_id)
 {
     unsigned matching_nodes = 0;
 

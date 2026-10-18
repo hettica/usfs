@@ -43,6 +43,7 @@ int usfs_lifecycle_state_read (void)
 
     while (!compare_and_swap (&g_kext_state, &observed_state, observed_state))
     {
+        /* A failed comparison refreshes observed_state; retry the atomic read. */
     }
 
     return observed_state;
@@ -54,6 +55,7 @@ int usfs_lifecycle_state_replace (const int desired_state)
 
     while (!compare_and_swap (&g_kext_state, &observed_state, desired_state))
     {
+        /* Retry with the state observed by the failed comparison. */
     }
 
     return observed_state;
@@ -72,6 +74,7 @@ static int read_mpx_guard (void)
 
     while (!compare_and_swap (&g_mpx_guard, &observed_guard, observed_guard))
     {
+        /* A failed comparison refreshes observed_guard; retry the atomic read. */
     }
 
     return observed_guard;
@@ -344,11 +347,9 @@ int usfs_lifecycle_reserve_mount (const uint64_t channel, const uint64_t cookie,
 
 static void release_mount_locked (struct usfs_connection * connection, const int close_connection)
 {
-    if (connection != NULL)
-    {
-        if (connection->mounts_counter > 0)
-            connection->mounts_counter -= 1;
-    }
+    if (connection != NULL &&
+        connection->mounts_counter > 0)
+        connection->mounts_counter -= 1;
 
     if (g_mount_count > 0)
         g_mount_count -= 1;

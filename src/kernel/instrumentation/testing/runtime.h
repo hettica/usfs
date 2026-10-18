@@ -15,7 +15,7 @@ void usfs_test_shutdown (void);
 int usfs_test_fault (const int fault);
 int usfs_test_schedule_point (const unsigned point);
 int usfs_test_control_ioctl (const int command, void * user_buffer, const chan_t collector_channel);
-void usfs_test_node_created (struct usfs_mount_data * mount_data, const uint64_t node_id);
+void usfs_test_node_created (const struct usfs_mount_data * mount_data, const uint64_t node_id);
 void usfs_test_node_reclaimed (const uint64_t node_id, const int is_linked);
 void usfs_test_node_reused (const int source);
 void usfs_test_parent_rebuilt (void);

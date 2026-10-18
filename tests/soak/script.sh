@@ -28,6 +28,7 @@ preflight_fail()
 event()
 {
     printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$RUN/events.log"
+    return "$?"
 }
 
 restore_runtime_config()

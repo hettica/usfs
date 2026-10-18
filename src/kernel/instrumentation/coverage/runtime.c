@@ -227,6 +227,7 @@ void __gcov_init (struct gcov_info * info)
 
 void __gcov_exit (void)
 {
+    /* The kernel exports snapshots explicitly; process-exit gcda I/O is unavailable. */
 }
 
 void __gcov_merge_add (gcov_type * counters, const gcov_unsigned_t count)
@@ -243,7 +244,7 @@ static int validate_unit_metadata (const struct gcov_info * info, const unsigned
     if (info->version != USFS_GCOV_VERSION)
         return EINVAL;
 
-    if (info->merge[GCOV_ARC_COUNTER_INDEX] != __gcov_merge_add)
+    if (info->merge[GCOV_ARC_COUNTER_INDEX] != &__gcov_merge_add)
         return EINVAL;
 
     if (info->n_functions == 0)
@@ -450,8 +451,11 @@ static int write_snapshot_unit (struct snapshot_writer * writer, const struct gc
     const char * filename = get_filename_basename (info->filename);
     unsigned filename_length;
 
+    const int filename_rc = validate_unit_filename (filename, &filename_length);
+    if (filename_rc != 0)
+        return filename_rc;
+
     writer->cursor += sizeof (*unit);
-    (void)validate_unit_filename (filename, &filename_length);
     unit->filename_length = filename_length;
     unit->version = info->version;
     unit->stamp = info->stamp;

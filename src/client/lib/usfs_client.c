@@ -272,6 +272,7 @@ static int wait_for_session_event (const struct client_session * session, const 
 
         while (read (session->wake_read, pending_notifications, sizeof (pending_notifications)) > 0)
         {
+            /* Drain all queued wake bytes before polling again. */
         }
     }
 
@@ -324,19 +325,24 @@ struct client_alias
     int cleanup_attempted;       // Whether final-close deletion already ran for this name.
 };
 
+struct client_node_references
+{
+    uint64_t lookup_refs;               // Kernel lookup references.
+    uint64_t open_refs;                 // Open handle references.
+    uint64_t operation_refs;            // In-flight request references.
+    uint64_t ancestor_refs;             // References from named descendants.
+    uint64_t cache_refs;                // Directory snapshot references.
+};
+
 struct client_node
 {
+    struct client_node_references references;
     pthread_mutex_t mutation_lock;      // Serializes mutations of this object.
     struct client_node * next;          // Next retained object.
     struct client_node * hnext_id;      // Next entry in the node-ID hash bucket.
     struct client_node * hnext_backend; // Next entry in the backend-identity hash bucket.
     uint64_t id;                        // Stable wire node identifier.
-    uint64_t lookup_refs;               // Kernel lookup references.
-    uint64_t open_refs;                 // Open handle references.
     struct client_pager * pager;        // Resource retained while the vnode has a VMM segment.
-    uint64_t operation_refs;            // In-flight request references.
-    uint64_t ancestor_refs;             // References from named descendants.
-    uint64_t cache_refs;                // Directory snapshot references.
     struct client_node * gc_next;       // Next pending garbage-collection candidate.
     int gc_queued;                      // Whether collection is already queued.
     struct client_alias * aliases;      // Names belonging to this object.
@@ -405,8 +411,35 @@ struct client_namespace
     int writer;               // Whether a writer is admitted.
 };
 
+struct client_registry
+{
+    struct client_node * nodes;                                // Retained object list.
+    struct client_node * by_id[CLIENT_NODE_BUCKETS];           // Objects indexed by wire node ID.
+    struct client_alias * by_parent_name[CLIENT_NODE_BUCKETS]; // Aliases indexed by parent and name.
+    struct client_node * by_backend[CLIENT_NODE_BUCKETS];      // Objects indexed by backend identity.
+    uint64_t next_id;                                          // Next available wire node identifier.
+    uint64_t root_lookup_refs;                                 // Lookup references held on the implicit root.
+    struct client_node * gc_pending;                           // Objects pending collection.
+    struct client_handle * handles;                            // Open callback handles.
+    uint64_t handle_generation;                                // Next handle lifetime sequence number.
+    uint64_t pager_generation;                                 // Next pager token, never reused.
+    uint64_t hidden_generation;                                // Next candidate hidden-name sequence number.
+    pthread_mutex_t node_lock;                                 // Protects object identities and references.
+};
+
+struct client_directory_cache
+{
+    struct client_dircache dircache[CLIENT_DIRCACHE_SLOTS];    // Owned directory snapshot slots.
+    uint64_t dircache_seq;                                     // Next snapshot recency sequence number.
+    size_t dircache_ram_bytes;                                 // Retained directory data allocation.
+    uint64_t next_snapshot_id;                                 // Next positive READDIR cursor identity.
+    size_t dircache_spool_bytes;                               // Reserved temporary storage across snapshots.
+};
+
 struct usfs_client
 {
+    struct client_directory_cache directories;
+    struct client_registry registry;
     int fd;                                                    // Owned connection device descriptor.
     struct usfs_dev_info info;                                 // Kernel connection identity and filesystem type.
     struct usfs_operations ops;                                // Filesystem callback table.
@@ -420,23 +453,6 @@ struct usfs_client
     usfs_diagnostic_fn diagnostic;                             // Optional message callback.
     void * diagnostic_data;                                    // Borrowed message callback data.
     struct usfs_behavior behavior;                             // Native handle/path and removal policies.
-    struct client_node * nodes;                                // Retained object list.
-    struct client_node * by_id[CLIENT_NODE_BUCKETS];           // Objects indexed by wire node ID.
-    struct client_alias * by_parent_name[CLIENT_NODE_BUCKETS]; // Aliases indexed by parent and name.
-    struct client_node * by_backend[CLIENT_NODE_BUCKETS];      // Objects indexed by backend identity.
-    uint64_t next_id;                                          // Next available wire node identifier.
-    uint64_t root_lookup_refs;                                 // Lookup references held on the implicit root.
-    struct client_node * gc_pending;                           // Objects pending collection.
-    struct client_handle * handles;                            // Open callback handles.
-    uint64_t handle_generation;                                // Next handle lifetime sequence number.
-    uint64_t pager_generation;                                 // Next pager token, never reused.
-    uint64_t hidden_generation;                                // Next candidate hidden-name sequence number.
-    struct client_dircache dircache[CLIENT_DIRCACHE_SLOTS];    // Owned directory snapshot slots.
-    uint64_t dircache_seq;                                     // Next snapshot recency sequence number.
-    size_t dircache_ram_bytes;                                 // Retained directory data allocation.
-    uint64_t next_snapshot_id;                                 // Next positive READDIR cursor identity.
-    size_t dircache_spool_bytes;                               // Reserved temporary storage across snapshots.
-    pthread_mutex_t node_lock;                                 // Protects object identities and references.
     pthread_mutex_t dircache_lock;                             // Protects directory snapshots.
     pthread_mutex_t reply_lock;                                // Serializes complete wire replies.
     struct client_namespace namespace;                         // Request namespace admission state.
@@ -478,6 +494,12 @@ static struct sigaction previous_signal_actions[4];
 static struct sigaction installed_signal_actions[4];
 _Static_assert(__atomic_always_lock_free (sizeof (signal_session), 0), "signal session publication must be lock free");
 _Static_assert(__atomic_always_lock_free (sizeof (signal_handlers_active), 0), "signal handler lifetime counter must be lock free");
+
+/* Only trusted literal formats enter this printf-compatible wrapper. */
+static void emit_diagnostic_arguments (const struct usfs_client *, const char *, va_list)
+    __attribute__ ((format (printf, 2, 0)));
+static void emit_diagnostic (const struct usfs_client *, const char *, ...)
+    __attribute__ ((format (printf, 2, 3)));
 
 static void emit_diagnostic_arguments (const struct usfs_client * client, const char * format, va_list arguments)
 {
@@ -851,7 +873,7 @@ static int install_signal_handlers (struct client_session * session)
         return -1;
     }
 
-    struct client_session * owner = __atomic_load_n (&signal_session, __ATOMIC_SEQ_CST);
+    const struct client_session * owner = __atomic_load_n (&signal_session, __ATOMIC_SEQ_CST);
     if (owner == session)
     {
         pthread_mutex_unlock (&signal_owner_lock);
@@ -927,7 +949,7 @@ static size_t hash_parent_name (const uint64_t parent, const char * name)
 
 static struct client_node * find_node_by_id (const struct usfs_client * client, const uint64_t id)
 {
-    for (struct client_node * node = client->by_id[hash_node_id (id)]; node != NULL; node = node->hnext_id)
+    for (struct client_node * node = client->registry.by_id[hash_node_id (id)]; node != NULL; node = node->hnext_id)
         if (node->id == id)
             return node;
 
@@ -945,13 +967,13 @@ static void queue_node_for_collection (struct usfs_client * client, struct clien
         return;
 
     node->gc_queued = true;
-    node->gc_next = client->gc_pending;
-    client->gc_pending = node;
+    node->gc_next = client->registry.gc_pending;
+    client->registry.gc_pending = node;
 }
 
 static struct client_alias * find_alias (const struct usfs_client * client, const uint64_t parent, const char * name)
 {
-    for (struct client_alias * alias = client->by_parent_name[hash_parent_name (parent, name)]; alias != NULL; alias = alias->hnext)
+    for (struct client_alias * alias = client->registry.by_parent_name[hash_parent_name (parent, name)]; alias != NULL; alias = alias->hnext)
         if (alias->parent == parent && strcmp (alias->name, name) == 0)
             return alias;
 
@@ -1040,8 +1062,8 @@ static void index_alias (struct usfs_client * client, struct client_alias * alia
     struct client_node * parent = find_node_by_id (client, alias->parent);
     const size_t bucket = hash_parent_name (alias->parent, alias->name);
 
-    alias->hnext = client->by_parent_name[bucket];
-    client->by_parent_name[bucket] = alias;
+    alias->hnext = client->registry.by_parent_name[bucket];
+    client->registry.by_parent_name[bucket] = alias;
     alias->attached = 1;
     alias->node->names++;
     if (alias->managed_hidden)
@@ -1050,7 +1072,7 @@ static void index_alias (struct usfs_client * client, struct client_alias * alia
     alias->node->detached = alias->node->names == alias->node->hidden_names;
 
     if (parent != NULL)
-        parent->ancestor_refs++;
+        parent->references.ancestor_refs++;
 }
 
 static void attach_alias (struct usfs_client * client, struct client_node * node, struct client_alias * alias)
@@ -1066,7 +1088,7 @@ static void unindex_alias (struct usfs_client * client, struct client_alias * al
     if (!alias->attached)
         return;
 
-    struct client_alias ** cursor = &client->by_parent_name[hash_parent_name (alias->parent, alias->name)];
+    struct client_alias ** cursor = &client->registry.by_parent_name[hash_parent_name (alias->parent, alias->name)];
 
     while (*cursor != NULL && *cursor != alias)
         cursor = &(*cursor)->hnext;
@@ -1087,7 +1109,7 @@ static void unindex_alias (struct usfs_client * client, struct client_alias * al
 
     if (parent != NULL)
     {
-        parent->ancestor_refs--;
+        parent->references.ancestor_refs--;
         queue_node_for_collection (client, parent);
     }
 }
@@ -1102,7 +1124,7 @@ static void unindex_node_backend_identity (struct usfs_client * client, struct c
     if (!node->backend_indexed)
         return;
 
-    struct client_node ** cursor = &client->by_backend[hash_backend_identity (node->backend_dev, node->backend_ino)];
+    struct client_node ** cursor = &client->registry.by_backend[hash_backend_identity (node->backend_dev, node->backend_ino)];
 
     while (*cursor != NULL && *cursor != node)
         cursor = &(*cursor)->hnext_backend;
@@ -1133,7 +1155,7 @@ static struct client_node * find_node_by_backend_identity (const struct usfs_cli
 
     const size_t bucket = hash_backend_identity ((uint64_t)metadata->st_dev, (uint64_t)metadata->st_ino);
 
-    for (struct client_node * node = client->by_backend[bucket]; node != NULL; node = node->hnext_backend)
+    for (struct client_node * node = client->registry.by_backend[bucket]; node != NULL; node = node->hnext_backend)
     {
         if (node->backend_dev != (uint64_t)metadata->st_dev)
             continue;
@@ -1180,8 +1202,8 @@ static void index_node_backend_identity (struct usfs_client * client, struct cli
 
     const size_t bucket = hash_backend_identity (node->backend_dev, node->backend_ino);
 
-    node->hnext_backend = client->by_backend[bucket];
-    client->by_backend[bucket] = node;
+    node->hnext_backend = client->registry.by_backend[bucket];
+    client->registry.by_backend[bucket] = node;
     node->backend_indexed = true;
 }
 
@@ -1247,22 +1269,22 @@ static int node_has_references (const struct client_node * node)
     if (node->hidden_names != 0)
         return true;
 
-    if (node->lookup_refs != 0)
+    if (node->references.lookup_refs != 0)
         return true;
 
-    if (node->open_refs != 0)
+    if (node->references.open_refs != 0)
         return true;
 
     if (node->pager != NULL)
         return true;
 
-    if (node->operation_refs != 0)
+    if (node->references.operation_refs != 0)
         return true;
 
-    if (node->ancestor_refs != 0)
+    if (node->references.ancestor_refs != 0)
         return true;
 
-    return node->cache_refs != 0;
+    return node->references.cache_refs != 0;
 }
 
 static void detach_node_aliases (struct usfs_client * client, struct client_node * node)
@@ -1280,13 +1302,13 @@ static void detach_node_aliases (struct usfs_client * client, struct client_node
 
 static void unindex_node (struct usfs_client * client, const struct client_node * node)
 {
-    struct client_node ** cursor = &client->by_id[hash_node_id (node->id)];
+    struct client_node ** cursor = &client->registry.by_id[hash_node_id (node->id)];
 
     while (*cursor != node)
         cursor = &(*cursor)->hnext_id;
 
     *cursor = node->hnext_id;
-    cursor = &client->nodes;
+    cursor = &client->registry.nodes;
 
     while (*cursor != node)
         cursor = &(*cursor)->next;
@@ -1299,11 +1321,11 @@ static void unindex_node (struct usfs_client * client, const struct client_node 
  * another ancestor, so the work list releases the chain without recursion. */
 static void collect_unreferenced_nodes (struct usfs_client * client)
 {
-    while (client->gc_pending != NULL)
+    while (client->registry.gc_pending != NULL)
     {
-        struct client_node * node = client->gc_pending;
+        struct client_node * node = client->registry.gc_pending;
 
-        client->gc_pending = node->gc_next;
+        client->registry.gc_pending = node->gc_next;
         node->gc_queued = false;
 
         if (node_has_references (node))
@@ -1329,13 +1351,13 @@ struct open_handle_state
  * nonzero token so metadata requests can distinguish handles from pathnames. */
 static uint64_t select_wire_handle (const struct usfs_client * client, const uint64_t backend_handle)
 {
-    uint64_t candidate = backend_handle != 0 ? backend_handle : UINT64_MAX - client->handle_generation;
+    uint64_t candidate = backend_handle != 0 ? backend_handle : UINT64_MAX - client->registry.handle_generation;
 
     for (;;)
     {
         int occupied = candidate == 0;
 
-        for (const struct client_handle * handle = client->handles; handle != NULL; handle = handle->next)
+        for (const struct client_handle * handle = client->registry.handles; handle != NULL; handle = handle->next)
             if (handle->wire_fh == candidate && (backend_handle == 0 || handle->fh != backend_handle))
                 occupied = true;
 
@@ -1350,8 +1372,8 @@ static int backend_handle_value (struct usfs_client * client, const uint64_t nod
 {
     int result = -ESTALE;
 
-    pthread_mutex_lock (&client->node_lock);
-    for (const struct client_handle * handle = client->handles; handle != NULL; handle = handle->next)
+    pthread_mutex_lock (&client->registry.node_lock);
+    for (const struct client_handle * handle = client->registry.handles; handle != NULL; handle = handle->next)
     {
         if (handle->nodeid != nodeid || handle->wire_fh != wire_handle)
             continue;
@@ -1360,14 +1382,14 @@ static int backend_handle_value (struct usfs_client * client, const uint64_t nod
         result = 0;
         break;
     }
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     return result;
 }
 
 static void publish_client_handle (struct usfs_client * client, struct client_handle * handle, struct open_handle_state * opened)
 {
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     struct client_node * node = find_node_by_id (client, opened->nodeid);
 
     handle->nodeid = opened->nodeid;
@@ -1375,18 +1397,18 @@ static void publish_client_handle (struct usfs_client * client, struct client_ha
     handle->flags = opened->file_info.open_flags;
     handle->isdir = opened->is_directory != 0;
 
-    if (client->handle_generation != UINT64_MAX)
-        client->handle_generation++;
+    if (client->registry.handle_generation != UINT64_MAX)
+        client->registry.handle_generation++;
 
     handle->wire_fh = select_wire_handle (client, handle->fh);
     opened->wire_fh = handle->wire_fh;
-    handle->next = client->handles;
-    client->handles = handle;
+    handle->next = client->registry.handles;
+    client->registry.handles = handle;
 
     if (node != NULL)
-        node->open_refs++;
+        node->references.open_refs++;
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 }
 
 static void relink_alias_with_prepared_name (struct usfs_client * client, struct client_alias * alias, const uint64_t parent, char * name)
@@ -1426,10 +1448,10 @@ static int prepare_node_adoption (
     const struct stat * metadata
 )
 {
-    if (node->lookup_refs == UINT64_MAX)
+    if (node->references.lookup_refs == UINT64_MAX)
         return EOVERFLOW;
 
-    if (node == prepared && client->next_id == UINT64_MAX)
+    if (node == prepared && client->registry.next_id == UINT64_MAX)
         return EOVERFLOW;
 
     return update_node_backend_identity (client, node, metadata);
@@ -1441,14 +1463,14 @@ static void publish_node_adoption (struct usfs_client * client, struct client_no
 
     if (node == *prepared)
     {
-        node->id = client->next_id++;
-        node->next = client->nodes;
-        client->nodes = node;
+        node->id = client->registry.next_id++;
+        node->next = client->registry.nodes;
+        client->registry.nodes = node;
 
         const size_t bucket = hash_node_id (node->id);
 
-        node->hnext_id = client->by_id[bucket];
-        client->by_id[bucket] = node;
+        node->hnext_id = client->registry.by_id[bucket];
+        client->registry.by_id[bucket] = node;
         alias->node = node;
         index_alias (client, alias);
         *prepared = NULL;
@@ -1459,7 +1481,7 @@ static void publish_node_adoption (struct usfs_client * client, struct client_no
         attach_alias (client, node, alias);
     }
 
-    node->lookup_refs++;
+    node->references.lookup_refs++;
 }
 
 static struct client_node * adopt_prepared_node (
@@ -1501,10 +1523,10 @@ static struct client_node * find_or_create_node (struct usfs_client * client, co
         return NULL;
     }
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     struct client_node * node = adopt_prepared_node (client, &prepared, metadata, &error);
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     destroy_node (prepared);
 
@@ -1598,10 +1620,10 @@ static int build_node_path_locked (const struct usfs_client * client, const uint
 
 static int build_node_path (struct usfs_client * client, const uint64_t id, char * path_buffer, const size_t buffer_size)
 {
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     const int result = build_node_path_locked (client, id, path_buffer, buffer_size);
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     return result;
 }
@@ -1616,25 +1638,25 @@ static int resolve_node_handle_path (struct usfs_client * client, const uint64_t
 {
     int result;
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     const struct client_node * node = find_node_by_id (client, id);
 
     if (id != USFS_ROOT_ID && node == NULL)
     {
-        pthread_mutex_unlock (&client->node_lock);
+        pthread_mutex_unlock (&client->registry.node_lock);
         return -ESTALE;
     }
 
     if (fh != 0)
     {
-        const struct client_handle * handle = client->handles;
+        const struct client_handle * handle = client->registry.handles;
 
         while (handle != NULL && (handle->nodeid != id || handle->wire_fh != fh))
             handle = handle->next;
 
         if (handle == NULL)
         {
-            pthread_mutex_unlock (&client->node_lock);
+            pthread_mutex_unlock (&client->registry.node_lock);
             return -ESTALE;
         }
     }
@@ -1651,7 +1673,7 @@ static int resolve_node_handle_path (struct usfs_client * client, const uint64_t
         result = build_node_path_locked (client, id, resolved->buffer, sizeof (resolved->buffer));
     }
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     return result;
 }
@@ -1679,10 +1701,10 @@ static uint64_t get_node_parent_id_locked (const struct usfs_client * client, co
 
 static uint64_t get_node_parent_id (struct usfs_client * client, const uint64_t nodeid)
 {
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     const uint64_t parent = get_node_parent_id_locked (client, nodeid);
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     return parent;
 }
@@ -1714,11 +1736,11 @@ static void convert_stat_to_attributes (const struct stat * metadata, const uint
 
 static void subtract_managed_hidden_links (struct usfs_client * client, const uint64_t nodeid, struct usfs_attr * attributes)
 {
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     const struct client_node * node = find_node_by_id (client, nodeid);
     const unsigned hidden_names = node != NULL ? node->hidden_names : 0;
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
     attributes->nlink = attributes->nlink > hidden_names ? attributes->nlink - hidden_names : 0;
 }
 
@@ -2003,7 +2025,7 @@ static int retain_lookup_reference_locked (struct usfs_client * client, const ui
             return rc;
     }
 
-    uint64_t * references = nodeid == USFS_ROOT_ID ? &client->root_lookup_refs : &node->lookup_refs;
+    uint64_t * references = nodeid == USFS_ROOT_ID ? &client->registry.root_lookup_refs : &node->references.lookup_refs;
 
     if (*references == UINT64_MAX)
         return EOVERFLOW;
@@ -2021,10 +2043,10 @@ static int handle_lookup_self_or_parent_request (const struct request_context * 
     struct path_buffer path = { 0 };
     uint64_t nodeid = request_header->nodeid;
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     int rc = resolve_relative_lookup_path_locked (client, name, &nodeid, &path);
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     if (rc != 0)
         return send_reply (context, -rc, NULL, 0);
@@ -2041,9 +2063,9 @@ static int handle_lookup_self_or_parent_request (const struct request_context * 
     if (!S_ISDIR (metadata.st_mode))
         return send_reply (context, EIO, NULL, 0);
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     rc = retain_lookup_reference_locked (client, nodeid, &metadata);
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     if (rc != 0)
         return send_reply (context, rc, NULL, 0);
@@ -2094,7 +2116,7 @@ struct fid_identity
     mode_t type;                // Backend object type supplied to export_id.
 };
 
-static int prepare_root_fid_identity (struct usfs_client * client, struct fid_identity * identity)
+static int prepare_root_fid_identity (const struct usfs_client * client, struct fid_identity * identity)
 {
     struct stat metadata;
     const int rc = read_path_attributes (client, "/", &metadata);
@@ -2114,12 +2136,12 @@ static int prepare_root_fid_identity (struct usfs_client * client, struct fid_id
 
 static int copy_cached_fid_identity (struct usfs_client * client, const uint64_t nodeid, struct fid_identity * identity)
 {
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
 
-    struct client_node * node = find_node_by_id (client, nodeid);
+    const struct client_node * node = find_node_by_id (client, nodeid);
     if (node == NULL || node->backend_retired || node->backend_links <= node->hidden_names)
     {
-        pthread_mutex_unlock (&client->node_lock);
+        pthread_mutex_unlock (&client->registry.node_lock);
         return ESTALE;
     }
 
@@ -2136,7 +2158,7 @@ static int copy_cached_fid_identity (struct usfs_client * client, const uint64_t
             identity->callback_path = identity->path;
     }
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     if (rc != 0)
         return -rc;
@@ -2255,7 +2277,7 @@ static int validate_resolved_identity_path (const char * path)
 
 static void release_resolved_path_references (struct usfs_client * client, const uint64_t nodeids[USFS_MAX_DEPTH], const size_t count)
 {
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
 
     for (size_t node_index = 0; node_index < count; node_index++)
     {
@@ -2263,12 +2285,33 @@ static void release_resolved_path_references (struct usfs_client * client, const
         if (node == NULL)
             continue;
 
-        node->lookup_refs--;
+        node->references.lookup_refs--;
         queue_node_for_collection (client, node);
     }
 
     collect_unreferenced_nodes (client);
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
+}
+
+static int read_resolved_component_metadata (
+    const struct usfs_client * client,
+    const char * path,
+    const struct stat * target_metadata,
+    const int intermediate,
+    struct stat * metadata
+)
+{
+    if (!intermediate)
+    {
+        *metadata = *target_metadata;
+        return 0;
+    }
+
+    const int rc = read_path_attributes (client, path, metadata);
+    if (rc != 0)
+        return rc == -ENOENT ? ESTALE : -rc;
+
+    return is_backend_stat_valid (metadata) && S_ISDIR (metadata->st_mode) ? 0 : ESTALE;
 }
 
 static int adopt_resolved_identity_path (
@@ -2281,7 +2324,7 @@ static int adopt_resolved_identity_path (
     uint64_t temporary_nodeids[USFS_MAX_DEPTH] = { 0 };
     size_t adopted_count = 0;
     uint64_t parent_id = USFS_ROOT_ID;
-    char * component = path + 1;
+    const char * component = path + 1;
     int error = 0;
 
     while (*component != '\0')
@@ -2291,18 +2334,7 @@ static int adopt_resolved_identity_path (
             *separator = '\0';
 
         struct stat metadata;
-        if (separator == NULL)
-        {
-            metadata = *target_metadata;
-        }
-        else
-        {
-            const int rc = read_path_attributes (client, path, &metadata);
-            if (rc != 0)
-                error = rc == -ENOENT ? ESTALE : -rc;
-            else if (!is_backend_stat_valid (&metadata) || !S_ISDIR (metadata.st_mode))
-                error = ESTALE;
-        }
+        error = read_resolved_component_metadata (client, path, target_metadata, separator != NULL, &metadata);
 
         if (error == 0)
         {
@@ -2358,7 +2390,7 @@ static int parse_vget_request (
 }
 
 /* Resolve and verify a current backend identity without acquiring lookup refs. */
-static int resolve_vget_identity (struct usfs_client * client, const uint64_t token, char path[USFS_PATH_MAX], struct stat * metadata)
+static int resolve_vget_identity (const struct usfs_client * client, const uint64_t token, char path[USFS_PATH_MAX], struct stat * metadata)
 {
     memset (path, UCHAR_MAX, USFS_PATH_MAX);
 
@@ -2414,16 +2446,16 @@ static int materialize_vget_node (struct usfs_client * client, char path[USFS_PA
     if (!S_ISDIR (metadata->st_mode))
         return ESTALE;
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
 
-    if (client->root_lookup_refs == UINT64_MAX)
+    if (client->registry.root_lookup_refs == UINT64_MAX)
     {
-        pthread_mutex_unlock (&client->node_lock);
+        pthread_mutex_unlock (&client->registry.node_lock);
         return EOVERFLOW;
     }
 
-    client->root_lookup_refs++;
-    pthread_mutex_unlock (&client->node_lock);
+    client->registry.root_lookup_refs++;
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     return 0;
 }
@@ -2485,11 +2517,11 @@ static int refresh_node_identity (struct usfs_client * client, const uint64_t no
     if (nodeid == USFS_ROOT_ID)
         return 0;
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     struct client_node * node = find_node_by_id (client, nodeid);
     const int rc = node != NULL ? update_node_backend_identity (client, node, metadata) : EIO;
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     return rc;
 }
@@ -2698,10 +2730,10 @@ static int finish_file_creation (const struct request_context * context, const s
 
     read_created_file_attributes (client, request, resources, &metadata);
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     const struct client_node * node = adopt_prepared_node (client, &resources->prepared_node, &metadata, &rc);
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
     destroy_node (resources->prepared_node);
 
     if (node == NULL)
@@ -2731,7 +2763,7 @@ static int finish_file_creation (const struct request_context * context, const s
 
 static int create_prepared_file (const struct request_context * context, const struct usfs_create_in * request, struct create_resources * resources)
 {
-    struct usfs_client * client = context->client;
+    const struct usfs_client * client = context->client;
 
     const int rc = client->ops.create (get_callback_request (), resources->path.data, (mode_t)request->mode, &resources->opened.file_info);
     if (rc != 0)
@@ -2776,7 +2808,7 @@ static int parse_create_request (
 
 static int prepare_create_resources (const struct usfs_client * client, const uint64_t parent, struct create_resources * resources)
 {
-    if (client->next_id == UINT64_MAX)
+    if (client->registry.next_id == UINT64_MAX)
         return EOVERFLOW;
 
     resources->prepared_node = prepare_node (parent, resources->name);
@@ -2913,7 +2945,7 @@ static int prepare_create_attr_resources (
 
     if (request->activation != USFS_CREATE_DEFAULT)
     {
-        if (client->next_id == UINT64_MAX)
+        if (client->registry.next_id == UINT64_MAX)
             return EOVERFLOW;
 
         resources->prepared_node = prepare_node (parent, resources->name);
@@ -2954,9 +2986,9 @@ static int adopt_created_attributes (
 
     int rc;
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     *node = adopt_prepared_node (client, prepared, metadata, &rc);
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     return rc;
 }
@@ -2972,7 +3004,10 @@ static int finish_attribute_creation (
     const struct usfs_in_hdr * request_header = context->header;
 
     struct client_node * node = NULL;
-    const int rc = adopt_created_attributes (client, metadata, &resources->prepared_node, &node);
+    int rc = adopt_created_attributes (client, metadata, &resources->prepared_node, &node);
+
+    if (rc == 0 && resources->handle != NULL && node == NULL)
+        rc = EIO;
 
     destroy_node (resources->prepared_node);
 
@@ -3011,7 +3046,7 @@ static int execute_prepared_create_attr (
     struct create_resources * resources
 )
 {
-    struct usfs_client * client = context->client;
+    const struct usfs_client * client = context->client;
 
     struct stat initial;
     struct stat result;
@@ -3092,14 +3127,14 @@ static int prepare_expected_entry (
     if (rc != 0)
         return -rc;
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     const struct client_node * parent = find_node_by_id (client, parent_nodeid);
     const struct client_alias * alias = find_alias (client, parent_nodeid, name);
 
     if ((parent_nodeid != USFS_ROOT_ID && parent == NULL) || (expected_nodeid == 0 && alias != NULL) ||
         (expected_nodeid != 0 && (alias == NULL || alias->node->id != expected_nodeid)))
     {
-        pthread_mutex_unlock (&client->node_lock);
+        pthread_mutex_unlock (&client->registry.node_lock);
         return ESTALE;
     }
 
@@ -3107,7 +3142,7 @@ static int prepare_expected_entry (
     expected->exists = expected_nodeid != 0;
     copy_node_identity (&expected->parent, parent_nodeid, parent);
     copy_node_identity (&expected->object, expected_nodeid, alias != NULL ? alias->node : NULL);
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     return 0;
 }
@@ -3128,7 +3163,7 @@ static int parse_remove_request (const char * payload, const uint32_t payload_le
 
 static void publish_removed_entry (struct usfs_client * client, const uint64_t parent, const char * name)
 {
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     struct client_alias * removed = find_alias (client, parent, name);
 
     if (removed != NULL)
@@ -3136,7 +3171,7 @@ static void publish_removed_entry (struct usfs_client * client, const uint64_t p
         remove_alias (client, removed);
     }
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     invalidate_node_directory_cache (client, parent);
 }
@@ -3160,18 +3195,18 @@ static int select_hidden_name (
     {
         char name[CLIENT_HIDDEN_NAME_CAPACITY];
 
-        pthread_mutex_lock (&client->node_lock);
-        client->hidden_generation++;
+        pthread_mutex_lock (&client->registry.node_lock);
+        client->registry.hidden_generation++;
         snprintf (
             name,
             sizeof (name),
             ".fuse_hidden%016llx%016llx",
             (unsigned long long)alias->node->id,
-            (unsigned long long)client->hidden_generation
+            (unsigned long long)client->registry.hidden_generation
         );
         const int occupied = find_alias (client, alias->parent, name) != NULL;
 
-        pthread_mutex_unlock (&client->node_lock);
+        pthread_mutex_unlock (&client->registry.node_lock);
 
         if (occupied)
             continue;
@@ -3204,7 +3239,7 @@ static void publish_hidden_alias (
     struct hidden_entry_operation * operation
 )
 {
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     operation->alias = alias;
     operation->was_hidden = alias->managed_hidden;
     relink_alias_with_prepared_name (client, alias, alias->parent, prepared_name);
@@ -3217,7 +3252,7 @@ static void publish_hidden_alias (
 
     alias->cleanup_attempted = false;
     alias->node->detached = alias->node->names == alias->node->hidden_names;
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
     invalidate_node_directory_cache (client, alias->parent);
 }
 
@@ -3233,11 +3268,11 @@ static int hide_open_entry (
     if (client->behavior.remove_policy == USFS_REMOVE_IMMEDIATE)
         return 0;
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     struct client_alias * alias = find_alias (client, parent, name);
     const int should_hide =
-        alias != NULL && alias->node->id == source->object.nodeid && alias->node->open_refs != 0 && !S_ISDIR (alias->node->backend_type);
-    pthread_mutex_unlock (&client->node_lock);
+        alias != NULL && alias->node->id == source->object.nodeid && alias->node->references.open_refs != 0 && !S_ISDIR (alias->node->backend_type);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     if (!should_hide)
         return 0;
@@ -3293,7 +3328,7 @@ static int rollback_hidden_entry (struct usfs_client * client, struct hidden_ent
     if (rc != 0)
         return rc;
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     relink_alias_with_prepared_name (client, alias, alias->parent, operation->original_name);
     operation->original_name = NULL;
 
@@ -3304,7 +3339,7 @@ static int rollback_hidden_entry (struct usfs_client * client, struct hidden_ent
     }
 
     alias->node->detached = alias->node->names == alias->node->hidden_names;
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
     invalidate_node_directory_cache (client, alias->parent);
 
     return 0;
@@ -3429,10 +3464,10 @@ static int relink_renamed_entry_locked (struct usfs_client * client, const struc
 
 static void publish_renamed_entry (struct usfs_client * client, const struct rename_operation * operation, char * prepared_name)
 {
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     const int name_adopted = relink_renamed_entry_locked (client, operation, prepared_name);
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     if (!name_adopted)
         free (prepared_name);
@@ -3440,12 +3475,12 @@ static void publish_renamed_entry (struct usfs_client * client, const struct ren
 
 static int rename_targets_same_object (struct usfs_client * client, const struct rename_operation * operation)
 {
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     const struct client_alias * source = find_alias (client, operation->old_parent, operation->old_name);
     const struct client_alias * destination = find_alias (client, operation->request.newparent, operation->new_name);
     const int same_object = source != NULL && destination != NULL && source->node == destination->node;
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     return same_object || strcmp (operation->old_path.data, operation->new_path.data) == 0;
 }
@@ -3806,9 +3841,9 @@ static int validate_link_source (struct usfs_client * client, struct client_node
     if (S_ISDIR (metadata.st_mode))
         return EIO;
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     rc = update_node_backend_identity (client, node, &metadata);
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     return rc;
 }
@@ -3840,10 +3875,10 @@ static int link_prepared_name (const struct request_context * context, const str
         return send_reply (context, -rc, NULL, 0);
     }
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     attach_alias (client, operation->node, prepared);
     operation->node->backend_links++;
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     invalidate_node_directory_cache (client, operation->request->newparent);
 
@@ -3876,10 +3911,10 @@ static int create_link_and_reply (const struct request_context * context, const 
     operation.request = request;
     operation.name = name;
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     int rc = select_link_source_locked (client, request_header->nodeid, &operation);
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     if (rc != 0)
         return send_reply (context, rc, NULL, 0);
@@ -3901,7 +3936,7 @@ static int create_link_and_reply (const struct request_context * context, const 
 
 static int handle_link_request (const struct request_context * context, const char * payload, const uint32_t payload_length)
 {
-    struct usfs_client * client = context->client;
+    const struct usfs_client * client = context->client;
 
     struct usfs_link_in request;
 
@@ -4162,13 +4197,13 @@ static struct client_pager * find_request_pager (struct usfs_client * client, co
 {
     struct client_pager * pager = NULL;
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
 
     struct client_node * node = find_node_by_id (client, nodeid);
     if (node != NULL && node->pager != NULL && node->pager->token == token)
         pager = node->pager;
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     return pager;
 }
@@ -4185,10 +4220,10 @@ static int handle_pager_acquire_request (const struct request_context * context,
         client->ops.pager_release == NULL)
         return send_reply (context, ENOSYS, NULL, 0);
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     struct client_node * node = find_node_by_id (client, nodeid);
-    const int unavailable = node == NULL || node->pager != NULL || client->pager_generation == UINT64_MAX;
-    pthread_mutex_unlock (&client->node_lock);
+    const int unavailable = node == NULL || node->pager != NULL || client->registry.pager_generation == UINT64_MAX;
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     if (unavailable)
         return send_reply (context, node == NULL ? ESTALE : EOVERFLOW, NULL, 0);
@@ -4212,10 +4247,10 @@ static int handle_pager_acquire_request (const struct request_context * context,
         return send_reply (context, normalize_callback_error (callback_rc), NULL, 0);
     }
 
-    pthread_mutex_lock (&client->node_lock);
-    pager->token = ++client->pager_generation;
+    pthread_mutex_lock (&client->registry.node_lock);
+    pager->token = ++client->registry.pager_generation;
     node->pager = pager;
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     const struct usfs_pager_acquire_out reply = { .token = pager->token };
 
@@ -4238,10 +4273,10 @@ static int handle_pager_authorize_request (const struct request_context * contex
     if (client->ops.pager_authorize == NULL)
         return send_reply (context, ENOSYS, NULL, 0);
 
-    pthread_mutex_lock (&client->node_lock);
-    struct client_node * node = find_node_by_id (client, context->header->nodeid);
+    pthread_mutex_lock (&client->registry.node_lock);
+    const struct client_node * node = find_node_by_id (client, context->header->nodeid);
     const int valid = node != NULL && node->pager != NULL && node->pager->token == body.token;
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     if (!valid)
         return send_reply (context, ESTALE, NULL, 0);
@@ -4357,11 +4392,11 @@ static int handle_pager_release_request (const struct request_context * context,
 
     const int rc = client->ops.pager_release (get_callback_request (), &pager->resource);
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     struct client_node * node = find_node_by_id (client, context->header->nodeid);
     node->pager = NULL;
     queue_node_for_collection (client, node);
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     if (node->hidden_names != 0)
         cleanup_hidden_aliases (client, node, false);
@@ -4411,9 +4446,9 @@ static int cleanup_hidden_alias (struct usfs_client * client, struct client_alia
 
     const uint64_t parent = alias->parent;
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     remove_alias (client, alias);
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
     invalidate_node_directory_cache (client, parent);
 
     return 0;
@@ -4422,7 +4457,7 @@ static int cleanup_hidden_alias (struct usfs_client * client, struct client_alia
 /* Called with exclusive namespace admission, or after all workers have stopped. */
 static int cleanup_hidden_aliases (struct usfs_client * client, struct client_node * node, const int shutdown)
 {
-    if (!shutdown && (node->open_refs != 0 || node->pager != NULL))
+    if (!shutdown && (node->references.open_refs != 0 || node->pager != NULL))
         return 0;
 
     int first_error = 0;
@@ -4468,27 +4503,27 @@ static void dispose_client_handle (struct usfs_client * client, struct client_ha
     char path_buffer[USFS_PATH_MAX];
     const char * path = NULL;
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     struct client_node * node = find_node_by_id (client, handle->nodeid);
 
     if (client_handle_has_path (handle, node) && build_node_path_locked (client, handle->nodeid, path_buffer, sizeof (path_buffer)) == 0)
         path = path_buffer;
 
-    pthread_mutex_unlock (&client->node_lock);
-    if ((client->behavior.handle_paths == USFS_PATH_OMIT_FOR_HANDLE))
+    pthread_mutex_unlock (&client->registry.node_lock);
+    if (client->behavior.handle_paths == USFS_PATH_OMIT_FOR_HANDLE)
         path = NULL;
 
     release_backend_handle (client, handle, path);
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
 
     if (node != NULL)
     {
-        node->open_refs--;
+        node->references.open_refs--;
         queue_node_for_collection (client, node);
     }
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
     if (node != NULL && node->hidden_names != 0)
         cleanup_hidden_aliases (client, node, false);
 
@@ -4521,8 +4556,8 @@ static struct client_handle * detach_released_handle (
     const int flags
 )
 {
-    pthread_mutex_lock (&client->node_lock);
-    struct client_handle ** cursor = &client->handles;
+    pthread_mutex_lock (&client->registry.node_lock);
+    struct client_handle ** cursor = &client->registry.handles;
 
     while (*cursor != NULL)
     {
@@ -4537,7 +4572,7 @@ static struct client_handle * detach_released_handle (
     if (handle != NULL)
         *cursor = handle->next;
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     return handle;
 }
@@ -4708,7 +4743,7 @@ static int handle_fsync_request (const struct request_context * context, const c
 
 static int handle_syncfs_request (const struct request_context * context, const char * payload, const uint32_t payload_length)
 {
-    struct usfs_client * client = context->client;
+    const struct usfs_client * client = context->client;
 
     struct usfs_syncfs_in syncfs_request;
 
@@ -4767,8 +4802,8 @@ static struct client_dircache * find_directory_cache_entry (
 )
 {
     for (int slot_index = 0; slot_index < CLIENT_DIRCACHE_SLOTS; slot_index++)
-        if (client->dircache[slot_index].snapshot_id == snapshot_id && directory_cache_keys_match (&client->dircache[slot_index].key, key))
-            return &client->dircache[slot_index];
+        if (client->directories.dircache[slot_index].snapshot_id == snapshot_id && directory_cache_keys_match (&client->directories.dircache[slot_index].key, key))
+            return &client->directories.dircache[slot_index];
 
     return NULL;
 }
@@ -4777,26 +4812,26 @@ static void release_directory_cache_resources (struct usfs_client * client, stru
 {
     if (slot->owns_node_ref)
     {
-        pthread_mutex_lock (&client->node_lock);
+        pthread_mutex_lock (&client->registry.node_lock);
 
         struct client_node * node = find_node_by_id (client, slot->key.nodeid);
         if (node != NULL)
         {
-            node->cache_refs--;
+            node->references.cache_refs--;
             queue_node_for_collection (client, node);
         }
 
-        pthread_mutex_unlock (&client->node_lock);
+        pthread_mutex_unlock (&client->registry.node_lock);
     }
 
     free (slot->data);
-    client->dircache_ram_bytes -= slot->data_capacity;
+    client->directories.dircache_ram_bytes -= slot->data_capacity;
 
     if (slot->spooled)
         close (slot->spool_fd);
 
     free (slot->checkpoints);
-    client->dircache_spool_bytes -= slot->spool_reserved;
+    client->directories.dircache_spool_bytes -= slot->spool_reserved;
     slot->data = NULL;
     slot->data_capacity = 0;
     slot->checkpoints = NULL;
@@ -4820,19 +4855,19 @@ static void invalidate_node_directory_cache (struct usfs_client * client, const 
     pthread_mutex_lock (&client->dircache_lock);
 
     for (int slot_index = 0; slot_index < CLIENT_DIRCACHE_SLOTS; ++slot_index)
-        if (client->dircache[slot_index].snapshot_id != 0 && client->dircache[slot_index].key.nodeid == nodeid)
-            clear_directory_cache_slot (client, &client->dircache[slot_index]);
+        if (client->directories.dircache[slot_index].snapshot_id != 0 && client->directories.dircache[slot_index].key.nodeid == nodeid)
+            clear_directory_cache_slot (client, &client->directories.dircache[slot_index]);
 
     pthread_mutex_unlock (&client->dircache_lock);
 }
 
 static struct client_dircache * select_directory_cache_slot (struct usfs_client * client)
 {
-    struct client_dircache * slot = &client->dircache[0];
+    struct client_dircache * slot = &client->directories.dircache[0];
 
     for (int slot_index = 0; slot_index < CLIENT_DIRCACHE_SLOTS; slot_index++)
     {
-        struct client_dircache * candidate = &client->dircache[slot_index];
+        struct client_dircache * candidate = &client->directories.dircache[slot_index];
 
         if (candidate->snapshot_id == 0)
         {
@@ -4860,14 +4895,14 @@ static int publish_directory_snapshot (
     {
         pthread_mutex_lock (&client->dircache_lock);
 
-        if (client->next_snapshot_id >= USFS_DIRECTORY_CURSOR_ID_MAX)
+        if (client->directories.next_snapshot_id >= USFS_DIRECTORY_CURSOR_ID_MAX)
         {
             pthread_mutex_unlock (&client->dircache_lock);
             return EOVERFLOW;
         }
 
         struct client_dircache * slot = select_directory_cache_slot (client);
-        const size_t retained_ram_bytes = client->dircache_ram_bytes - slot->data_capacity;
+        const size_t retained_ram_bytes = client->directories.dircache_ram_bytes - slot->data_capacity;
 
         if (!directory_buffer->spooled && directory_buffer->cap > CLIENT_DIRCACHE_RAM_MAX - retained_ram_bytes)
         {
@@ -4882,15 +4917,15 @@ static int publish_directory_snapshot (
 
         clear_directory_cache_slot (client, slot);
 
-        pthread_mutex_lock (&client->node_lock);
+        pthread_mutex_lock (&client->registry.node_lock);
         struct client_node * node = find_node_by_id (client, key->nodeid);
         if (node != NULL)
-            node->cache_refs++;
-        pthread_mutex_unlock (&client->node_lock);
+            node->references.cache_refs++;
+        pthread_mutex_unlock (&client->registry.node_lock);
 
         slot->key = *key;
         slot->owns_node_ref = node != NULL;
-        slot->snapshot_id = ++client->next_snapshot_id;
+        slot->snapshot_id = ++client->directories.next_snapshot_id;
         slot->data = directory_buffer->data;
         slot->data_capacity = directory_buffer->cap;
         slot->len = directory_buffer->len;
@@ -4900,8 +4935,8 @@ static int publish_directory_snapshot (
         slot->checkpoint_count = directory_buffer->checkpoint_count;
         slot->spool_reserved = directory_buffer->spool_reserved;
         slot->spooled = directory_buffer->spooled;
-        slot->seq = ++client->dircache_seq;
-        client->dircache_ram_bytes += slot->data_capacity;
+        slot->seq = ++client->directories.dircache_seq;
+        client->directories.dircache_ram_bytes += slot->data_capacity;
 
         *snapshot_id = slot->snapshot_id;
         directory_buffer->data = NULL;
@@ -4926,7 +4961,7 @@ static void release_directory_buffer (struct usfs_directory_sink * directory_buf
     if (directory_buffer->spool_reserved != 0)
     {
         pthread_mutex_lock (&directory_buffer->client->dircache_lock);
-        directory_buffer->client->dircache_spool_bytes -= directory_buffer->spool_reserved;
+        directory_buffer->client->directories.dircache_spool_bytes -= directory_buffer->spool_reserved;
         pthread_mutex_unlock (&directory_buffer->client->dircache_lock);
     }
 }
@@ -4946,13 +4981,13 @@ static int reserve_directory_spool (struct usfs_directory_sink * directory_buffe
 
     pthread_mutex_lock (&client->dircache_lock);
 
-    while (extra > CLIENT_DIRSPOOL_MAX - client->dircache_spool_bytes)
+    while (extra > CLIENT_DIRSPOOL_MAX - client->directories.dircache_spool_bytes)
     {
         struct client_dircache * oldest_snapshot = NULL;
 
         for (int slot_index = 0; slot_index < CLIENT_DIRCACHE_SLOTS; slot_index++)
         {
-            struct client_dircache * candidate = &client->dircache[slot_index];
+            struct client_dircache * candidate = &client->directories.dircache[slot_index];
 
             if (candidate->snapshot_id == 0 || candidate->spool_reserved == 0)
                 continue;
@@ -4970,7 +5005,7 @@ static int reserve_directory_spool (struct usfs_directory_sink * directory_buffe
         clear_directory_cache_slot (client, oldest_snapshot);
     }
 
-    client->dircache_spool_bytes += extra;
+    client->directories.dircache_spool_bytes += extra;
     directory_buffer->spool_reserved = rounded;
     pthread_mutex_unlock (&client->dircache_lock);
 
@@ -4981,7 +5016,7 @@ static void clear_directory_cache (struct usfs_client * client)
 {
     for (int slot_index = 0; slot_index < CLIENT_DIRCACHE_SLOTS; slot_index++)
     {
-        clear_directory_cache_slot (client, &client->dircache[slot_index]);
+        clear_directory_cache_slot (client, &client->directories.dircache[slot_index]);
     }
 }
 
@@ -5189,6 +5224,27 @@ static int reserve_directory_buffer (struct usfs_directory_sink * directory_buff
     return 0;
 }
 
+static int reserve_directory_record (struct usfs_directory_sink * directory_buffer, const size_t needed)
+{
+    if (directory_buffer->spooled)
+    {
+        directory_buffer->error = reserve_directory_spool (directory_buffer, needed);
+        if (directory_buffer->error != 0)
+            return -directory_buffer->error;
+
+        if (directory_buffer->count % CLIENT_DIRECTORY_INDEX_STRIDE == 0)
+        {
+            directory_buffer->error = append_directory_checkpoint (directory_buffer, directory_buffer->len);
+            if (directory_buffer->error != 0)
+                return -directory_buffer->error;
+        }
+    }
+    else if (reserve_directory_buffer (directory_buffer, needed) != 0)
+        return -directory_buffer->error;
+
+    return 0;
+}
+
 int usfs_directory_add (struct usfs_directory_sink * directory_buffer, const char * name, const struct stat * entry_metadata)
 {
     if (directory_buffer == NULL)
@@ -5239,21 +5295,9 @@ int usfs_directory_add (struct usfs_directory_sink * directory_buffer, const cha
             return -directory_buffer->error;
     }
 
-    if (directory_buffer->spooled)
-    {
-        directory_buffer->error = reserve_directory_spool (directory_buffer, needed);
-        if (directory_buffer->error != 0)
-            return -directory_buffer->error;
-
-        if (directory_buffer->count % CLIENT_DIRECTORY_INDEX_STRIDE == 0)
-        {
-            directory_buffer->error = append_directory_checkpoint (directory_buffer, directory_buffer->len);
-            if (directory_buffer->error != 0)
-                return -directory_buffer->error;
-        }
-    }
-    else if (reserve_directory_buffer (directory_buffer, needed) != 0)
-        return -directory_buffer->error;
+    const int reserve_rc = reserve_directory_record (directory_buffer, needed);
+    if (reserve_rc != 0)
+        return reserve_rc;
 
     memset (&directory_entry, 0, sizeof (directory_entry));
     directory_entry.namelen = (uint16_t)name_length;
@@ -5449,7 +5493,7 @@ static int send_readdir_window (
         clear_directory_cache_slot (client, snapshot);
 
     if (rc != EIO)
-        snapshot->seq = ++client->dircache_seq;
+        snapshot->seq = ++client->directories.dircache_seq;
 
     pthread_mutex_unlock (&client->dircache_lock);
 
@@ -5522,17 +5566,17 @@ static int handle_forget_request (const struct request_context * context, const 
         return send_reply (context, EINVAL, NULL, 0);
 
     memcpy (&body, payload, sizeof (body));
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
 
     struct client_node * node = find_node_by_id (client, request_header->nodeid);
 
     if (request_header->nodeid == USFS_ROOT_ID)
     {
-        lookup_references = &client->root_lookup_refs;
+        lookup_references = &client->registry.root_lookup_refs;
     }
     else if (node != NULL)
     {
-        lookup_references = &node->lookup_refs;
+        lookup_references = &node->references.lookup_refs;
     }
     else
     {
@@ -5548,20 +5592,20 @@ static int handle_forget_request (const struct request_context * context, const 
         queue_node_for_collection (client, node);
     }
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     return send_reply (context, error, NULL, 0);
 }
 
 static struct client_node * retain_request_node (struct usfs_client * client, const uint64_t nodeid)
 {
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     struct client_node * node = find_node_by_id (client, nodeid);
 
     if (node != NULL)
-        node->operation_refs++;
+        node->references.operation_refs++;
 
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     return node;
 }
@@ -5589,6 +5633,33 @@ static int lock_request_node_for_mutation (const struct usfs_in_hdr * request_he
         *object = retained;
 
     return error;
+}
+
+static int dispatch_pager_request (const struct request_context * context, const char * payload, const uint32_t payload_length)
+{
+    switch (context->header->opcode)
+    {
+        case USFS_OP_PAGER_ACQUIRE:
+            handle_pager_acquire_request (context, payload_length);
+            return true;
+        case USFS_OP_PAGER_AUTHORIZE:
+            handle_pager_authorize_request (context, payload, payload_length);
+            return true;
+        case USFS_OP_PAGER_ENABLE_WRITE:
+            handle_pager_enable_write_request (context, payload, payload_length);
+            return true;
+        case USFS_OP_PAGER_READ:
+            handle_pager_read_request (context, payload, payload_length);
+            return true;
+        case USFS_OP_PAGER_WRITE:
+            handle_pager_write_request (context, payload, payload_length);
+            return true;
+        case USFS_OP_PAGER_RELEASE:
+            handle_pager_release_request (context, payload, payload_length);
+            return true;
+        default:
+            return false;
+    }
 }
 
 static void dispatch_request (const struct request_context * context, const char * payload, const uint32_t payload_length)
@@ -5642,24 +5713,6 @@ static void dispatch_request (const struct request_context * context, const char
         case USFS_OP_WRITE:
             handle_write_request (context, payload, payload_length);
             break;
-        case USFS_OP_PAGER_ACQUIRE:
-            handle_pager_acquire_request (context, payload_length);
-            break;
-        case USFS_OP_PAGER_AUTHORIZE:
-            handle_pager_authorize_request (context, payload, payload_length);
-            break;
-        case USFS_OP_PAGER_ENABLE_WRITE:
-            handle_pager_enable_write_request (context, payload, payload_length);
-            break;
-        case USFS_OP_PAGER_READ:
-            handle_pager_read_request (context, payload, payload_length);
-            break;
-        case USFS_OP_PAGER_WRITE:
-            handle_pager_write_request (context, payload, payload_length);
-            break;
-        case USFS_OP_PAGER_RELEASE:
-            handle_pager_release_request (context, payload, payload_length);
-            break;
         case USFS_OP_UNLINK:
             handle_unlink_request (context, payload, payload_length);
             break;
@@ -5688,7 +5741,8 @@ static void dispatch_request (const struct request_context * context, const char
             handle_syncfs_request (context, payload, payload_length);
             break;
         default:
-            send_reply (context, ENOSYS, NULL, 0);
+            if (!dispatch_pager_request (context, payload, payload_length))
+                send_reply (context, ENOSYS, NULL, 0);
             break;
     }
 }
@@ -5698,16 +5752,16 @@ static void finish_request (struct usfs_client * client, struct client_node * ob
     if (object != NULL)
         pthread_mutex_unlock (&object->mutation_lock);
 
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
 
     if (retained != NULL)
     {
-        retained->operation_refs--;
+        retained->references.operation_refs--;
         queue_node_for_collection (client, retained);
     }
 
     collect_unreferenced_nodes (client);
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
     release_namespace_access (client, exclusive);
 }
 
@@ -5758,9 +5812,9 @@ static void handle_request (struct usfs_client * client, const char * message, c
     }
 
     retained = retain_request_node (client, request_header.nodeid);
-    pthread_mutex_lock (&client->node_lock);
+    pthread_mutex_lock (&client->registry.node_lock);
     set_request_object_identity (request_header.opcode, request_header.nodeid, retained);
-    pthread_mutex_unlock (&client->node_lock);
+    pthread_mutex_unlock (&client->registry.node_lock);
 
     error = lock_request_node_for_mutation (&request_header, retained, &object);
     if (error != 0)
@@ -5781,19 +5835,19 @@ static void destroy_session_synchronization (struct usfs_client * client)
     pthread_mutex_destroy (&client->namespace.lock);
     pthread_mutex_destroy (&client->reply_lock);
     pthread_mutex_destroy (&client->dircache_lock);
-    pthread_mutex_destroy (&client->node_lock);
+    pthread_mutex_destroy (&client->registry.node_lock);
 }
 
 static int initialize_session_synchronization (struct usfs_client * client)
 {
-    int error = pthread_mutex_init (&client->node_lock, NULL);
+    int error = pthread_mutex_init (&client->registry.node_lock, NULL);
     if (error != 0)
         return -error;
 
     error = pthread_mutex_init (&client->dircache_lock, NULL);
     if (error != 0)
     {
-        pthread_mutex_destroy (&client->node_lock);
+        pthread_mutex_destroy (&client->registry.node_lock);
         return -error;
     }
 
@@ -5801,7 +5855,7 @@ static int initialize_session_synchronization (struct usfs_client * client)
     if (error != 0)
     {
         pthread_mutex_destroy (&client->dircache_lock);
-        pthread_mutex_destroy (&client->node_lock);
+        pthread_mutex_destroy (&client->registry.node_lock);
         return -error;
     }
 
@@ -5810,7 +5864,7 @@ static int initialize_session_synchronization (struct usfs_client * client)
     {
         pthread_mutex_destroy (&client->reply_lock);
         pthread_mutex_destroy (&client->dircache_lock);
-        pthread_mutex_destroy (&client->node_lock);
+        pthread_mutex_destroy (&client->registry.node_lock);
         return -error;
     }
 
@@ -5820,7 +5874,7 @@ static int initialize_session_synchronization (struct usfs_client * client)
         pthread_mutex_destroy (&client->namespace.lock);
         pthread_mutex_destroy (&client->reply_lock);
         pthread_mutex_destroy (&client->dircache_lock);
-        pthread_mutex_destroy (&client->node_lock);
+        pthread_mutex_destroy (&client->registry.node_lock);
         return -error;
     }
 
@@ -5991,7 +6045,7 @@ int usfs_client_create (
     client->diagnostic = selected_options->diagnostic;
     client->diagnostic_data = selected_options->diagnostic_data;
     client->user_data = application_data;
-    client->next_id = USFS_ROOT_ID + 1;
+    client->registry.next_id = USFS_ROOT_ID + 1;
 
     const int error = prepare_client_storage (client);
     if (error != 0)
@@ -6006,7 +6060,7 @@ int usfs_client_create (
 
 static int enter_destroy_callback_context (struct usfs_client * client, struct client_context_scope * scope)
 {
-    if (client->handles == NULL && client->nodes == NULL && (!client->init_done || client->ops.shutdown == NULL))
+    if (client->registry.handles == NULL && client->registry.nodes == NULL && (!client->init_done || client->ops.shutdown == NULL))
         return 0;
 
     return enter_callback_context (client, scope);
@@ -6014,7 +6068,7 @@ static int enter_destroy_callback_context (struct usfs_client * client, struct c
 
 static int destroy_user_state (struct usfs_client * client)
 {
-    for (struct client_node * node = client->nodes; node != NULL; node = node->next)
+    for (struct client_node * node = client->registry.nodes; node != NULL; node = node->next)
     {
         if (node->pager == NULL)
             continue;
@@ -6026,17 +6080,17 @@ static int destroy_user_state (struct usfs_client * client)
         node->pager = NULL;
     }
 
-    while (client->handles != NULL)
+    while (client->registry.handles != NULL)
     {
-        struct client_handle * handle = client->handles;
+        struct client_handle * handle = client->registry.handles;
 
-        client->handles = handle->next;
+        client->registry.handles = handle->next;
         dispose_client_handle (client, handle);
     }
 
     int first_error = 0;
 
-    for (struct client_node * node = client->nodes; node != NULL; node = node->next)
+    for (struct client_node * node = client->registry.nodes; node != NULL; node = node->next)
     {
         const int error = cleanup_hidden_aliases (client, node, true);
         if (first_error == 0)
@@ -6049,7 +6103,7 @@ static int destroy_user_state (struct usfs_client * client)
     return first_error;
 }
 
-static void close_transport (struct usfs_client * client)
+static void close_transport (const struct usfs_client * client)
 {
     if (client->fd >= 0)
         close (client->fd); /* triggers ddclose -> connection teardown */
@@ -6064,7 +6118,7 @@ static void destroy_namespace (struct usfs_client * client)
 {
     clear_directory_cache (client);
 
-    struct client_node * node = client->nodes;
+    struct client_node * node = client->registry.nodes;
 
     while (node != NULL)
     {
@@ -6194,7 +6248,7 @@ static int request_connection (struct usfs_client * client)
             client,
             "Failed to establish USFS connection: protocol version mismatch (kernel %u, library %u)\n",
             (unsigned)client->info.protocol_version,
-            (unsigned)USFS_PROTOCOL_VERSION
+            USFS_PROTOCOL_VERSION
         );
         errno = EPROTO;
         return -1;
@@ -6333,7 +6387,9 @@ static int read_complete_mount_inventory (char ** buffer, int * buffer_size)
             return -1;
         }
 
-        const int required_size = *(int *)*buffer; // todo: map to struct explicitly
+        int required_size;
+        /* MCTL_QUERY writes the required byte count into the first int. */
+        memcpy (&required_size, *buffer, sizeof (required_size));
 
         if (required_size <= *buffer_size)
         {
@@ -6495,7 +6551,16 @@ static int unmount_owned_mount (const struct usfs_client * client, int number)
         }
 
         if (attempt + 1 < CLIENT_UNMOUNT_MAX_ATTEMPTS)
-            usleep (CLIENT_UNMOUNT_RETRY_DELAY_US);
+        {
+            struct timespec remaining = {
+                .tv_sec = CLIENT_UNMOUNT_RETRY_DELAY_US / 1000000,
+                .tv_nsec = (CLIENT_UNMOUNT_RETRY_DELAY_US % 1000000) * 1000
+            };
+            while (nanosleep (&remaining, &remaining) != 0 && errno == EINTR)
+            {
+                /* Finish the bounded retry delay after an interrupted sleep. */
+            }
+        }
     }
 
     emit_diagnostic (client, "Failed to unmount %s: still busy\n", client->mountpoint);

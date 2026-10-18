@@ -8,7 +8,8 @@
 
 static int usfs_dev_close (const dev_t device_number, const chan_t channel)
 {
-    ignore_parameter device_number; //! todo: validate this parameter, reject close for not owning devices
+    if (!usfs_device_number_valid (device_number))
+        return ENXIO;
 
     struct usfs_connection * connection = get_connection_by_channel (channel);
 

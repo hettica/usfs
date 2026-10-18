@@ -105,6 +105,12 @@ static int request_directory_entries (const struct readdir_request_context * con
     return 0;
 }
 
+static int finish_directory_copy (struct uio * user_io_request, const uint64_t snapshot_id, const uint64_t index, const int result)
+{
+    user_io_request->uio_offset = (offset_t)((snapshot_id << USFS_DIRECTORY_CURSOR_INDEX_BITS) | index);
+    return result;
+}
+
 static int copy_directory_entries (
     const struct usfs_request * request,
     const uint32_t count,
@@ -129,27 +135,26 @@ static int copy_directory_entries (
         struct prepared_directory_entry prepared_entry;
 
         if (!prepare_directory_entry (&source, &prepared_entry))
-            break;
+            return finish_directory_copy (user_io_request, snapshot_id, index, rc);
 
         if ((uint64_t)user_io_request->uio_resid < (uint64_t)prepared_entry.output_record_length)
         {
             if (index == start_index)
                 rc = EINVAL;
 
-            break;
+            return finish_directory_copy (user_io_request, snapshot_id, index, rc);
         }
 
         rc = uiomove ((caddr_t)&prepared_entry.entry, (long)prepared_entry.output_record_length, UIO_READ, user_io_request);
         if (rc != 0)
-            break;
+            return finish_directory_copy (user_io_request, snapshot_id, index, rc);
 
         index += 1;
         src += prepared_entry.source_record_length;
         remaining -= prepared_entry.source_record_length;
     }
 
-    user_io_request->uio_offset = (offset_t)((snapshot_id << USFS_DIRECTORY_CURSOR_INDEX_BITS) | index);
-    return rc;
+    return finish_directory_copy (user_io_request, snapshot_id, index, rc);
 }
 
 static int read_directory (struct vnode * file_vnode, struct uio * user_io_request, int * end_of_directory, struct ucred * credentials)

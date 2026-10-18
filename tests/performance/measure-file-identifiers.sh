@@ -11,8 +11,8 @@ readonly build_root=$2
 readonly output_root=$3
 readonly mountpoint=$4
 
-test "$(uname -s)" = AIX
-test "$(id -u)" -eq 0
+[[ "$(uname -s)" = AIX ]]
+[[ "$(id -u)" -eq 0 ]]
 cmp "$build_root/bin/usfs.kext" /usr/lib/drivers/usfs/usfs.kext
 if mount | awk '$3 == "usfs" { found=1 } END { exit !found }'; then
     echo 'Failed to reserve identifier diagnostics: another USFS mount exists' >&2
@@ -25,16 +25,16 @@ restore_release()
     trap - EXIT HUP INT TERM
     local restore_status=0
     rmdev -l usfs0 >> "$output_root/identifier-restore.log" 2>&1 || restore_status=$?
-    if test "$restore_status" -eq 0; then
+    if [[ "$restore_status" -eq 0 ]]; then
         bash "$source_root/scripts/aix/install-variant.sh" release "$source_root" "$build_root" \
             >> "$output_root/identifier-restore.log" 2>&1 || restore_status=$?
     fi
-    if test "$restore_status" -eq 0; then
+    if [[ "$restore_status" -eq 0 ]]; then
         bash "$source_root/scripts/aix/setup.sh" >> "$output_root/identifier-restore.log" 2>&1 || restore_status=$?
     fi
     cmp "$build_root/bin/usfs.kext" /usr/lib/drivers/usfs/usfs.kext || restore_status=1
     usfsctl status >> "$output_root/identifier-restore.log" 2>&1 || restore_status=1
-    test "$restore_status" -eq 0 || exit "$restore_status"
+    [[ "$restore_status" -eq 0 ]] || exit "$restore_status"
     exit "$original_status"
 }
 

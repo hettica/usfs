@@ -12,7 +12,8 @@ static void timeout_handler (const struct trb * timer)
     e_wakeup (&wait_control->event);
 }
 
-int allocate_wait_control_block (struct wait_control_block ** wait_control_out) // todo: return ptr instead of assigning it to output value
+/* Preserve errno-style failures (EINVAL versus ENOMEM) and clear the output. */
+int allocate_wait_control_block (struct wait_control_block ** wait_control_out)
 {
     static const int memory_alignment_in_bytes = 4;
     if (wait_control_out == NULL)

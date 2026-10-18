@@ -482,9 +482,10 @@ static int unmounted_number;
 static int unmount_error, unmount_removes_record;
 static unsigned retry_sleeps, destroy_calls;
 
-int usleep (unsigned int duration)
+int nanosleep (const struct timespec * duration, struct timespec * remaining)
 {
     (void)duration;
+    (void)remaining;
     ++retry_sleeps;
     return 0;
 }
@@ -2013,7 +2014,7 @@ static void test_parent_identity (struct tap_state * tap)
     child = a == NULL ? NULL : find_or_create_node (f, a->id, "child", NULL);
     if (b == NULL || child == NULL)
         abort ();
-    next = f->next_id;
+    next = f->registry.next_id;
     in.nodeid = child->id;
     handle_lookup_request (&context, "..", 3);
     tap_ok (tap, captured_reply.error == 0 && captured_entry.nodeid == a->id, "dot-dot returns the existing canonical parent identity");
@@ -2041,7 +2042,7 @@ static void test_parent_identity (struct tap_state * tap)
         handle_lookup_request (&context, "..", 3);
         valid &= captured_reply.error == 0 && captured_entry.nodeid == USFS_ROOT_ID;
     }
-    tap_ok (tap, valid && f->next_id == next, "repeated dot and ancestor traversal allocate no duplicate identities");
+    tap_ok (tap, valid && f->registry.next_id == next, "repeated dot and ancestor traversal allocate no duplicate identities");
     (last_native_result = usfs_client_destroy (&f));
 }
 
@@ -2757,7 +2758,7 @@ static void directory_test_handle (struct usfs_client * client, const uint64_t n
 static int directory_cached (struct usfs_client * f, uint64_t nodeid)
 {
     for (unsigned i = 0; i < CLIENT_DIRCACHE_SLOTS; ++i)
-        if (f->dircache[i].snapshot_id != 0 && f->dircache[i].key.nodeid == nodeid)
+        if (f->directories.dircache[i].snapshot_id != 0 && f->directories.dircache[i].key.nodeid == nodeid)
             return 1;
     return 0;
 }
@@ -2885,8 +2886,8 @@ static int isolated_listing (
     }
     if (listing_release)
     {
-        struct client_handle * handle = listing_client->handles;
-        listing_client->handles = handle->next;
+        struct client_handle * handle = listing_client->registry.handles;
+        listing_client->registry.handles = handle->next;
         dispose_client_handle (listing_client, handle);
         listing_release = 0;
     }
@@ -2957,8 +2958,8 @@ static void test_directory_isolation (struct tap_state * tap)
                 listing_window (f, USFS_ROOT_ID, 1, listing_cursor (second_id, 2), "cd", NULL);
     tap_ok (tap, valid && directory_callbacks == 2, "alternating opens on one directory continue their own snapshots");
 
-    struct client_handle * closed = f->handles;
-    f->handles = closed->next;
+    struct client_handle * closed = f->registry.handles;
+    f->registry.handles = closed->next;
     dispose_client_handle (f, closed);
     valid = listing_window (f, USFS_ROOT_ID, 1, listing_cursor (first_id, 2), "cd", NULL);
     tap_ok (tap, valid, "closing another open does not invalidate a directory snapshot");
@@ -3003,19 +3004,19 @@ static void test_directory_isolation (struct tap_state * tap)
     valid = listing_window (f, USFS_ROOT_ID, 1, 0, "ab", &pressure_id);
     struct client_dircache * pressure_snapshot = NULL;
     for (unsigned slot_index = 0; slot_index < CLIENT_DIRCACHE_SLOTS; ++slot_index)
-        if (f->dircache[slot_index].snapshot_id == pressure_id)
-            pressure_snapshot = &f->dircache[slot_index];
+        if (f->directories.dircache[slot_index].snapshot_id == pressure_id)
+            pressure_snapshot = &f->directories.dircache[slot_index];
     if (pressure_snapshot != NULL)
     {
         pressure_snapshot->spool_reserved = CLIENT_DIRSPOOL_MAX;
-        f->dircache_spool_bytes = CLIENT_DIRSPOOL_MAX;
+        f->directories.dircache_spool_bytes = CLIENT_DIRSPOOL_MAX;
     }
     struct usfs_directory_sink pressure_buffer = { 0 };
     pressure_buffer.client = f;
     valid &= pressure_snapshot != NULL && reserve_directory_spool (&pressure_buffer, 1) == 0 &&
              !listing_window (f, USFS_ROOT_ID, 1, listing_cursor (pressure_id, 2), "cd", NULL) && captured_reply.error == ESTALE;
     release_directory_buffer (&pressure_buffer);
-    valid &= f->dircache_spool_bytes == 0;
+    valid &= f->directories.dircache_spool_bytes == 0;
     tap_ok (tap, valid, "storage pressure evicts the oldest snapshot and expires its cursor");
 
     (last_native_result = usfs_client_destroy (&f));
@@ -3301,7 +3302,7 @@ static void test_large_directory_spool (struct tap_state * tap)
     while (reply.count != 0 && windows < LARGE_DIRECTORY_ENTRIES);
 
     valid &= entry_index == LARGE_DIRECTORY_ENTRIES && windows > 2 && directory_callbacks == 1 && directory_spool_opens == 1 &&
-             client->dircache_spool_bytes <= CLIENT_DIRSPOOL_MAX && client->dircache[0].spooled && client->dircache[0].checkpoint_count > 1;
+             client->directories.dircache_spool_bytes <= CLIENT_DIRSPOOL_MAX && client->directories.dircache[0].spooled && client->directories.dircache[0].checkpoint_count > 1;
     tap_ok (tap, valid, "large listing spills beyond 4 MiB and walks every entry in order with one backend enumeration");
 
     request.cookie = listing_cursor (snapshot_id, 60000);
@@ -3325,7 +3326,7 @@ static void test_large_directory_spool (struct tap_state * tap)
     directory_spool_read_error = 1;
     handle_readdir_request (&context, (char *)&request, sizeof (request));
     valid = captured_reply.error == EIO && !directory_cached (client, USFS_ROOT_ID) && directory_spool_closes == directory_spool_opens &&
-            client->dircache_spool_bytes == 0;
+            client->directories.dircache_spool_bytes == 0;
     directory_spool_read_error = 0;
     handle_readdir_request (&context, (char *)&request, sizeof (request));
     valid &= captured_reply.error == ESTALE;
@@ -3344,7 +3345,7 @@ static void test_large_directory_spool (struct tap_state * tap)
         directory_spool_create_error = failure == 0;
         directory_spool_write_error = failure == 1;
         if (failure == 2)
-            client->dircache_spool_bytes = CLIENT_DIRSPOOL_MAX;
+            client->directories.dircache_spool_bytes = CLIENT_DIRSPOOL_MAX;
         unsigned opens_before = directory_spool_opens;
         unsigned closes_before = directory_spool_closes;
 
@@ -3352,7 +3353,7 @@ static void test_large_directory_spool (struct tap_state * tap)
         valid = captured_reply.error == (failure == 2 ? ENOSPC : EIO) && !directory_cached (client, USFS_ROOT_ID) &&
                 directory_spool_opens - opens_before == directory_spool_closes - closes_before;
         if (failure != 2)
-            valid &= client->dircache_spool_bytes == 0;
+            valid &= client->directories.dircache_spool_bytes == 0;
         tap_ok (tap, valid, "spool creation, write and quota failures discard the incomplete snapshot");
 
         directory_spool_create_error = directory_spool_write_error = 0;
@@ -3399,13 +3400,13 @@ static void test_directory_ram_bound (struct tap_state * tap)
         directory_buffer.cap = CLIENT_DIRCACHE_MAX;
         valid &= publish_directory_snapshot (client, &key, &directory_buffer, &snapshot_ids[snapshot_index]) == 0;
         release_directory_buffer (&directory_buffer);
-        valid &= client->dircache_ram_bytes <= CLIENT_DIRCACHE_RAM_MAX;
+        valid &= client->directories.dircache_ram_bytes <= CLIENT_DIRCACHE_RAM_MAX;
     }
 
-    valid &= client->dircache_ram_bytes == CLIENT_DIRCACHE_RAM_MAX && client->dircache_spool_bytes > 0 &&
-             client->dircache_spool_bytes <= CLIENT_DIRSPOOL_MAX && find_directory_cache_entry (client, &key, snapshot_ids[0]) != NULL &&
+    valid &= client->directories.dircache_ram_bytes == CLIENT_DIRCACHE_RAM_MAX && client->directories.dircache_spool_bytes > 0 &&
+             client->directories.dircache_spool_bytes <= CLIENT_DIRSPOOL_MAX && find_directory_cache_entry (client, &key, snapshot_ids[0]) != NULL &&
              find_directory_cache_entry (client, &key, snapshot_ids[RAM_BOUND_SNAPSHOT_COUNT - 1u]) != NULL &&
-             client->dircache[RAM_BOUND_SNAPSHOT_COUNT - 1u].spooled && directory_spool_opens == initial_spool_opens + 1;
+             client->directories.dircache[RAM_BOUND_SNAPSHOT_COUNT - 1u].spooled && directory_spool_opens == initial_spool_opens + 1;
 
     (last_native_result = usfs_client_destroy (&client));
     valid &= directory_spool_closes == initial_spool_closes + 1;
@@ -3437,7 +3438,7 @@ static unsigned identity_nodes (struct usfs_client * f)
 {
     struct client_node * node;
     unsigned count = 0;
-    for (node = f->nodes; node != NULL; node = node->next)
+    for (node = f->registry.nodes; node != NULL; node = node->next)
         ++count;
     return count;
 }
@@ -3571,8 +3572,8 @@ static void test_identity_reclamation (struct tap_state * tap)
         valid &= publish_directory_snapshot (f, &key, &db, &snapshot_id) == 0 && snapshot_id != 0;
         release_directory_buffer (&db);
         valid &= identity_forget (f, id, 1, 8) == 0 && find_node_by_id (f, id) != NULL && directory_cached (f, id);
-        struct client_handle * closed = f->handles;
-        f->handles = closed->next;
+        struct client_handle * closed = f->registry.handles;
+        f->registry.handles = closed->next;
         dispose_client_handle (f, closed);
         collect_unreferenced_nodes (f);
         valid &= find_node_by_id (f, id) != NULL && directory_cached (f, id);
@@ -3807,7 +3808,7 @@ static void test_lifecycle_context (struct tap_state * tap)
         dir->fh = 2;
         dir->isdir = 1;
         file->next = dir;
-        data.f->handles = file;
+        data.f->registry.handles = file;
         int valid = rc == 0 && get_callback_request () == NULL && data.f->user_data == data.initial;
         (last_native_result = usfs_client_destroy (&data.f));
         tap_ok (
@@ -3834,7 +3835,7 @@ static void test_lifecycle_context (struct tap_state * tap)
         tap_ok (tap, valid && get_callback_request () == NULL, "nested context scopes restore the complete caller context");
     }
     {
-        struct usfs_client instances[2] = { { 0 }, { 0 } };
+        struct usfs_client instances[2] = { 0 };
         struct lifecycle_context_data data[2] = { { 0 }, { 0 } };
         pthread_t workers[2];
         for (unsigned i = 0; i < 2; ++i)
@@ -4108,15 +4109,15 @@ static void test_fid_vget_reconstruction (struct tap_state * tap)
     uint64_t root_token = 0;
     uint64_t root_nodeid = 0;
     int valid = request_fid (client, USFS_ROOT_ID, &root_token) == 0 && root_token == g_root->ino &&
-                request_vget (client, root_token, &root_nodeid) == 0 && root_nodeid == USFS_ROOT_ID && client->root_lookup_refs == 1;
-    valid &= identity_forget (client, USFS_ROOT_ID, 1, sizeof (struct usfs_forget_in)) == 0 && client->root_lookup_refs == 0;
+                request_vget (client, root_token, &root_nodeid) == 0 && root_nodeid == USFS_ROOT_ID && client->registry.root_lookup_refs == 1;
+    valid &= identity_forget (client, USFS_ROOT_ID, 1, sizeof (struct usfs_forget_in)) == 0 && client->registry.root_lookup_refs == 0;
     tap_ok (tap, valid, "root FID and VGET transfer one root lookup reference");
 
     uint64_t first_nodeid = 0;
     valid = request_vget (client, metadata.st_ino, &first_nodeid) == 0 && first_nodeid > USFS_ROOT_ID;
     struct client_node * directory = find_child_node (client, USFS_ROOT_ID, "dir");
     struct client_node * file = find_node_by_id (client, first_nodeid);
-    valid &= directory != NULL && directory->lookup_refs == 0 && file != NULL && file->lookup_refs == 1 &&
+    valid &= directory != NULL && directory->references.lookup_refs == 0 && file != NULL && file->references.lookup_refs == 1 &&
              find_child_node (client, directory->id, "file") == file;
     tap_ok (tap, valid, "cold VGET reconstructs ancestors and keeps only the target lookup reference");
 
@@ -4131,10 +4132,10 @@ static void test_fid_vget_reconstruction (struct tap_state * tap)
     uint64_t alias_nodeid = 0;
     valid = request_vget (client, metadata.st_ino, &alias_nodeid) == 0 && alias_nodeid == second_nodeid;
     file = find_node_by_id (client, second_nodeid);
-    valid &= file != NULL && file->lookup_refs == 2 && find_child_node (client, USFS_ROOT_ID, "alias") == file;
+    valid &= file != NULL && file->references.lookup_refs == 2 && find_child_node (client, USFS_ROOT_ID, "alias") == file;
     tap_ok (tap, valid, "VGET through a hard-link alias preserves canonical node identity");
 
-    const uint64_t refs_before_invalid = file != NULL ? file->lookup_refs : 0;
+    const uint64_t refs_before_invalid = file != NULL ? file->references.lookup_refs : 0;
     static const char * malformed_paths[] = { "relative", "/dir//file", "/dir/../file", "/dir/./file", "/dir/file/" };
     valid = 1;
     for (size_t index = 0; index < sizeof (malformed_paths) / sizeof (malformed_paths[0]); index++)
@@ -4147,11 +4148,11 @@ static void test_fid_vget_reconstruction (struct tap_state * tap)
     force_unterminated_identity_path = 1;
     valid &= request_vget (client, metadata.st_ino, NULL) == EIO;
     force_unterminated_identity_path = 0;
-    valid &= file != NULL && file->lookup_refs == refs_before_invalid;
+    valid &= file != NULL && file->references.lookup_refs == refs_before_invalid;
     tap_ok (tap, valid, "VGET rejects malformed or unterminated resolver paths without retaining references");
 
     forced_identity_path = "/";
-    valid = request_vget (client, metadata.st_ino, NULL) == ESTALE && file != NULL && file->lookup_refs == refs_before_invalid;
+    valid = request_vget (client, metadata.st_ino, NULL) == ESTALE && file != NULL && file->references.lookup_refs == refs_before_invalid;
     forced_identity_path = NULL;
     tap_ok (tap, valid, "VGET rejects a path whose exported token differs from the request");
 
@@ -4612,10 +4613,33 @@ static void test_pager_tokens (struct tap_state * tap)
     (void)usfs_client_destroy (&client);
 }
 
+static void test_create_without_adopted_node (struct tap_state * tap)
+{
+    const struct usfs_operations operations = { 0 };
+    struct usfs_client * client = new_test_client (&operations, sizeof (operations), NULL);
+    if (client == NULL)
+        abort ();
+    client->fd = 73;
+    const struct usfs_in_hdr header = { .nodeid = USFS_ROOT_ID };
+    const struct request_context context = { .client = client, .header = &header };
+    const struct usfs_create_attr_in request = { .activation = USFS_CREATE_OPEN };
+    struct create_resources resources = { 0 };
+    const struct stat metadata = { .st_mode = S_IFREG | 0600, .st_nlink = 1 };
+    resources.handle = calloc (1, sizeof (*resources.handle));
+    if (resources.handle == NULL)
+        abort ();
+
+    tap_ok (tap, finish_attribute_creation (&context, &request, &resources, &metadata) == 0 &&
+                 captured_reply.error == EIO && client->registry.handles == NULL,
+            "creation with a handle but no adopted node fails before publishing the handle");
+    (void)usfs_client_destroy (&client);
+}
+
 int main (void)
 {
     struct tap_state tap;
-    tap_plan (&tap, 302);
+    tap_plan (&tap, 303);
+    test_create_without_adopted_node (&tap);
     test_worker_capacity_notifications (&tap);
     test_pager_tokens (&tap);
     test_native_api_contract (&tap);

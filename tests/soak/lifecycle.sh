@@ -33,6 +33,7 @@ restore_config()
     /usr/sbin/chusfs -l usfs0 -a request_timeout_ms="$_request" \
         -a pager_timeout_ms="$_pager" -a max_outstanding_requests="$_queue" \
         >/dev/null 2>&1
+    return "$?"
 }
 
 cleanup()
@@ -43,6 +44,7 @@ cleanup()
     for _pid in $PIDS; do soak_bounded_kill "$_pid" TERM; done
     /usr/sbin/lsdev -l usfs0 2>/dev/null | grep -q Available || mkdev -l usfs0 >/dev/null 2>&1
     restore_config
+    return "$?"
 }
 trap cleanup 0 HUP INT TERM
 

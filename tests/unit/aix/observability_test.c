@@ -48,9 +48,9 @@ int main(void)
     first.state = second.state = idle.state = USFS_CONN_ACTIVE;
     pending[0].next = &pending[1];
     delivered[0].next = &delivered[1]; delivered[1].next = &delivered[2];
-    first.pending_requests_head = &pending[0]; first.delivered_requests_head = &delivered[0];
+    first.requests.pending_requests_head = &pending[0]; first.requests.delivered_requests_head = &delivered[0];
     first.outstanding_requests = 5;
-    second.pending_requests_head = &pending[2]; second.delivered_requests_head = &delivered[3];
+    second.requests.pending_requests_head = &pending[2]; second.requests.delivered_requests_head = &delivered[3];
     second.outstanding_requests = 2;
     g_connections[1] = &first; g_connections[2] = &second; g_connections[3] = &idle;
     for (unsigned scenario = 0; scenario < 6; ++scenario) {

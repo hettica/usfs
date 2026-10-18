@@ -329,10 +329,10 @@ static void set_state_request_counters (const struct usfs_connection * connectio
 {
     struct usfs_request * request;
 
-    for (request = connection->pending_requests_head; request != NULL; request = request->next)
+    for (request = connection->requests.pending_requests_head; request != NULL; request = request->next)
         state->pending_requests += 1u;
 
-    for (request = connection->delivered_requests_head; request != NULL; request = request->next)
+    for (request = connection->requests.delivered_requests_head; request != NULL; request = request->next)
         state->delivered_requests += 1u;
 }
 

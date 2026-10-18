@@ -32,7 +32,15 @@ int gn_remove (struct vnode * removed_vnode, struct vnode * directory_vnode, cha
     // would free it before that final logical-file-system release.
     const struct usfs_remove_in request_body = { .target = target_node->nodeid };
 
-    return _mutate_entry (directory_vnode, (uint16_t)USFS_OP_UNLINK, &request_body, sizeof (request_body), entry_name, NULL, 0, credentials);
+    return _mutate_entry (directory_vnode, &(const struct entry_mutation){
+        .opcode = (uint16_t)USFS_OP_UNLINK,
+        .body = &request_body,
+        .body_length = sizeof (request_body),
+        .name = entry_name,
+        .data = NULL,
+        .data_length = 0,
+        .credentials = credentials
+    });
 }
 
 #endif

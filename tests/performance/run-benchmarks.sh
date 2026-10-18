@@ -14,9 +14,9 @@ readonly mountpoint=$4
 readonly sample_deadline_seconds=900
 readonly benchmark="$build_root/testing/bin/usfs_overhead"
 
-test "$(uname -s)" = AIX
-test "$(id -u)" -eq 0
-test -d "$mountpoint"
+[[ "$(uname -s)" = AIX ]]
+[[ "$(id -u)" -eq 0 ]]
+[[ -d "$mountpoint" ]]
 mkdir -p "$output_root"
 cmp "$build_root/bin/usfs.kext" /usr/lib/drivers/usfs/usfs.kext
 if mount | awk '$3 == "usfs" { found=1 } END { exit !found }'; then
@@ -42,7 +42,7 @@ run_sample()
     wait "$benchmark_pid" || rc=$?
     tail -n 8 "$output_root/$name.log"
     usfsctl status > "$output_root/$name-status.txt" 2>&1
-    if test "$rc" -ne 0; then
+    if [[ "$rc" -ne 0 ]]; then
         echo "Failed benchmark $name: exit status $rc" >&2
         return "$rc"
     fi

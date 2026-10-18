@@ -35,6 +35,12 @@ static int g_device_driver_is_registered = false;
 static int g_configuration_command = CONFIGURATION_COMMAND_NONE;
 static dev_t g_configured_device_number = 0;
 
+/* Set before devsw registration and stable until all callbacks are drained. */
+int usfs_device_number_valid (const dev_t device_number)
+{
+    return device_number == g_configured_device_number;
+}
+
 struct devsw g_device_driver_descriptor;
 
 /* Initializes the USFS device-driver descriptor. */

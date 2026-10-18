@@ -29,16 +29,15 @@ int gn_symlink (struct vnode * directory_vnode, char * link_name, char * link_ta
     struct usfs_symlink_in request_body = { 0 };
     request_body.namelen = link_name_length;
 
-    return _mutate_entry (
-        directory_vnode,
-        USFS_OP_SYMLINK,
-        &request_body,
-        sizeof (request_body),
-        link_name,
-        link_target,
-        link_target_length,
-        credentials
-    );
+    return _mutate_entry (directory_vnode, &(const struct entry_mutation){
+        .opcode = USFS_OP_SYMLINK,
+        .body = &request_body,
+        .body_length = sizeof (request_body),
+        .name = link_name,
+        .data = link_target,
+        .data_length = link_target_length,
+        .credentials = credentials
+    });
 }
 
 #endif

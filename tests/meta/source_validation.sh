@@ -34,6 +34,7 @@ for file in $(find scripts tests -type f \( -name '*.sh' -o -name '*.bash' \) -p
                 failures=$((failures + 1))
             fi
             ;;
+        *) : ;; # Production scripts do not require test-runner headers.
     esac
 done
 
@@ -50,12 +51,12 @@ rm -f /tmp/usfs-windows-reference.$$
 
 echo "TAP version 13"
 echo "1..5"
-if [ "$failures" -eq 0 ]; then
+if [[ "$failures" -eq 0 ]]; then
     echo "ok 1 - shell sources parse and contain no Windows-host dependencies"
 else
     echo "not ok 1 - shell sources parse and contain no Windows-host dependencies"
 fi
-if [ "$checked" -gt 0 ]; then
+if [[ "$checked" -gt 0 ]]; then
     echo "ok 2 - shell validation discovered $checked scripts"
 else
     echo "not ok 2 - shell validation discovered scripts"
@@ -85,36 +86,36 @@ else
     failures=$((failures + 1))
 fi
 
-if [ -n "${USFS_BINARY_DIR:-}" ]; then
+if [[ -n "${USFS_BINARY_DIR:-}" ]]; then
     freshness_failure=0
     for variant in release testing; do
-        if [ "$variant" = release ]; then
+        if [[ "$variant" = release ]]; then
             image="$USFS_BINARY_DIR/bin/usfs.kext"
             object_groups="release_objects hooks"
         else
             image="$USFS_BINARY_DIR/testing/bin/usfs.kext"
             object_groups="testing_core testing_instrumentation hooks"
         fi
-        if [ ! -s "$image" ]; then
+        if [[ ! -s "$image" ]]; then
             echo "# missing $variant kernel image"
             freshness_failure=1
             continue
         fi
         for group in $object_groups; do
             object_directory="$USFS_BINARY_DIR/CMakeFiles/_usfs_kernel_$group.dir"
-            if [ ! -d "$object_directory" ]; then
+            if [[ ! -d "$object_directory" ]]; then
                 freshness_failure=1
                 continue
             fi
             newer=$(find "$object_directory" -type f -name '*.o' -newer "$image" -print) || freshness_failure=1
-            if [ -n "$newer" ]; then
+            if [[ -n "$newer" ]]; then
                 echo "# stale $variant image; newer objects follow"
                 printf '%s\n' "$newer" | sed 's/^/# /'
                 freshness_failure=1
             fi
         done
     done
-    if [ "$freshness_failure" -eq 0 ]; then
+    if [[ "$freshness_failure" -eq 0 ]]; then
         echo "ok 5 - linked kernels include the current compiled objects"
     else
         echo "not ok 5 - linked kernels include the current compiled objects"
@@ -124,4 +125,4 @@ else
     echo "ok 5 - artifact freshness requires the CMake test target # SKIP standalone source inspection"
 fi
 
-[ "$failures" -eq 0 ]
+[[ "$failures" -eq 0 ]]

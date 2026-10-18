@@ -164,7 +164,7 @@ static void _free_vnode (struct vnode * file_vnode, const short occurrence)
 static int allocate_node_vnodes (struct vfs * filesystem, const int vnode_type, const int is_root, struct usfs_node * node)
 {
     struct gnode * gnode = NULL;
-    int rc = allocate_gnode (&gnode, &node->gn_lock_occurrence);
+    int rc = allocate_gnode (&gnode, &node->lock_occurrences.gn_lock_occurrence);
     if (rc != 0)
         return rc;
 
@@ -173,10 +173,10 @@ static int allocate_node_vnodes (struct vfs * filesystem, const int vnode_type, 
 
     struct vnode * file_vnode = NULL;
 
-    rc = allocate_vnode (filesystem, gnode, &file_vnode, &node->vn_lock_occurrence);
+    rc = allocate_vnode (filesystem, gnode, &file_vnode, &node->lock_occurrences.vn_lock_occurrence);
     if (rc != 0)
     {
-        _free_gnode (gnode, node->gn_lock_occurrence);
+        _free_gnode (gnode, node->lock_occurrences.gn_lock_occurrence);
 
         return rc;
     }
@@ -197,9 +197,9 @@ static void initialize_node_locks (struct usfs_node * node)
 
     /* Separate families, same unique occurrence as this node's gnode. AIX
        lock_alloc/lock_init permit pageable storage in process context. */
-    lock_alloc (&node->mutation_lock, LOCK_ALLOC_PAGED, mutation_lock_class, node->gn_lock_occurrence);
+    lock_alloc (&node->mutation_lock, LOCK_ALLOC_PAGED, mutation_lock_class, node->lock_occurrences.gn_lock_occurrence);
     lock_init (&node->mutation_lock, FALSE);
-    lock_alloc (&node->pageout_lock, LOCK_ALLOC_PAGED, pageout_lock_class, node->gn_lock_occurrence);
+    lock_alloc (&node->pageout_lock, LOCK_ALLOC_PAGED, pageout_lock_class, node->lock_occurrences.gn_lock_occurrence);
     lock_init (&node->pageout_lock, FALSE);
 }
 
@@ -233,8 +233,8 @@ static int _allocate_node (struct vfs * filesystem, const int vnode_type, const 
         return ENOMEM;
 
     memset (node, 0, sizeof (struct usfs_node));
-    node->gn_lock_occurrence = -1;
-    node->vn_lock_occurrence = -1;
+    node->lock_occurrences.gn_lock_occurrence = -1;
+    node->lock_occurrences.vn_lock_occurrence = -1;
 
     const int rc = allocate_node_vnodes (filesystem, vnode_type, is_root, node);
     if (rc != 0)
@@ -258,8 +258,8 @@ static void _discard_unpublished_node (struct usfs_node * node)
 
     lock_free (&node->pageout_lock);
     lock_free (&node->mutation_lock);
-    _free_vnode (node->vn, node->vn_lock_occurrence);
-    _free_gnode (node->gn, node->gn_lock_occurrence);
+    _free_vnode (node->vn, node->lock_occurrences.vn_lock_occurrence);
+    _free_gnode (node->gn, node->lock_occurrences.gn_lock_occurrence);
     xmfree (node, kernel_heap);
 }
 
@@ -327,8 +327,8 @@ static struct usfs_node * _node_of (struct vnode * file_vnode)
     return (struct usfs_node *)file_vnode->v_gnode->gn_data;
 }
 
+/* These implementation headers depend on the vnode lifetime helpers above. */
 #include "open_state.h"
-
 #include "namespace_security.h"
 
 /* usfs_call consumes a failed exchange; successful replies remain ours. */
@@ -404,7 +404,7 @@ static int _call_conn_no_reply (
     const uint64_t nodeid,
     const void * body,
     const uint32_t body_length,
-    struct ucred * credentials
+    const struct ucred * credentials
 )
 {
     if (connection == NULL)
@@ -640,7 +640,7 @@ static int _setattr_unlocked (struct vnode * file_vnode, const struct usfs_setat
 static int _request_node_attributes_with_handle (
     const struct usfs_mount_data *,
     const struct usfs_node *,
-    struct ucred *,
+    const struct ucred *,
     struct usfs_attr_out *,
     uint64_t
 );
@@ -734,16 +734,18 @@ static int _setattr (struct vnode * file_vnode, const struct usfs_setattr_in * b
  *   0 - Indicates success.
  *   Nonzero return values are returned from the /usr/include/sys/errno.h file to indicate failure.
  */
-static int _mutate_entry (
-    struct vnode * directory_vnode,
-    const uint16_t opcode,
-    const void * body,
-    const uint32_t body_length,
-    const char * name,
-    const void * data,
-    const uint32_t data_length,
-    struct ucred * credentials
-)
+struct entry_mutation
+{
+    uint16_t opcode;
+    const void * body;
+    uint32_t body_length;
+    const char * name;
+    const void * data;
+    uint32_t data_length;
+    struct ucred * credentials;
+};
+
+static int _mutate_entry (struct vnode * directory_vnode, const struct entry_mutation * mutation)
 {
     struct usfs_mount_data * mount_data = _mount_of (directory_vnode);
     struct usfs_node * directory_node = _node_of (directory_vnode);
@@ -757,18 +759,18 @@ static int _mutate_entry (
     if (!mount_data->writable)
         return EROFS;
 
-    if (name == NULL)
+    if (mutation->name == NULL)
         return EINVAL;
 
-    if (name[0] == '\0')
+    if (mutation->name[0] == '\0')
         return EINVAL;
 
-    const struct usfs_request_allocation_spec request_spec = { .opcode = opcode,
+    const struct usfs_request_allocation_spec request_spec = { .opcode = mutation->opcode,
                                                                .node_id = directory_node->nodeid,
-                                                               .opcode_specific_body = { .bytes = body, .length = body_length },
-                                                               .opcode_specific_argument = name,
-                                                               .opcode_specific_payload = { .bytes = data, .length = data_length },
-                                                               .credentials = credentials };
+                                                               .opcode_specific_body = { .bytes = mutation->body, .length = mutation->body_length },
+                                                               .opcode_specific_argument = mutation->name,
+                                                               .opcode_specific_payload = { .bytes = mutation->data, .length = mutation->data_length },
+                                                               .credentials = mutation->credentials };
 
     return exchange_status_request (mount_data->conn, &request_spec);
 }

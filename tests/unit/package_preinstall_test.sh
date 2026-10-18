@@ -53,22 +53,26 @@ exit "$CASE_METHOD_ERROR"
 EOF
                 chmod 700 "$base/methods/ucfgusfs"
                 CASE_RECORDS=1
-                if [ "$scenario" = defined ]; then expected=0; else CASE_METHOD_ERROR=1; fi
+                if [[ "$scenario" = defined ]]; then expected=0; else CASE_METHOD_ERROR=1; fi
                 ;;
             odm-residue) CASE_RECORDS=1 ;;
             driver-residue) touch "$base/drivers/usfs.kext" ;;
             node-residue) touch "$base/dev/usfs0" ;;
             fresh) expected=0 ;;
             query-fails) CASE_ODM_ERROR=1 ;;
+            *) echo "unexpected preinstall scenario: $scenario" >&2; exit 2 ;;
         esac
         result=0
         /usr/bin/ksh "$base/$entry" >"$base/output" 2>&1 || result=1
         failure=0
-        [ "$result" -eq "$expected" ] || failure=1
-        if [ -f "$CASE_LOG" ]; then
+        [[ "$result" -eq "$expected" ]] || failure=1
+        if [[ -f "$CASE_LOG" ]]; then
             grep -q legacy-called "$CASE_LOG" && failure=1
         fi
-        case "$scenario" in defined|teardown-fails) grep -q direct-called "$CASE_LOG" || failure=1 ;; esac
+        case "$scenario" in
+            defined|teardown-fails) grep -q direct-called "$CASE_LOG" || failure=1 ;;
+            *) : ;; # These scenarios have no teardown method to invoke.
+        esac
         tap_ok "$failure" "$entry pre-install handles $scenario without trusting the legacy helper"
     done
 done

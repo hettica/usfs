@@ -3,6 +3,7 @@
 
 #include "usfs_common.h"
 #include "usfs_config_instrumentation.h"
+#include "vfs_text.h"
 
 #include <limits.h>
 
@@ -191,8 +192,6 @@ static int is_usfs_vfs_line (const char * line)
     return delimiter == '\n' || delimiter == '\0';
 }
 
-#include "vfs_text.h"
-
 int usfs_type_is_registered (void)
 {
     FILE * vfs_file = fopen (USFS_VFS_FILE, "r");
@@ -316,7 +315,8 @@ static int copy_other_vfs_entries (FILE * source, FILE * target, int * last_char
 
 static int write_vfs_registration (FILE * target, const int last_character, const int file_system_type)
 {
-    return fprintf (target, "%s%s\t\t%d\tnone\t\t\tnone\n", last_character == '\n' ? "" : "\n", USFS_DRIVER_NAME, file_system_type) < 0
+    const char * separator = last_character == '\n' ? "" : "\n";
+    return fprintf (target, "%s%s\t\t%d\tnone\t\t\tnone\n", separator, USFS_DRIVER_NAME, file_system_type) < 0
                ? USFS_FAILURE
                : USFS_SUCCESS;
 }
@@ -349,11 +349,9 @@ static int write_replacement_vfs (FILE * source, FILE * target, const char * tem
     if (copy_other_vfs_entries (source, target, &last_character) !=
         USFS_SUCCESS)
         failed = true;
-    if (source != NULL)
-    {
-        if (fclose (source) != 0)
-            failed = true;
-    }
+    if (source != NULL &&
+        fclose (source) != 0)
+        failed = true;
 
     if (!failed && register_type &&
         write_vfs_registration (target, last_character, file_system_type) != USFS_SUCCESS)
@@ -1067,7 +1065,18 @@ static int write_coverage_metadata (const struct coverage_export_paths * paths, 
     return USFS_SUCCESS;
 }
 
-static int store_coverage_export (const char * coverage_run, const char * coverage_event, const uint32_t generation, const int original_command, const int configuration_rc, const int export_command, const int export_rc, const void * buffer)
+struct coverage_export_result
+{
+    const char * run;
+    const char * event;
+    uint32_t generation;
+    int original_command;
+    int configuration_rc;
+    int export_command;
+    int export_rc;
+};
+
+static int store_coverage_export (const struct coverage_export_result * result, const void * buffer)
 {
     const struct usfs_gcov_container_header * header = buffer;
     const char * binary_directory = getenv ("USFS_BINARY_DIR");
@@ -1076,13 +1085,13 @@ static int store_coverage_export (const char * coverage_run, const char * covera
     if (validate_coverage_header (header) != USFS_SUCCESS)
         return USFS_FAILURE;
 
-    if (prepare_coverage_export_paths (binary_directory, coverage_run, coverage_event, generation, &paths) != USFS_SUCCESS)
+    if (prepare_coverage_export_paths (binary_directory, result->run, result->event, result->generation, &paths) != USFS_SUCCESS)
         return USFS_FAILURE;
 
     if (write_coverage_container (&paths, buffer, header->total_size) != USFS_SUCCESS)
         return USFS_FAILURE;
 
-    return write_coverage_metadata (&paths, coverage_event, generation, original_command, configuration_rc, export_command, export_rc);
+    return write_coverage_metadata (&paths, result->event, result->generation, result->original_command, result->configuration_rc, result->export_command, result->export_rc);
 }
 
 static int request_coverage_export (const mid_t module_id, const dev_t device_number, const uint32_t generation, const int export_command, void * buffer)
@@ -1107,31 +1116,22 @@ static int request_coverage_export (const mid_t module_id, const dev_t device_nu
     return sysconfig (SYS_CFGDD, &query, sizeof (query));
 }
 
-static int export_coverage_command (const mid_t module_id, const dev_t device_number, const char * coverage_run, const char * coverage_event, const uint32_t generation, const int original_command, const int configuration_rc, const int export_command)
+static int export_coverage_command (const mid_t module_id, const dev_t device_number, struct coverage_export_result * result)
 {
     void * buffer = malloc (USFS_GCOV_MAX_SNAPSHOT);
     if (buffer == NULL)
         return USFS_FAILURE;
 
     memset (buffer, 0, USFS_GCOV_MAX_SNAPSHOT);
-    const int export_rc = request_coverage_export (module_id, device_number, generation, export_command, buffer);
+    result->export_rc = request_coverage_export (module_id, device_number, result->generation, result->export_command, buffer);
 
     /*
      * A deliberately failed final unpin still returns its errno after copying
      * a valid snapshot. Preserve that evidence before propagating failure.
      */
-    const int store_rc = store_coverage_export (
-        coverage_run,
-        coverage_event,
-        generation,
-        original_command,
-        configuration_rc,
-        export_command,
-        export_rc,
-        buffer
-    );
+    const int store_rc = store_coverage_export (result, buffer);
     free (buffer);
-    if (store_rc != USFS_SUCCESS || export_rc != 0)
+    if (store_rc != USFS_SUCCESS || result->export_rc != 0)
         return USFS_FAILURE;
 
     return USFS_SUCCESS;
@@ -1148,16 +1148,15 @@ static int export_configuration_coverage (const mid_t module_id, const dev_t dev
         coverage_event = automatic_event;
     }
 
-    if (export_coverage_command (
-            module_id,
-            device_number,
-            coverage_run,
-            coverage_event,
-            generation,
-            command,
-            configuration_rc,
-            export_command
-        ) != USFS_SUCCESS)
+    struct coverage_export_result result = {
+        .run = coverage_run,
+        .event = coverage_event,
+        .generation = generation,
+        .original_command = command,
+        .configuration_rc = configuration_rc,
+        .export_command = export_command
+    };
+    if (export_coverage_command (module_id, device_number, &result) != USFS_SUCCESS)
         return USFS_FAILURE;
 
     if (export_command == USFS_CFG_INSTRUMENTATION_DRAIN)
@@ -1166,19 +1165,15 @@ static int export_configuration_coverage (const mid_t module_id, const dev_t dev
     return USFS_SUCCESS;
 }
 
-static int prepare_device_configuration (struct cfg_dd * query, struct usfs_dev_cfg * configuration, const mid_t module_id, const dev_t device_number, const int command, const int coverage_active, const char * coverage_run, uint32_t * generation)
+static int prepare_device_configuration (struct cfg_dd * query, struct usfs_dev_cfg * configuration, const int coverage_active, const char * coverage_run, uint32_t * generation)
 {
-    memset (query, 0, sizeof (*query));
     memset (configuration, 0, sizeof (*configuration));
-    query->kmid = module_id;
-    query->cmd = command;
-    query->devno = device_number;
     configuration->magic = USFS_CONFIG_DDS_MAGIC;
     configuration->abi_version = USFS_CONFIG_ABI_VERSION;
     configuration->size = sizeof (*configuration);
     if (coverage_active)
     {
-        if (read_coverage_generation (coverage_run, command, generation) !=
+        if (read_coverage_generation (coverage_run, query->cmd, generation) !=
             USFS_SUCCESS)
             return USFS_FAILURE;
         configuration->flags |= USFS_CONFIG_FLAG_DEFERRED_EXPORT;
@@ -1186,7 +1181,7 @@ static int prepare_device_configuration (struct cfg_dd * query, struct usfs_dev_
     }
     usfs_config_instrumentation_prepare (
         configuration,
-        command == USFS_CFG_INIT ? USFS_CONFIG_OPERATION_INITIALIZE : USFS_CONFIG_OPERATION_TERMINATE
+        query->cmd == USFS_CFG_INIT ? USFS_CONFIG_OPERATION_INITIALIZE : USFS_CONFIG_OPERATION_TERMINATE
     );
     if (configuration->flags != 0)
     {
@@ -1200,7 +1195,7 @@ static int prepare_device_configuration (struct cfg_dd * query, struct usfs_dev_
 /* Sends a USFS_CFG_INIT/USFS_CFG_TERM configuration command. Returns USFS_SUCCESS. */
 static int usfs_devsw_send_command (const mid_t module_id, const dev_t device_number, const int command)
 {
-    struct cfg_dd query;
+    struct cfg_dd query = { .kmid = module_id, .devno = device_number, .cmd = command };
     struct usfs_dev_cfg configuration;
     const char * coverage_run = getenv ("USFS_COVERAGE_SUITE");
     const char * coverage_event = getenv ("USFS_COVERAGE_EVENT");
@@ -1208,7 +1203,7 @@ static int usfs_devsw_send_command (const mid_t module_id, const dev_t device_nu
         is_coverage_name_valid (coverage_run) &&
         access ("/usr/sbin/usfs_coverage", X_OK) == 0;
     uint32_t generation = 0;
-    if (prepare_device_configuration (&query, &configuration, module_id, device_number, command, coverage_active, coverage_run, &generation) != USFS_SUCCESS)
+    if (prepare_device_configuration (&query, &configuration, coverage_active, coverage_run, &generation) != USFS_SUCCESS)
         return USFS_FAILURE;
 
     const int configuration_rc = sysconfig (SYS_CFGDD, &query, sizeof (query));

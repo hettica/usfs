@@ -32,9 +32,9 @@ static int free_mount_nodes (struct usfs_mount_data * mount_data)
             lock_free (&node->pageout_lock);
             lock_free (&node->mutation_lock);
             if (node->vn != NULL)
-                _free_vnode (node->vn, node->vn_lock_occurrence);
+                _free_vnode (node->vn, node->lock_occurrences.vn_lock_occurrence);
             if (node->gn != NULL)
-                _free_gnode (node->gn, node->gn_lock_occurrence);
+                _free_gnode (node->gn, node->lock_occurrences.gn_lock_occurrence);
             xmfree (node, kernel_heap);
         }
 

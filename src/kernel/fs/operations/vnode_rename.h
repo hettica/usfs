@@ -75,16 +75,15 @@ int gn_rename (
     // which lays them reply back to back exactly as usfs_rename_in describes.
     // Replacing an existing destination is the daemon's job; destination_vnode is only
     // the logical file system telling us it found one.
-    return _mutate_entry (
-        source_directory_vnode,
-        USFS_OP_RENAME,
-        &request_body,
-        sizeof (request_body),
-        old_name,
-        new_name,
-        new_name_len,
-        credentials
-    );
+    return _mutate_entry (source_directory_vnode, &(const struct entry_mutation){
+        .opcode = USFS_OP_RENAME,
+        .body = &request_body,
+        .body_length = sizeof (request_body),
+        .name = old_name,
+        .data = new_name,
+        .data_length = new_name_len,
+        .credentials = credentials
+    });
 }
 
 #endif

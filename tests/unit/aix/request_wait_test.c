@@ -129,8 +129,8 @@ int e_block_thread(void)
         } else {
             script_ok &= script_connection->outstanding_requests == 2 &&
                          script_connection->cleanup_outstanding == 1;
-            script_connection->pending_requests_head = NULL;
-            script_connection->pending_requests_tail = NULL;
+            script_connection->requests.pending_requests_head = NULL;
+            script_connection->requests.pending_requests_tail = NULL;
             script_request->state = USFS_REQ_ANSWERED;
         }
         return THREAD_AWAKENED;
@@ -139,11 +139,11 @@ int e_block_thread(void)
         if (block_calls == 1) {
             script_ok &= cleanup_opcode ? !last_interruptible : last_interruptible != 0;
             if (script_state != USFS_REQ_PENDING) {
-                script_connection->pending_requests_head = NULL;
-                script_connection->pending_requests_tail = NULL;
+                script_connection->requests.pending_requests_head = NULL;
+                script_connection->requests.pending_requests_tail = NULL;
                 script_request->state = script_state;
                 if (script_state == USFS_REQ_SENT)
-                    script_connection->delivered_requests_head = script_request;
+                    script_connection->requests.delivered_requests_head = script_request;
             }
             return cleanup_opcode ? THREAD_AWAKENED : THREAD_INTERRUPTED;
         }
@@ -155,9 +155,9 @@ int e_block_thread(void)
         if (block_calls < 4)
             return THREAD_AWAKENED;
         if (script_finish == USFS_REQ_ANSWERED) {
-            script_connection->pending_requests_head = NULL;
-            script_connection->pending_requests_tail = NULL;
-            script_connection->delivered_requests_head = NULL;
+            script_connection->requests.pending_requests_head = NULL;
+            script_connection->requests.pending_requests_tail = NULL;
+            script_connection->requests.delivered_requests_head = NULL;
             script_request->state = USFS_REQ_ANSWERED;
             script_request->reply_buffer_size = 8;
         } else if (script_finish == USFS_REQ_ABORTED) {
@@ -438,7 +438,7 @@ int main(void)
         req.request_buffer = (char *)&header; req.request_buffer_size = sizeof(header);
         tap_ok(&tap, usfs_call(&conn, &req) == EIO && request_frees == 1 &&
                conn.refs_counter == 1 && conn.outstanding_requests == 0 &&
-               conn.pending_requests_head == NULL && conn.state == USFS_CONN_CLOSED && lock_depth == 0,
+               conn.requests.pending_requests_head == NULL && conn.state == USFS_CONN_CLOSED && lock_depth == 0,
                "orderly-closed connections reject new RPCs without reserving slots or leaking ownership");
     }
     return tap_finish(&tap);

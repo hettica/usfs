@@ -29,6 +29,7 @@ cleanup()
     [ -n "${CHILD_PID:-}" ] && soak_bounded_kill "$CHILD_PID" TERM
     [ -n "${PARENT_PID:-}" ] && soak_bounded_kill "$PARENT_PID" TERM
     [ -n "$LEFTOVERS" ] || rm -rf "$BASE"
+    return "$?"
 }
 trap cleanup 0 HUP INT TERM
 

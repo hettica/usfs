@@ -300,7 +300,7 @@ static struct mem_inode * resolve (const char * path, struct mem_inode ** parent
     struct mem_inode * current_inode = g_root;
     char * path_token_context = NULL;
     const char * path_component;
-    char * next_component;
+    const char * next_component;
 
     if (parent_inode_output != NULL)
     {
@@ -602,7 +602,7 @@ static int get_file_attributes_locked (
     const struct usfs_client_request * request,
     const char * path,
     struct stat * file_attributes,
-    struct usfs_open_file * file_info
+    const struct usfs_open_file * file_info
 )
 {
     const struct mem_inode * inode = find_operation_inode (request, path, file_info);
@@ -784,7 +784,7 @@ static int read_directory_locked (
     struct usfs_directory_sink * sink
 )
 {
-    struct mem_inode * inode = NULL;
+    const struct mem_inode * inode = NULL;
 
     if (identity != NULL && identity->has_backend_identity)
         inode = find_live_inode_by_id (identity->backend_ino);
@@ -1121,7 +1121,7 @@ static int open_directory_locked (const char * path, struct usfs_open_file * fil
     return 0;
 }
 
-static int read_file_locked (const char * path, char * buffer, size_t requested_bytes, const off_t offset, struct usfs_open_file * file_info)
+static int read_file_locked (const char * path, char * buffer, size_t requested_bytes, const off_t offset, const struct usfs_open_file * file_info)
 {
     struct mem_inode * inode = find_operation_inode (NULL, path, file_info);
     const struct mem_handle * file_handle = (file_info != NULL) ? find_file_handle (file_info->value - 1) : NULL;
@@ -1314,7 +1314,7 @@ static int remove_directory_locked (const struct usfs_expected_entry * expected)
 static int validate_rename_destination (
     const struct mem_inode * source_inode,
     const struct mem_inode * destination_inode,
-    struct mem_inode * destination_directory_inode
+    const struct mem_inode * destination_directory_inode
 )
 {
     /* Moving a directory beneath itself would cut the subtree loose. */
@@ -1437,7 +1437,7 @@ static int rename_entry_locked (
  * rather than refused outright, which is what lets a caller filling the file
  * system see a short count and then ENOSPC, the way a real one behaves.
  */
-static int write_file_locked (const char * path, const char * buffer, size_t requested_bytes, const off_t offset, struct usfs_open_file * file_info)
+static int write_file_locked (const char * path, const char * buffer, size_t requested_bytes, const off_t offset, const struct usfs_open_file * file_info)
 {
     struct mem_inode * inode = find_operation_inode (NULL, path, file_info);
     const struct mem_handle * file_handle = (file_info != NULL) ? find_file_handle (file_info->value - 1) : NULL;
@@ -1505,7 +1505,7 @@ static int change_file_permissions_locked (
     const struct usfs_client_request * request,
     const char * path,
     const mode_t mode,
-    struct usfs_open_file * file_info
+    const struct usfs_open_file * file_info
 )
 {
     struct mem_inode * inode = find_operation_inode (request, path, file_info);
@@ -1525,7 +1525,7 @@ static int change_file_owner_locked (
     const char * path,
     const uid_t uid,
     const gid_t gid,
-    struct usfs_open_file * file_info
+    const struct usfs_open_file * file_info
 )
 {
     struct mem_inode * inode = find_operation_inode (request, path, file_info);
@@ -1548,7 +1548,7 @@ static int truncate_file_locked (
     const struct usfs_client_request * request,
     const char * path,
     off_t new_file_size,
-    struct usfs_open_file * file_info
+    const struct usfs_open_file * file_info
 )
 {
     struct mem_inode * inode = find_operation_inode (request, path, file_info);
@@ -1584,7 +1584,7 @@ static int set_file_times_locked (
     const struct usfs_client_request * request,
     const char * path,
     const struct timespec requested_times[2],
-    struct usfs_open_file * file_info
+    const struct usfs_open_file * file_info
 )
 {
     struct mem_inode * inode = find_operation_inode (request, path, file_info);

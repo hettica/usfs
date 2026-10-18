@@ -78,8 +78,8 @@ static int usfs_lookup_device_number (dev_t * device_number)
 /* Releases the driver's major (and its minors) back to ODM. Returns USFS_SUCCESS. */
 static int usfs_release_device_numbers (int number_state)
 {
-    /* TODO: release only this instance's minor; free the major with the last
-     * instance once multiple logical devices are supported. */
+    /* Configuration accepts only USFS_LOGICAL_DEVICE_NAME. This sole device
+     * owns the major and all its minors, so teardown releases them together. */
     const int release_major = 1;
 
     /* reldevno requires a minor record. A retry after minor cleanup may own

@@ -43,7 +43,8 @@
  * still-loaded instrumented extension. They are never published as a runtime
  * device ABI.
  *
- * todo: rename; instrumentation should be abstract, not related to export or drain which is a part of gcov runtime
+ * Export and drain deliberately distinguish copying a coverage snapshot from
+ * releasing retained coverage state; these private command values remain stable.
  */
 #define USFS_CFG_INSTRUMENTATION_EXPORT 0x55534301 /* Exports deferred instrumentation data. */
 #define USFS_CFG_INSTRUMENTATION_DRAIN  0x55534302 /* Drains exported instrumentation data. */

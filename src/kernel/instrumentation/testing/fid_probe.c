@@ -88,11 +88,9 @@ static int capture_identifier (struct usfs_test_fid_probe * request, struct ucre
         struct vnode * resolved_vnode = NULL;
 
         rc = fidtovp (&file_vnode->v_vfsp->vfs_fsid, &file_id, &resolved_vnode, credentials);
-        if (rc == 0)
-        {
-            if (resolved_vnode == NULL || resolved_vnode != file_vnode)
-                rc = EIO;
-        }
+        if (rc == 0 &&
+            (resolved_vnode == NULL || resolved_vnode != file_vnode))
+            rc = EIO;
 
         if (resolved_vnode != NULL)
             VNOP_RELE (resolved_vnode);

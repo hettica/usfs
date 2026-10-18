@@ -19,8 +19,8 @@ static void link_three(struct usfs_connection *connection, struct usfs_request *
     first->next = second;
     second->next = third;
     third->next = NULL;
-    connection->pending_requests_head = first;
-    connection->pending_requests_tail = third;
+    connection->requests.pending_requests_head = first;
+    connection->requests.pending_requests_tail = third;
 }
 
 int main(void)
@@ -41,30 +41,30 @@ int main(void)
 
     link_three(&connection, &first, &second, &third);
     tap_ok(&tap, remove_request_from_pending_queue(&connection, &second) == 1 &&
-                 first.next == &third && connection.pending_requests_tail == &third &&
+                 first.next == &third && connection.requests.pending_requests_tail == &third &&
                  second.next == NULL,
            "pending middle request is unlinked");
     link_three(&connection, &first, &second, &third);
     tap_ok(&tap, remove_request_from_pending_queue(&connection, &first) == 1 &&
-                 connection.pending_requests_head == &second &&
-                 connection.pending_requests_tail == &third,
+                 connection.requests.pending_requests_head == &second &&
+                 connection.requests.pending_requests_tail == &third,
            "pending head request is unlinked");
     link_three(&connection, &first, &second, &third);
     tap_ok(&tap, remove_request_from_pending_queue(&connection, &third) == 1 &&
-                 connection.pending_requests_tail == &second && second.next == NULL,
+                 connection.requests.pending_requests_tail == &second && second.next == NULL,
            "pending tail removal rebuilds the tail");
     memset(&connection, 0, sizeof(connection));
-    connection.pending_requests_head = &first;
-    connection.pending_requests_tail = &first;
+    connection.requests.pending_requests_head = &first;
+    connection.requests.pending_requests_tail = &first;
     first.next = NULL;
     tap_ok(&tap, remove_request_from_pending_queue(&connection, &first) == 1 &&
-                 connection.pending_requests_head == NULL &&
-                 connection.pending_requests_tail == NULL,
+                 connection.requests.pending_requests_head == NULL &&
+                 connection.requests.pending_requests_tail == NULL,
            "only pending request removal empties the queue");
     link_three(&connection, &first, &second, &third);
     tap_ok(&tap, remove_request_from_pending_queue(&connection, &absent) == 0 &&
-                 connection.pending_requests_head == &first &&
-                 connection.pending_requests_tail == &third,
+                 connection.requests.pending_requests_head == &first &&
+                 connection.requests.pending_requests_tail == &third,
            "absent request leaves the queue unchanged");
 
     tap_ok(&tap, select_interrupt_strategy(USFS_REQ_PENDING) ==

@@ -42,21 +42,17 @@ int validate_instrumentation_config (const struct usfs_dev_cfg * device_config)
     if ((device_config->flags & ~usfs_instrumentation_config_flags ()) != 0)
         return EINVAL;
 
-    if ((device_config->flags & USFS_CONFIG_FLAG_INSTRUMENTATION) == 0)
-    {
-        if (memcmp (device_config->instrumentation, empty_instrumentation, sizeof (empty_instrumentation)) != 0)
-            return EINVAL;
-    }
+    if ((device_config->flags & USFS_CONFIG_FLAG_INSTRUMENTATION) == 0 &&
+        memcmp (device_config->instrumentation, empty_instrumentation, sizeof (empty_instrumentation)) != 0)
+        return EINVAL;
 #ifndef USFS_TESTING
     if ((device_config->flags & USFS_CONFIG_FLAG_INSTRUMENTATION) != 0)
         return EINVAL;
 #endif
 #ifdef USFS_COVERAGE
-    if ((device_config->flags & USFS_CONFIG_FLAG_DEFERRED_EXPORT) != 0)
-    {
-        if (device_config->generation == 0)
-            return EINVAL;
-    }
+    if ((device_config->flags & USFS_CONFIG_FLAG_DEFERRED_EXPORT) != 0 &&
+        device_config->generation == 0)
+        return EINVAL;
 #else
     if ((device_config->flags & USFS_CONFIG_FLAG_DEFERRED_EXPORT) != 0)
         return EINVAL;

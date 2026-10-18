@@ -6,11 +6,14 @@
 
 #include "definitions.h"
 
-static int usfs_dev_open (const dev_t device_number, const ulong open_flags, const chan_t channel, const int is_called_from_kernel_extension)
+static int usfs_dev_open (const dev_t device_number, const ulong open_flags, const chan_t channel, const int extension)
 {
-    ignore_parameter device_number;                   //! todo: validate this parameter, reject open for not owning devices
-    ignore_parameter open_flags;                      //! todo: reject unsupported open flags
-    ignore_parameter is_called_from_kernel_extension; //! todo: research what this affects, decide if we should handle this parameter
+    if (!usfs_device_number_valid (device_number))
+        return ENXIO;
+    /* USFS has no openx extension or kernel-buffer transport. Access and
+       nonblocking flags remain governed by LFS and the read entry point. */
+    if (extension != 0 || (open_flags & (DKERNEL | DAPPEND)) != 0)
+        return EINVAL;
 
     if (channel == USFS_STATUS_CHANNEL)
         return 0;

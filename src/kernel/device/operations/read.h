@@ -15,17 +15,17 @@
 static void enqueue_delivered_request (struct usfs_connection * connection, struct usfs_request * request)
 {
     request->state = USFS_REQ_SENT;
-    request->next = connection->delivered_requests_head;
-    connection->delivered_requests_head = request;
+    request->next = connection->requests.delivered_requests_head;
+    connection->requests.delivered_requests_head = request;
 }
 
 static struct usfs_request * dequeue_pending_request (struct usfs_connection * connection)
 {
-    struct usfs_request * request = connection->pending_requests_head;
+    struct usfs_request * request = connection->requests.pending_requests_head;
 
-    connection->pending_requests_head = request->next;
-    if (connection->pending_requests_head == NULL)
-        connection->pending_requests_tail = NULL;
+    connection->requests.pending_requests_head = request->next;
+    if (connection->requests.pending_requests_head == NULL)
+        connection->requests.pending_requests_tail = NULL;
 
     request->next = NULL;
     request->state = USFS_REQ_SENDING;
@@ -34,10 +34,10 @@ static struct usfs_request * dequeue_pending_request (struct usfs_connection * c
 
 static int check_for_pending_requests (const struct usfs_connection * connection, const struct uio * user_io_request)
 {
-    if (connection->pending_requests_head == NULL)
+    if (connection->requests.pending_requests_head == NULL)
         return EAGAIN;
 
-    if ((uint64_t)user_io_request->uio_resid < (uint64_t)connection->pending_requests_head->request_buffer_size)
+    if ((uint64_t)user_io_request->uio_resid < (uint64_t)connection->requests.pending_requests_head->request_buffer_size)
         return EMSGSIZE;
 
     return 0;
@@ -120,10 +120,12 @@ static int finish_request_delivery (struct usfs_connection * connection, struct 
     return EIO;
 }
 
-static int usfs_dev_read (const dev_t device_number, struct uio * user_io_request, const chan_t channel, const int is_called_from_kernel_extension)
+static int usfs_dev_read (const dev_t device_number, struct uio * user_io_request, const chan_t channel, const int extension)
 {
-    ignore_parameter device_number;                   //! todo: validate this parameter, reject open for not owning devices
-    ignore_parameter is_called_from_kernel_extension; //! todo: research what this affects, decide if we should handle this parameter
+    if (!usfs_device_number_valid (device_number))
+        return ENXIO;
+    if (extension != 0)
+        return EINVAL;
 
     if (user_io_request == NULL)
         return EINVAL;
@@ -132,7 +134,7 @@ static int usfs_dev_read (const dev_t device_number, struct uio * user_io_reques
     if (connection == NULL)
         return ENXIO;
 
-    // todo: this method does not do allocation, but its pair 'release_connection' does deallocation; this is confusing; think how to make it clean
+    /* Retain the channel through the exchange; the final release may reclaim it. */
     acquire_connection (connection);
 
     struct usfs_request * usfs_request = NULL;

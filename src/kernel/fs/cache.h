@@ -757,11 +757,8 @@ static int is_next_sync_candidate (
     if (node->nodeid > maximum_node_id)
         return false;
 
-    if (selected_node != NULL)
-    {
-        if (node->nodeid >= selected_node->nodeid)
-            return false;
-    }
+    if (selected_node != NULL && node->nodeid >= selected_node->nodeid)
+        return false;
 
     return true;
 }
@@ -803,13 +800,13 @@ static uint64_t find_maximum_node_id (const struct usfs_connection * connection)
     {
         const struct usfs_mount_data * mount_data = connection->mounted_data;
 
-        if (mount_data != NULL)
+        if (mount_data == NULL)
+            return 0;
+
+        for (const struct usfs_node * node = mount_data->nodes; node != NULL; node = node->next)
         {
-            for (const struct usfs_node * node = mount_data->nodes; node != NULL; node = node->next)
-            {
-                if (node->nodeid > maximum_node_id)
-                    maximum_node_id = node->nodeid;
-            }
+            if (node->nodeid > maximum_node_id)
+                maximum_node_id = node->nodeid;
         }
     }
 

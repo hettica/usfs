@@ -260,7 +260,7 @@ static struct usfs_client * new_hidden_fixture (const int zero_handle)
     if (node == NULL)
         abort ();
 
-    node->lookup_refs = 1;
+    node->references.lookup_refs = 1;
     struct usfs_in_hdr request = { 0 };
     struct request_context context = { client, &request };
     const struct usfs_open_in opened = { FREAD | FWRITE, 0 };
@@ -296,7 +296,7 @@ static int unlink_hidden_fixture (struct usfs_client * client)
 static void release_hidden_fixture (struct usfs_client * client, const uint64_t nodeid)
 {
     struct usfs_in_hdr request = { 0 };
-    const struct usfs_release_in release = { client->handles->wire_fh, FREAD | FWRITE, client->handles->isdir };
+    const struct usfs_release_in release = { client->registry.handles->wire_fh, FREAD | FWRITE, client->registry.handles->isdir };
     char message[sizeof (request) + sizeof (release)];
 
     request.version = USFS_PROTOCOL_VERSION;
@@ -484,7 +484,7 @@ static void exercise_null_handle_callbacks (struct usfs_client * client, const u
 {
     struct usfs_in_hdr request = { .nodeid = nodeid };
     const struct request_context context = { client, &request };
-    const uint64_t handle = client->handles->wire_fh;
+    const uint64_t handle = client->registry.handles->wire_fh;
     const struct usfs_getattr_in attributes = { handle };
     const struct usfs_read_in read = { .fh = handle, .size = 1 };
     const struct usfs_write_in write = { .fh = handle };
@@ -538,7 +538,7 @@ static void test_null_handle_paths (struct tap_state * tap)
 
         if (path_case == DIRECTORY_HANDLE)
         {
-            client->handles->isdir = true;
+            client->registry.handles->isdir = true;
             client->ops.releasedir = hidden_release;
         }
 
@@ -680,7 +680,7 @@ static void test_hidden_preparation_failures (struct tap_state * tap)
     find_or_create_node (client, USFS_ROOT_ID, indexed_name, &indexed_metadata);
     tap_ok (
         tap,
-        unlink_hidden_fixture (client) == 0 && client->hidden_generation == 2 && find_alias (client, USFS_ROOT_ID, indexed_name) != NULL,
+        unlink_hidden_fixture (client) == 0 && client->registry.hidden_generation == 2 && find_alias (client, USFS_ROOT_ID, indexed_name) != NULL,
         "hidden-name selection also skips names retained only in client indexes"
     );
     /* An external actor can remove our owned backend entry first. */
@@ -853,8 +853,8 @@ static void test_hidden_concurrency (struct tap_state * tap)
         const struct client_node * retained = find_node_by_id (client, nodeid);
         const int references_balanced = scenario == FINAL_RELEASES_AFTER_FORGET
                                             ? retained == NULL
-                                            : retained != NULL && retained->operation_refs == 0 && retained->lookup_refs == 1 &&
-                                                  retained->open_refs == (scenario == RENAME_VERSUS_READ ? 1u : 0u);
+                                            : retained != NULL && retained->references.operation_refs == 0 && retained->references.lookup_refs == 1 &&
+                                                  retained->references.open_refs == (scenario == RENAME_VERSUS_READ ? 1u : 0u);
         const int valid = references_balanced && ns_test.errors == 0 && hidden_fixture.delete_calls == (scenario == RENAME_VERSUS_READ ? 0u : 1u) &&
                           hidden_fixture.release_calls == (scenario == RENAME_VERSUS_READ            ? 0u
                                                            : scenario == FINAL_RELEASES_AFTER_FORGET ? 2u

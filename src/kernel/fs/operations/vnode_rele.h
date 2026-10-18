@@ -150,8 +150,8 @@ static void dispose_reclaimed_node (struct vnode_release_state * release_state)
     {
         lock_free (&reclaimed_node->pageout_lock);
         lock_free (&reclaimed_node->mutation_lock);
-        _free_vnode (reclaimed_node->vn, reclaimed_node->vn_lock_occurrence);
-        _free_gnode (reclaimed_node->gn, reclaimed_node->gn_lock_occurrence);
+        _free_vnode (reclaimed_node->vn, reclaimed_node->lock_occurrences.vn_lock_occurrence);
+        _free_gnode (reclaimed_node->gn, reclaimed_node->lock_occurrences.gn_lock_occurrence);
         xmfree (reclaimed_node, kernel_heap);
     }
 }

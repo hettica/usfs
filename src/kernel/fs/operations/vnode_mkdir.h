@@ -22,7 +22,15 @@ int gn_mkdir (struct vnode * directory_vnode, char * entry_name, const int32long
     request_body.mode = (uint32_t)mode;
 
     // The logical file system looks up the new directory if it needs a vnode.
-    return _mutate_entry (directory_vnode, (uint16_t)USFS_OP_MKDIR, &request_body, sizeof (request_body), entry_name, NULL, 0, credentials);
+    return _mutate_entry (directory_vnode, &(const struct entry_mutation){
+        .opcode = (uint16_t)USFS_OP_MKDIR,
+        .body = &request_body,
+        .body_length = sizeof (request_body),
+        .name = entry_name,
+        .data = NULL,
+        .data_length = 0,
+        .credentials = credentials
+    });
 }
 
 #endif

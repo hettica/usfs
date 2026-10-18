@@ -25,7 +25,15 @@ int gn_link (struct vnode * existing_vnode, struct vnode * directory_vnode, char
 
     request_body.newparent = directory_node->nodeid;
 
-    return _mutate_entry (existing_vnode, (uint16_t)USFS_OP_LINK, &request_body, sizeof (request_body), entry_name, NULL, 0, credentials);
+    return _mutate_entry (existing_vnode, &(const struct entry_mutation){
+        .opcode = (uint16_t)USFS_OP_LINK,
+        .body = &request_body,
+        .body_length = sizeof (request_body),
+        .name = entry_name,
+        .data = NULL,
+        .data_length = 0,
+        .credentials = credentials
+    });
 }
 
 #endif

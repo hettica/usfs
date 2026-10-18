@@ -27,6 +27,7 @@
 #include "usfs_config.h"
 #include "usfs_proto.h"
 #include "usfs_status.h"
+#include "usfs_trace_abi.h"
 
 #define USFSCTL_UNAVAILABLE  2
 #define USFSCTL_WRONG_USAGE  3
@@ -309,7 +310,7 @@ static int read_and_verify_trace_session (struct usfsctl_trace_state * state)
 
 static void remove_trace_state_file (void)
 {
-    // todo: check project for ignored return codes; each case must be explained
+    /* State removal is best effort after stopping the session; report failures. */
     if (unlink (USFSCTL_TRACE_STATE) != 0)
         fprintf (stderr, "Failed to remove trace ownership state file %s: %s\n", USFSCTL_TRACE_STATE, strerror (errno));
 }
@@ -439,7 +440,7 @@ static int write_trace_report (const char * raw_trace_output_path, const char * 
     {
         if (snprintf (generated_report_path, sizeof (generated_report_path), "%s.txt", raw_trace_output_path) >= (int)sizeof (generated_report_path))
         {
-            fprintf (stderr, "Failed to format trace report path for %s: path exceeds %lu bytes\n", raw_trace_output_path, (unsigned long)sizeof (generated_report_path) - 1);
+            fprintf (stderr, "Failed to format trace report path for %s: path exceeds %lu bytes\n", raw_trace_output_path, sizeof (generated_report_path) - 1);
             return USFSCTL_WRONG_USAGE;
         }
 
@@ -860,8 +861,14 @@ static int start_trace_daemon (const char * trace_profile_name, const char * tra
 {
     char trace_session_description[256];
 
-    // todo: check API hardcode
-    (void)snprintf (trace_session_description, sizeof (trace_session_description), "USFS trace ABI 1 profile=%s package=%s revision=%s", trace_profile_name, USFS_PACKAGE_VERSION, USFS_BUILD_REVISION);
+    const int description_length = snprintf (trace_session_description, sizeof (trace_session_description),
+        "USFS trace ABI %u profile=%s package=%s revision=%s", USFS_TRACE_ABI_VERSION,
+        trace_profile_name, USFS_PACKAGE_VERSION, USFS_BUILD_REVISION);
+    if (description_length < 0 || (size_t)description_length >= sizeof (trace_session_description))
+    {
+        fprintf (stderr, "Failed to format trace session description\n");
+        return -1;
+    }
 
     *earliest_start_time = time (NULL);
 
@@ -901,7 +908,7 @@ static int record_trace_session_ownership (const char * trace_profile_name, cons
     if (stat (raw_trace_output_path, &raw_trace_file_metadata) != 0)
     {
         fprintf (stderr, "Failed to inspect raw trace output file %s: %s\n", raw_trace_output_path, strerror (errno));
-        return -1; // todo: review return codes of functions in general, maybe we should have unified contract
+        return -1; /* Internal helpers return -1; command handlers map it to USFSCTL_UNAVAILABLE. */
     }
 
     psinfo_t trace_daemon_process_info;
@@ -935,7 +942,7 @@ static int parse_and_validate_trace_start_request (const int argc, char ** argv,
     return 0;
 }
 
-// todo: check USFSCTL_UNAVAILABLE usages and make sure it's correct to use this return code in all those places
+/* Command failures use USFSCTL_UNAVAILABLE; malformed arguments use USFSCTL_WRONG_USAGE. */
 
 static int prepare_trace_start_paths (struct usfsctl_trace_start_options * options, char * generated_raw_trace_output_path, const size_t path_capacity)
 {

@@ -356,13 +356,13 @@ static void test_read_ownership(struct tap_state *tap)
            "complete nonblocking read releases its connection on an empty queue");
     memset(&request, 0, sizeof(request));
     request.request_buffer_size = sizeof(header);
-    connection->pending_requests_head = &request;
-    connection->pending_requests_tail = &request;
+    connection->requests.pending_requests_head = &request;
+    connection->requests.pending_requests_tail = &request;
     tap_ok(tap, usfs_dev_read(0, &user_io, channel, 0) == EMSGSIZE &&
                    connection->refs_counter == 1,
            "complete read releases its connection after rejecting a short buffer");
-    connection->pending_requests_head = NULL;
-    connection->pending_requests_tail = NULL;
+    connection->requests.pending_requests_head = NULL;
+    connection->requests.pending_requests_tail = NULL;
     user_io.uio_fmode = 0;
     sleep_rc = THREAD_INTERRUPTED;
     tap_ok(tap, usfs_dev_read(0, &user_io, channel, 0) == EINTR &&
@@ -380,8 +380,8 @@ static void test_read_ownership(struct tap_state *tap)
         request.request_buffer = (char *)&header;
         request.request_buffer_size = sizeof(header);
         request.state = USFS_REQ_PENDING;
-        connection->pending_requests_head = &request;
-        connection->pending_requests_tail = &request;
+        connection->requests.pending_requests_head = &request;
+        connection->requests.pending_requests_tail = &request;
         user_io.uio_resid = sizeof(header);
         copy_connection = connection;
         copy_request = &request;
@@ -393,7 +393,7 @@ static void test_read_ownership(struct tap_state *tap)
                        connection->refs_counter == 1 &&
                        free_connection_calls == 0 && free_lock_calls == 0 &&
                        (variant == 0 ?
-                        connection->delivered_requests_head == &request :
+                        connection->requests.delivered_requests_head == &request :
                         abandon_during_copy ? free_request_calls == 1 :
                         request.state == USFS_REQ_ABORTED),
                "complete delivery balances its temporary reference in every copy state");
@@ -414,15 +414,15 @@ static void test_read_ownership(struct tap_state *tap)
         memset(&user_io, 0, sizeof(user_io));
         request.request_buffer = (char *)&header;
         request.request_buffer_size = sizeof(header);
-        connection->pending_requests_head = &request;
-        connection->pending_requests_tail = &request;
+        connection->requests.pending_requests_head = &request;
+        connection->requests.pending_requests_tail = &request;
         user_io.uio_resid = sizeof(header);
         copy_connection = connection;
         if (usfs_dev_read(0, &user_io, channel, 0) != 0 ||
             references_during_copy != 4 ||
             connection->refs_counter != 3)
             balanced = 0;
-        connection->delivered_requests_head = NULL;
+        connection->requests.delivered_requests_head = NULL;
         release_connection(connection); /* Completed request. */
         (void)usfs_dev_close(0, channel);
         (void)usfs_dev_mpx(0, &channel, NULL);
@@ -464,7 +464,7 @@ static void test_ownership_replies(struct tap_state *tap)
             if (variant == 3) attr->pad = 1;
         }
         connection.state = USFS_CONN_ACTIVE; connection.refs_counter = 1;
-        connection.delivered_requests_head = &request; g_connections[6] = &connection;
+        connection.requests.delivered_requests_head = &request; g_connections[6] = &connection;
         request.id = 17; request.state = USFS_REQ_SENT;
         request.request_buffer = (caddr_t)&input; request.reply_buffer = (caddr_t)&output;
         request.max_allowed_reply_buffer_size = length;
@@ -482,7 +482,7 @@ static void test_ownership_replies(struct tap_state *tap)
                        variant == 4 || variant == 5 ? EFAULT : 0;
         tap_ok(tap, rc == expected && abort_calls == (unsigned)malformed &&
                protocol_error_calls == (unsigned)malformed && connection.refs_counter == 1 &&
-               connection.delivered_requests_head == NULL &&
+               connection.requests.delivered_requests_head == NULL &&
                (variant >= 5 ? free_request_calls == 1 && release_slot_calls == 1 && wake_calls == 0 :
                 free_request_calls == 0 && wake_calls == 1 &&
                 request.state == (malformed ? USFS_REQ_ABORTED : USFS_REQ_ANSWERED)) &&
@@ -520,7 +520,7 @@ static void test_reply_cleanup (struct tap_state * tap, const int abandoned_befo
 
     connection.state = USFS_CONN_ACTIVE;
     connection.refs_counter = 1;
-    connection.delivered_requests_head = &request;
+    connection.requests.delivered_requests_head = &request;
     g_connections[channel] = &connection;
 
     request_header.opcode = USFS_OP_READ;
@@ -542,7 +542,7 @@ static void test_reply_cleanup (struct tap_state * tap, const int abandoned_befo
 
     tap_ok (
         tap,
-        connection.refs_counter == 1 && connection.delivered_requests_head == NULL && abort_calls == 0,
+        connection.refs_counter == 1 && connection.requests.delivered_requests_head == NULL && abort_calls == 0,
         "ordinary reply cleanup releases its temporary reference without aborting the connection"
     );
 
@@ -564,6 +564,13 @@ static void test_reply_cleanup (struct tap_state * tap, const int abandoned_befo
     );
 }
 
+static dev_t configured_device_number;
+
+int usfs_device_number_valid (const dev_t device_number)
+{
+    return device_number == configured_device_number;
+}
+
 int main(void)
 {
     struct tap_state tap;
@@ -579,7 +586,7 @@ int main(void)
     chan_t channel;
     int index;
 
-    tap_plan (&tap, 113);
+    tap_plan (&tap, 125);
     reset_state();
     memset(&connection, 0, sizeof(connection));
     connection.refs_counter = 1;
@@ -588,6 +595,19 @@ int main(void)
     memset(&request_header, 0, sizeof(request_header));
     memset(&runtime_config, 0, sizeof(runtime_config));
     memset(&user_io, 0, sizeof(user_io));
+
+    tap_ok (&tap, usfs_dev_open (1, 0, 2, 0) == ENXIO, "open rejects a foreign device");
+    tap_ok (&tap, usfs_dev_close (1, 2) == ENXIO, "close rejects a foreign device");
+    tap_ok (&tap, usfs_dev_read (1, &user_io, 2, 0) == ENXIO, "read rejects a foreign device");
+    tap_ok (&tap, usfs_dev_write (1, &user_io, 2, 0) == ENXIO, "write rejects a foreign device");
+    tap_ok (&tap, usfs_dev_ioctl (1, USFS_IOC_GET_KEXT_STATE, &status, 0, USFS_STATUS_CHANNEL, 0) == ENXIO, "status ioctl rejects a foreign device");
+    tap_ok (&tap, process_mpx (1, &channel, "") == ENXIO, "multiplexing rejects a foreign device");
+    tap_ok (&tap, usfs_dev_open (0, DKERNEL, 2, 0) == EINVAL, "open rejects unsupported kernel transport");
+    tap_ok (&tap, usfs_dev_open (0, DAPPEND, 2, 0) == EINVAL, "open rejects append semantics on the message transport");
+    tap_ok (&tap, usfs_dev_open (0, 0, 2, 1) == EINVAL, "open rejects unsupported extensions");
+    tap_ok (&tap, usfs_dev_read (0, &user_io, 2, 1) == EINVAL && usfs_dev_write (0, &user_io, 2, 1) == EINVAL, "read and write reject unsupported extensions");
+    tap_ok (&tap, usfs_dev_ioctl (0, USFS_IOC_GET_KEXT_STATE, &status, DKERNEL, USFS_STATUS_CHANNEL, 0) == EINVAL, "status ioctl rejects kernel address buffers");
+    tap_ok (&tap, usfs_dev_ioctl (0, USFS_IOC_GET_KEXT_STATE, &status, 0, USFS_STATUS_CHANNEL, 1) == EINVAL, "status ioctl rejects unsupported extensions");
 
     tap_ok(&tap, usfs_dev_open(0, 0, -1, 0) == ENXIO,
            "open rejects an invalid channel");
@@ -697,7 +717,7 @@ int main(void)
     g_connections[3] = &connection;
     tap_ok(&tap, usfs_dev_ioctl(0, -1, NULL, 0, 3, 0) == EINVAL,
            "ioctl rejects an unknown command");
-    tap_ok(&tap, process_public_dev_ctl_command(0, -1, NULL, 0, 3, 0) == EINVAL,
+    tap_ok(&tap, process_public_dev_ctl_command(-1, NULL, 3) == EINVAL,
            "public ioctl dispatcher rejects an unknown command");
     tap_ok(&tap,
            usfs_dev_ioctl(0, USFS_IOC_CONNECTION_REQUEST, NULL, 0, -1, 0) ==
@@ -763,13 +783,13 @@ int main(void)
     tap_ok(&tap, take_pending_request(&connection, &user_io, &taken) == EAGAIN,
            "nonblocking read rejects an empty request queue");
     request.request_buffer_size = 64;
-    connection.pending_requests_head = &request;
-    connection.pending_requests_tail = &request;
+    connection.requests.pending_requests_head = &request;
+    connection.requests.pending_requests_tail = &request;
     user_io.uio_resid = 16;
     tap_ok(&tap, take_pending_request(&connection, &user_io, &taken) == EMSGSIZE,
            "read rejects a user buffer smaller than the pending request");
-    connection.pending_requests_head = NULL;
-    connection.pending_requests_tail = NULL;
+    connection.requests.pending_requests_head = NULL;
+    connection.requests.pending_requests_tail = NULL;
     user_io.uio_fmode = 0;
     sleep_rc = THREAD_INTERRUPTED;
     tap_ok(&tap, take_pending_request(&connection, &user_io, &taken) == EINTR,
@@ -797,7 +817,7 @@ int main(void)
     request.next = NULL;
     tap_ok(&tap,
            finish_request_delivery(&connection, &request, 0) == 0 &&
-               connection.delivered_requests_head == NULL &&
+               connection.requests.delivered_requests_head == NULL &&
                release_slot_calls == 2 && free_request_calls == 2,
            "timed-out successful copy releases ownership without requeueing");
 
@@ -847,7 +867,7 @@ int main(void)
     request.id = 99;
     request.request_buffer = (char *)&request_header;
     request.max_allowed_reply_buffer_size = 8;
-    connection.delivered_requests_head = &request;
+    connection.requests.delivered_requests_head = &request;
     request_header.opcode = USFS_OP_READ;
     reply.header.opcode = USFS_OP_WRITE;
     tap_ok(&tap,
@@ -878,7 +898,7 @@ int main(void)
                request.state == USFS_REQ_ABORTED && wake_calls == 2,
            "reply completion aborts after connection loss");
     connection.state = USFS_CONN_ACTIVE;
-    connection.delivered_requests_head = NULL;
+    connection.requests.delivered_requests_head = NULL;
     user_io.uio_resid = sizeof(reply_input);
     reply_input.version = USFS_PROTOCOL_VERSION;
     reply_input.len = sizeof(reply_input);
@@ -894,16 +914,17 @@ int main(void)
     {
         ushort ready = 0;
         memset(&connection, 0, sizeof(connection));
-        connection.device_number = 42;
+        configured_device_number = 42;
+        connection.device_number = configured_device_number;
         connection.state = USFS_CONN_ACTIVE;
         g_connections[6] = &connection;
         tap_ok(&tap, usfs_dev_select(42, POLLIN | POLLHUP, &ready, 6) == 0 &&
             ready == 0 && connection.select_events == (POLLIN | POLLHUP),
             "idle device registers asynchronous read readiness");
-        connection.pending_requests_head = &request;
+        connection.requests.pending_requests_head = &request;
         tap_ok(&tap, usfs_dev_select(42, POLLIN | POLLSYNC, &ready, 6) == 0 &&
             ready == POLLIN, "queued device request is immediately readable");
-        connection.pending_requests_head = NULL;
+        connection.requests.pending_requests_head = NULL;
         connection.state = USFS_CONN_DEAD;
         ready = 0;
         tap_ok(&tap, usfs_dev_select(42, POLLIN | POLLHUP, &ready, 6) == 0 && ready == (POLLIN | POLLHUP) &&
@@ -923,6 +944,7 @@ int main(void)
                connection_lost_calls == lost_before && abort_calls == abort_before,
                "orderly closure rejects replies and descriptor close does not report daemon loss");
     }
+    configured_device_number = 0;
     test_reply_cleanup (&tap, false);
     test_reply_cleanup (&tap, true);
 

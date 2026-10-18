@@ -48,11 +48,9 @@ static int collect_coverage_snapshot (struct usfs_gcov_snapshot_request * reques
         rc = copy_snapshot_payload (snapshot, snapshot_size, request->capacity, request->user_buffer);
 
     request->size = snapshot_size;
-    if (copyout ((caddr_t)request, (caddr_t)user_buffer, sizeof (*request)) != 0)
-    {
-        if (rc == 0)
-            rc = EFAULT;
-    }
+    if (copyout ((caddr_t)request, (caddr_t)user_buffer, sizeof (*request)) != 0 &&
+        rc == 0)
+        rc = EFAULT;
 
     usfs_gcov_snapshot_destroy (snapshot);
 
@@ -163,11 +161,9 @@ static int export_coverage_snapshot (const struct usfs_config_coverage_export * 
     if (rc == 0)
         rc = copy_snapshot_payload (snapshot, snapshot_size, request->capacity, request->user_buffer);
 
-    if (rc == 0)
-    {
-        if (reset_after)
-            rc = usfs_gcov_reset_counters ();
-    }
+    if (rc == 0 &&
+        reset_after)
+        rc = usfs_gcov_reset_counters ();
 
     usfs_gcov_snapshot_destroy (snapshot);
 

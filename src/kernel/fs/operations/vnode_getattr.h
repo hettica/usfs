@@ -7,7 +7,7 @@
 static int _request_node_attributes_with_handle (
     const struct usfs_mount_data * mount_data,
     const struct usfs_node * node,
-    struct ucred * credentials,
+    const struct ucred * credentials,
     struct usfs_attr_out * attributes_reply,
     const uint64_t file_handle
 )
@@ -54,7 +54,7 @@ static int _request_node_attributes_with_handle (
 
 static int request_node_attributes (
     const struct usfs_mount_data * mount_data,
-    struct usfs_node * node,
+    const struct usfs_node * node,
     struct ucred * credentials,
     struct usfs_attr_out * attributes_reply
 )

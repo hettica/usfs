@@ -476,12 +476,12 @@ int usfs_pager_register (void)
 
     initialize_pager_info (&info);
 
-    return vm_mounte (D_REMOTE | D_THRPGIO | D_ENHANCEDIO, (dev_t)usfs_pager_strategy, &info);
+    return vm_mounte (D_REMOTE | D_THRPGIO | D_ENHANCEDIO, (dev_t)&usfs_pager_strategy, &info);
 }
 
 int usfs_pager_unregister (void)
 {
-    return vm_umount (D_REMOTE, (dev_t)usfs_pager_strategy);
+    return vm_umount (D_REMOTE, (dev_t)&usfs_pager_strategy);
 }
 
 #endif

@@ -100,7 +100,7 @@ static int map_validated_file (struct vnode * file_vnode, const uint64_t mapping
     if (mount == NULL)
         return EIO;
 
-    // todo: use raii-like macros
+    /* Cleanup guards release both locks on every return from this function. */
     struct usfs_complex_lock_guard namespace_guard __attribute__ ((cleanup (usfs_complex_synchronized_release))) =
         usfs_read_synchronized_acquire (&mount->namespace_lock);
 

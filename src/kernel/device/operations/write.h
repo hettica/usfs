@@ -55,7 +55,7 @@ static void remove_request_from_waiting_queue (
 )
 {
     if (previous_request == NULL)
-        connection->delivered_requests_head = request->next;
+        connection->requests.delivered_requests_head = request->next;
     else
         previous_request->next = request->next;
 
@@ -69,7 +69,7 @@ static struct usfs_request * find_request_by_id (
 )
 {
     struct usfs_request * previous_request = NULL;
-    struct usfs_request * current_request = connection->delivered_requests_head;
+    struct usfs_request * current_request = connection->requests.delivered_requests_head;
 
     while (current_request != NULL)
     {
@@ -328,10 +328,12 @@ static int process_daemon_reply (struct reply_reception * reply, struct uio * us
     return receive_claimed_reply (reply, user_io_request);
 }
 
-static int usfs_dev_write (const dev_t device_number, struct uio * user_io_request, const chan_t channel, const int is_called_from_kernel_extension)
+static int usfs_dev_write (const dev_t device_number, struct uio * user_io_request, const chan_t channel, const int extension)
 {
-    ignore_parameter device_number;                   //! todo: validate this parameter, reject open for not owning devices
-    ignore_parameter is_called_from_kernel_extension; //! todo: research what this affects, decide if we should handle this parameter
+    if (!usfs_device_number_valid (device_number))
+        return ENXIO;
+    if (extension != 0)
+        return EINVAL;
 
     if (user_io_request == NULL)
         return EINVAL;

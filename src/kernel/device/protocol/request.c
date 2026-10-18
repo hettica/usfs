@@ -75,13 +75,13 @@ static struct usfs_request * abort_connection_queues (struct usfs_connection * c
     on_connection_failed (connection, old_state, state);
 
     // Abort pending requests
-    const uint32_t num_of_aborted_pending_requests = abort_queued_requests (connection, connection->pending_requests_head, &to_free_later_requests);
-    connection->pending_requests_head = NULL;
-    connection->pending_requests_tail = NULL;
+    const uint32_t num_of_aborted_pending_requests = abort_queued_requests (connection, connection->requests.pending_requests_head, &to_free_later_requests);
+    connection->requests.pending_requests_head = NULL;
+    connection->requests.pending_requests_tail = NULL;
 
     // Abort delivered requests
-    const uint32_t num_of_aborted_delivered_requests = abort_queued_requests (connection, connection->delivered_requests_head, &to_free_later_requests);
-    connection->delivered_requests_head = NULL;
+    const uint32_t num_of_aborted_delivered_requests = abort_queued_requests (connection, connection->requests.delivered_requests_head, &to_free_later_requests);
+    connection->requests.delivered_requests_head = NULL;
 
     // Report trace metrics and notify waiters in user space, so their 'read' on device file will get unblocked
     if (state == USFS_CONN_CLOSED)
@@ -182,12 +182,12 @@ static void enqueue_request (const struct request_call * call)
     call->request->state = USFS_REQ_PENDING;
     call->request->next = NULL;
 
-    if (call->connection->pending_requests_tail != NULL)
-        call->connection->pending_requests_tail->next = call->request;
+    if (call->connection->requests.pending_requests_tail != NULL)
+        call->connection->requests.pending_requests_tail->next = call->request;
     else
-        call->connection->pending_requests_head = call->request;
+        call->connection->requests.pending_requests_head = call->request;
 
-    call->connection->pending_requests_tail = call->request;
+    call->connection->requests.pending_requests_tail = call->request;
 
     e_wakeup_one (&call->connection->read_queue_event);
     notify_reader (call->connection);
@@ -446,8 +446,10 @@ static void finish_call (const struct request_call * call)
 
     if (call->timer_started)
     {
+        /* A running timeout callback still owns call->wait. Wait for tstop
+           to confirm quiescence before freeing the timer and wait block. */
         while (tstop (call->timer) != 0)
-            (void)delay (1); // todo: check this
+            (void)delay (1);
     }
 
     tfree (call->timer);
