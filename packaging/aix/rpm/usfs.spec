@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 %{!?usfs_aix_version:%define usfs_aix_version 7.2}
-%{!?usfs_aix_rpm_version:%define usfs_aix_rpm_version unknown}
+%define usfs_aix_next_version %(echo %{usfs_aix_version} | /usr/bin/awk -F. '{print $1 "." ($2 + 1)}')
 %{!?usfs_version:%define usfs_version 0.1.0}
 %{!?usfs_release:%define usfs_release 1}
 %{!?usfs_source_root:%define usfs_source_root .}
@@ -20,7 +20,8 @@ Summary:        AIX user-space filesystem kernel extension and runtime
 License:        MIT
 ExclusiveOS:    aix%{usfs_aix_version}
 ExclusiveArch:  ppc
-Requires:       AIX-rpm = %{usfs_aix_rpm_version}
+Requires:       AIX-rpm >= %{usfs_aix_version}
+Requires:       AIX-rpm < %{usfs_aix_next_version}
 %if "%{usfs_extra_requires}" != "none"
 Requires:       %{usfs_extra_requires}
 %endif

@@ -16,7 +16,6 @@ dirty=$6
 pre_fault=$7
 extra_requires=$8
 aix_version=$9
-aix_rpm_version=$(rpm -q --qf '%{VERSION}-%{RELEASE}' AIX-rpm)
 rpm_file="usfs-$version-$release.aix$aix_version.ppc.rpm"
 topdir="$build_root/rpmbuild"
 packages="$build_root/packages"
@@ -45,7 +44,6 @@ rm -f "$topdir/SOURCES/usfs-source.tar"
 rpmbuild -bb --nodeps "$source_root/packaging/aix/rpm/usfs.spec" \
     --target "ppc-ibm-aix$aix_version" \
     --define "usfs_aix_version $aix_version" \
-    --define "usfs_aix_rpm_version $aix_rpm_version" \
     --define "_topdir $topdir" \
     --define "_binary_payload w1.gzdio" \
     --define "usfs_source_root $source_root" \

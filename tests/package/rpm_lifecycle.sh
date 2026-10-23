@@ -12,7 +12,7 @@
 
 set -u
 AIX_VERSION=$(uname -v).$(uname -r)
-AIX_RPM_VERSION=$(rpm -q --qf '%{VERSION}-%{RELEASE}' AIX-rpm) || exit 1
+AIX_NEXT_VERSION=$(uname -v).$(($(uname -r) + 1))
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 BUILD_ROOT=${USFS_PACKAGE_TEST_BUILD:-$ROOT/build/package-lifecycle}
@@ -231,7 +231,8 @@ R99=$BUILD_ROOT/prerequisite/packages/usfs-0.1.0-99.aix$AIX_VERSION.ppc.rpm
 RPM_REQUIRED="/usr/lib/drivers/usfs/usfs.kext /usr/lib/methods/usfs/package_lifecycle /usr/lib/ras/usfs.trcfmt /usr/sbin/usfsctl /usr/share/doc/usfs/build-manifest.txt"
 check "RPM headers and payload tables are valid" remote \
     "perl $ROOT/scripts/aix/verify-rpm.pl $R1 0.1.0 1 $RPM_REQUIRED && perl $ROOT/scripts/aix/verify-rpm.pl $R2 0.1.0 2 $RPM_REQUIRED && perl $ROOT/scripts/aix/verify-rpm.pl $R3 0.1.0 3 $RPM_REQUIRED"
-check "package pins its installed AIX prerequisite" remote "rpm -qpR $R1 | grep -Fx 'AIX-rpm = $AIX_RPM_VERSION'"
+check "package requires the matching AIX major and minor version" remote \
+    "rpm -qpR $R1 >$BUILD_ROOT/aix-requires.txt && grep -Fx 'AIX-rpm >= $AIX_VERSION' $BUILD_ROOT/aix-requires.txt && grep -Fx 'AIX-rpm < $AIX_NEXT_VERSION' $BUILD_ROOT/aix-requires.txt && test \$(grep -c '^AIX-rpm ' $BUILD_ROOT/aix-requires.txt) -eq 2"
 check "missing prerequisite blocks the RPM transaction" remote "! rpm -U --test $R99 >/tmp/usfs-prereq.log 2>&1 && grep -q usfs-release-test-prerequisite /tmp/usfs-prereq.log"
 
 check "release 1 installs and configures usfs0" remote "rpm -Uvh --replacepkgs $R1 >/tmp/usfs-rpm-install.log 2>&1 && rpm -q usfs | grep -q 'usfs-0.1.0-1' && lsdev -l usfs0 | grep -q Available"
