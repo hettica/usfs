@@ -9,9 +9,10 @@ it easier to port projects that depend on FUSE.
 
 ## Current project state
 
-Today it's a technical preview. The core functionality works, with known issues.
+The first alpha release is available for focused testing.
+The core functionality works, with known issues.
 You can run the provided examples or conduct your own experiments.
-Do not use this preview in production. Kernel extension failures can crash the system.
+Do not use this alpha in production. Kernel extension failures can crash the system.
 Upgrade from this version will not be supported.
 
 ## Build
@@ -100,9 +101,10 @@ complete list, observed errors, and important exceptions.
 
 ## Roadmap
 
-- Technical preview — current stage.
-- Alpha release, first test and audit reports.
-- Beta release with kernel instrumentation capabilities (fault injection, coverage reports).
+- Technical preview — completed.
+- First alpha release — published; current stage.
+- Further testing, audit reports, and reliability improvements.
+- Beta release after further testing and stabilization.
 - Clarified compatibility and system requirements, documented WPAR support, performance tests.
 - First stable general-availability release.
 - s3fs and sshfs on AIX.
