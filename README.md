@@ -90,7 +90,7 @@ Possible profiles are `core`, `requests` (default), `full`.
 
 ## Known limitations
 
-Concurrent live unload is unsafe. An open syscall racing with `CFG_TERM` and `SYS_KULOAD` causes a kernel fault.
+Normal USFS unload/reload uses a resident device-dispatch proxy and requires existing USFS users to be torn down. The separate, explicitly unsafe proxy-removal command can still cause a kernel fault. See [kernel proxy lifecycle](docs/kernel-proxy-lifecycle.md) for the protocol, maintenance commands, and verification requirements.
 Should not be reproducible during manual sequential execution of examples above.
 
 USFS mounts do not support record locks, ACLs, privilege control lists,

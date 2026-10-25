@@ -31,6 +31,7 @@ activate()
     if lsdev -l usfs0 2>/dev/null | grep -q '^usfs0'; then
         rmdev -l usfs0 >/dev/null
     fi
+    bash "$USFS_SOURCE_DIR/scripts/aix/switch-test-proxy.sh" "$USFS_BINARY_DIR" "$variant"
     bash "$USFS_SOURCE_DIR/scripts/aix/install-variant.sh" \
         "$variant" "$USFS_SOURCE_DIR" "$USFS_BINARY_DIR"
     bash "$USFS_SOURCE_DIR/scripts/aix/setup.sh"
@@ -135,11 +136,17 @@ run_non_e2e()
         tests/integration/aix/fault/lifecycle_timeout.sh \
         tests/integration/aix/concurrency/controlled.sh \
         tests/integration/aix/concurrency/vnode_identity.sh \
-        tests/integration/aix/concurrency/lifecycle.sh
+        tests/integration/aix/concurrency/lifecycle.sh \
+        tests/integration/aix/concurrency/proxy_lifecycle.sh \
+        tests/integration/aix/contract/proxy_admin.sh
 }
 
 run_e2e()
 {
+    activate release
+    run_script_group \
+        tests/e2e/production_proxy.sh \
+        tests/e2e/proxy_reload_stress.sh
     activate testing
     run_script_group \
         tests/e2e/configuration.sh \

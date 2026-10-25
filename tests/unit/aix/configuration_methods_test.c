@@ -8,6 +8,8 @@
 #include "usfs_config_instrumentation.h"
 
 /* Actual transaction code, with no live ODM, device, or kernel side effects. */
+static int proxy_resident;
+static int proxy_registered = 1;
 static int loaded, available, number_present, node_present, registered;
 static uint32_t lifecycle;
 static int init_fails, term_fails, query_fails, malformed_query, odm_fails;
@@ -17,6 +19,12 @@ static int minor_query_fails, extra_minor, minor_number = 17;
 static int checkpoint_fault;
 static int foreign_odm, foreign_node, register_calls;
 const char *USFS_DRIVER_NAME = "usfs";
+
+int usfs_proxy_ensure_loaded(void) { return 0; }
+int usfs_proxy_prepare_device(dev_t d) { (void)d; return 0; }
+int usfs_proxy_detached(void) { return 1; }
+int usfs_proxy_query_user(mid_t *m, struct usfs_proxy_status *s)
+{ *m = proxy_resident ? 321 : 0; memset(s, 0, sizeof(*s)); s->abi = proxy_resident ? USFS_PROXY_ABI : 0; s->registered = proxy_resident && proxy_registered; return proxy_resident ? USFS_QUERY_PRESENT : USFS_QUERY_ABSENT; }
 
 static struct cfg_load usfs_kext_make_query(void)
 {
@@ -133,6 +141,7 @@ static void reset(void)
     minor_query_fails = extra_minor = 0;
     checkpoint_fault = 0;
     foreign_odm = foreign_node = register_calls = 0;
+    proxy_registered = 1;
     owned_number = makedev64(41, 17);
     last_term_number = 0;
 }
@@ -168,7 +177,7 @@ int main(void)
     uint32_t state = 99;
     dev_t number;
     int rc;
-    tap_plan(&tap, 23);
+    tap_plan(&tap, 25);
     reset();
     tap_ok(&tap, usfs_configure("hdisk0") != 0 &&
         usfs_unconfigure("hdisk0") != 0 && !loaded && !init_calls &&
@@ -274,6 +283,15 @@ int main(void)
     tap_ok(&tap, usfs_unconfigure("usfs0") == 0 && !loaded && !available &&
         term_calls == 1 && !unsafe_actions,
         "minor-free retry releases only its major and never repeats CFG_TERM");
+    reset();
+    proxy_resident = number_present = 1;
+    tap_ok(&tap, usfs_release_device_numbers(USFS_QUERY_PRESENT) == 0 &&
+        number_present && !release_calls, "resident proxy retains its major and minor reservation");
+    proxy_registered = 0;
+    tap_ok(&tap, usfs_release_device_numbers(USFS_QUERY_PRESENT) == 0 &&
+        number_present && !release_calls,
+        "failed proxy registration retains device number for retry");
+    proxy_resident = 0;
     test_vfs_text(&tap);
     return tap_finish(&tap);
 }

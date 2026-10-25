@@ -28,10 +28,6 @@ DAEMON_PID=0
 COMMAND_PID=0
 MOUNT_TERM_PID=0
 CHANNEL_ONE_PID=0
-CHANNEL_TWO_PID=0
-CHANNEL_TERM_PID=0
-DEALLOCATION_ARM_PID=0
-DEALLOCATION_TERM_PID=0
 STATUS_FD_THREE_OPEN=0
 STATUS_FD_FOUR_OPEN=0
 COMMAND_TIMEOUT_SECONDS=30
@@ -173,25 +169,19 @@ cleanup()
     if [[ "$STATUS_FD_THREE_OPEN" -eq 1 ]]; then exec 3<&-; fi
     if [[ "$STATUS_FD_FOUR_OPEN" -eq 1 ]]; then exec 4<&-; fi
 
-    for process_id in "$MOUNT_TERM_PID" "$CHANNEL_ONE_PID" "$CHANNEL_TWO_PID" "$CHANNEL_TERM_PID" "$DEALLOCATION_ARM_PID" "$DEALLOCATION_TERM_PID" "$COMMAND_PID"; do
+    for process_id in "$MOUNT_TERM_PID" "$CHANNEL_ONE_PID" "$COMMAND_PID"; do
         if [[ "$process_id" -ne 0 ]]; then
             stop_owned_process "lifecycle owned process" "$process_id" || cleanup_failed=1
         fi
     done
     if [[ "$MOUNT_TERM_PID" -ne 0 ]] && process_finished "$MOUNT_TERM_PID"; then MOUNT_TERM_PID=0; fi
     if [[ "$CHANNEL_ONE_PID" -ne 0 ]] && process_finished "$CHANNEL_ONE_PID"; then CHANNEL_ONE_PID=0; fi
-    if [[ "$CHANNEL_TWO_PID" -ne 0 ]] && process_finished "$CHANNEL_TWO_PID"; then CHANNEL_TWO_PID=0; fi
-    if [[ "$CHANNEL_TERM_PID" -ne 0 ]] && process_finished "$CHANNEL_TERM_PID"; then CHANNEL_TERM_PID=0; fi
-    if [[ "$DEALLOCATION_ARM_PID" -ne 0 ]] && process_finished "$DEALLOCATION_ARM_PID"; then DEALLOCATION_ARM_PID=0; fi
-    if [[ "$DEALLOCATION_TERM_PID" -ne 0 ]] && process_finished "$DEALLOCATION_TERM_PID"; then DEALLOCATION_TERM_PID=0; fi
     if [[ "$COMMAND_PID" -ne 0 ]] && process_finished "$COMMAND_PID"; then COMMAND_PID=0; fi
 
     stop_daemon || cleanup_failed=1
     restore_device || cleanup_failed=1
     if ! is_mounted && [[ "$DAEMON_PID" -eq 0 ]] && [[ "$COMMAND_PID" -eq 0 ]] &&
-       [[ "$MOUNT_TERM_PID" -eq 0 ]] && [[ "$CHANNEL_ONE_PID" -eq 0 ]] &&
-       [[ "$CHANNEL_TWO_PID" -eq 0 ]] && [[ "$CHANNEL_TERM_PID" -eq 0 ]] &&
-       [[ "$DEALLOCATION_ARM_PID" -eq 0 ]] && [[ "$DEALLOCATION_TERM_PID" -eq 0 ]]; then
+       [[ "$MOUNT_TERM_PID" -eq 0 ]] && [[ "$CHANNEL_ONE_PID" -eq 0 ]]; then
         rm -rf "$BASE"
     fi
 
@@ -212,7 +202,7 @@ trap 'result=$?; trap - 0; cleanup || result=1; exit "$result"' 0
 trap 'exit 1' 1 2 15
 mkdir -p "$MOUNT"
 printf 'USFS-SCENARIO 1\n' >"$SCENARIO"
-tap_plan 19
+tap_plan 16
 
 mount_failure=0
 run_bounded_command "mount schedule arm" "$COMMAND_TIMEOUT_SECONDS" /usr/sbin/usfs_testctl schedule 1 >/dev/null 2>&1 ||
@@ -284,61 +274,55 @@ fi
 tap_ok "$mount_failure" "drained mount permits termination and clean reconfiguration"
 
 channel_failure=0
-usfs_coverage_checkpoint lifecycle-pre-channel-term ||
-    channel_failure=1
-# Busy rollback retains the live generation; the successful retry exports it.
-run_bounded_command "channel schedule arm" "$COMMAND_TIMEOUT_SECONDS" /usr/sbin/usfs_testctl schedule 2 >/dev/null 2>&1 ||
-    channel_failure=1
-
-/usr/sbin/usfs_testctl info >"$BASE/channel-one.log" 2>&1 &
-CHANNEL_ONE_PID=$!
-/usr/sbin/usfs_testctl info >"$BASE/channel-two.log" 2>&1 &
-CHANNEL_TWO_PID=$!
-USFS_COVERAGE_EVENT=lifecycle-channel-term \
-    rmdev -l usfs0 >"$BASE/channel-rmdev.log" 2>&1 &
-CHANNEL_TERM_PID=$!
-
-wait_owned_process "first channel callback" "$CHANNEL_ONE_PID" "$COMMAND_TIMEOUT_SECONDS"; CHANNEL_ONE_RC=$?
-if process_finished "$CHANNEL_ONE_PID"; then CHANNEL_ONE_PID=0; else exit 1; fi
-wait_owned_process "second channel callback" "$CHANNEL_TWO_PID" "$COMMAND_TIMEOUT_SECONDS"; CHANNEL_TWO_RC=$?
-if process_finished "$CHANNEL_TWO_PID"; then CHANNEL_TWO_PID=0; else exit 1; fi
-wait_owned_process "channel-race termination" "$CHANNEL_TERM_PID" "$COMMAND_TIMEOUT_SECONDS"; CHANNEL_TERM_RC=$?
-if process_finished "$CHANNEL_TERM_PID"; then CHANNEL_TERM_PID=0; else exit 1; fi
-
-if [[ "$channel_failure" -eq 0 ]] &&
-   [[ "$CHANNEL_ONE_RC" -eq 0 ]] && [[ "$CHANNEL_TWO_RC" -eq 0 ]]; then
-    tap_ok 0 "two paused channel allocations complete after busy rollback"
-else
-    sed 's/^/# /' "$BASE/channel-one.log" 2>/dev/null
-    sed 's/^/# /' "$BASE/channel-two.log" 2>/dev/null
-    tap_ok 1 "two paused channel allocations complete after busy rollback"
+channel_ready="$BASE/channel.ready"
+channel_release="$BASE/channel.release"
+mkfifo "$channel_release" || channel_failure=1
+if [[ "$channel_failure" -eq 0 ]]; then
+    /usr/sbin/usfs_probe hold-channel "$channel_ready" "$channel_release" \
+        >"$BASE/channel-hold.log" 2>&1 &
+    CHANNEL_ONE_PID=$!
 fi
-
-if [[ "$CHANNEL_TERM_RC" -ne 0 ]] && [[ "$CHANNEL_TERM_RC" -ne "$PROCESS_WAIT_TIMEOUT" ]] &&
+if [[ "$CHANNEL_ONE_PID" -ne 0 ]] &&
+   usfs_wait_until "allocated channel ready" 20 test -f "$channel_ready"; then
+    tap_ok 0 "successful channel allocation remains open"
+    channel_reached=1
+else
+    sed 's/^/# /' "$BASE/channel-hold.log" 2>/dev/null
+    tap_ok 1 "successful channel allocation remains open"
+    channel_reached=0
+    channel_failure=1
+fi
+if [[ "$channel_reached" -eq 1 ]] &&
+   ! run_bounded_command "held channel termination" "$COMMAND_TIMEOUT_SECONDS" \
+        rmdev -l usfs0 >"$BASE/channel-rmdev.log" 2>&1 &&
    [[ "$(device_status)" = "Available" ]]; then
-    tap_ok 0 "CFG_TERM keeps registrations while channel callbacks are active"
+    tap_ok 0 "allocated channel keeps implementation loaded"
 else
     sed 's/^/# /' "$BASE/channel-rmdev.log" 2>/dev/null
-    tap_ok 1 "CFG_TERM keeps registrations while channel callbacks are active"
+    tap_ok 1 "allocated channel keeps implementation loaded"
+    channel_failure=1
 fi
-
-schedule_status=$(/usr/sbin/usfs_testctl schedule-status 2>/dev/null)
-case "$schedule_status" in
-    *'schedule=2 reached=0xe channel_pre=2 channel_rejected=0 timed_out=0 active=0'*)
-        tap_ok 0 "channel callbacks reach preadmission and busy rollback without timing out" ;;
-    *)
-        tap_diag "schedule status: $schedule_status"
-        tap_ok 1 "channel callbacks reach preadmission and busy rollback without timing out" ;;
-esac
-
-final_failure=0
-run_bounded_command "post-race device info" "$COMMAND_TIMEOUT_SECONDS" /usr/sbin/usfs_testctl info >/dev/null 2>&1 || final_failure=1
-usfs_coverage_expect_export lifecycle-channel-drained-term || final_failure=1
+if [[ "$channel_reached" -eq 1 ]]; then
+    printf x >"$channel_release" || channel_failure=1
+    wait_owned_process "held channel close" "$CHANNEL_ONE_PID" "$COMMAND_TIMEOUT_SECONDS"
+    channel_close_rc=$?
+    if process_finished "$CHANNEL_ONE_PID"; then CHANNEL_ONE_PID=0; else channel_failure=1; fi
+    if [[ "$channel_close_rc" -ne 0 ]]; then channel_failure=1; fi
+else
+    if [[ "$CHANNEL_ONE_PID" -ne 0 ]]; then
+        stop_owned_process "failed channel open" "$CHANNEL_ONE_PID" || true
+    fi
+    CHANNEL_ONE_PID=0
+fi
+tap_ok "$channel_failure" "channel close releases its allocation"
+usfs_coverage_checkpoint lifecycle-pre-channel-term || channel_failure=1
+usfs_coverage_expect_export lifecycle-channel-drained-term || channel_failure=1
 USFS_COVERAGE_EVENT=lifecycle-channel-drained-term \
-    run_bounded_command "post-race device removal" "$COMMAND_TIMEOUT_SECONDS" rmdev -l usfs0 >/dev/null 2>&1 || final_failure=1
-restore_device || final_failure=1
-no_usfs_state || final_failure=1
-tap_ok "$final_failure" "busy channel race leaves a usable and retryable extension"
+    run_bounded_command "post-channel device removal" "$COMMAND_TIMEOUT_SECONDS" \
+        rmdev -l usfs0 >"$BASE/channel-drained-rmdev.log" 2>&1 || channel_failure=1
+restore_device || channel_failure=1
+no_usfs_state || channel_failure=1
+tap_ok "$channel_failure" "drained channel permits termination and reconfiguration"
 
 status_failure=0
 if exec 3</dev/usfs0/status; then STATUS_FD_THREE_OPEN=1; else status_failure=1; fi
@@ -368,49 +352,8 @@ if [[ "$(device_status)" != "Defined" ]]; then status_failure=1; fi
 restore_device || status_failure=1
 tap_ok "$status_failure" "final status close permits clean termination and reconfiguration"
 
-deallocation_failure=0
-/usr/sbin/usfs_testctl schedule 5 >"$BASE/deallocation-arm.log" 2>&1 &
-DEALLOCATION_ARM_PID=$!
-if usfs_wait_until "deallocation schedule arm" 10 grep -q '^channel deallocation schedule armed$' "$BASE/deallocation-arm.log"; then
-    tap_ok 0 "deallocation schedule arms before termination starts"
-
-    rmdev -l usfs0 >"$BASE/deallocation-rmdev.log" 2>&1 &
-    DEALLOCATION_TERM_PID=$!
-
-    wait_owned_process "channel deallocation callback" "$DEALLOCATION_ARM_PID" "$COMMAND_TIMEOUT_SECONDS"; DEALLOCATION_ARM_RC=$?
-    if process_finished "$DEALLOCATION_ARM_PID"; then DEALLOCATION_ARM_PID=0; else exit 1; fi
-    wait_owned_process "deallocation-race termination" "$DEALLOCATION_TERM_PID" "$COMMAND_TIMEOUT_SECONDS"; DEALLOCATION_TERM_RC=$?
-    if process_finished "$DEALLOCATION_TERM_PID"; then DEALLOCATION_TERM_PID=0; else exit 1; fi
-
-    if [[ "$DEALLOCATION_ARM_RC" -eq 0 ]] && [[ "$DEALLOCATION_TERM_RC" -ne 0 ]] &&
-       [[ "$DEALLOCATION_TERM_RC" -ne "$PROCESS_WAIT_TIMEOUT" ]] &&
-       [[ "$(device_status)" = "Available" ]]; then
-        tap_ok 0 "unpublished channel callback prevents runtime teardown"
-    else
-        sed 's/^/# /' "$BASE/deallocation-arm.log" "$BASE/deallocation-rmdev.log" 2>/dev/null
-        tap_ok 1 "unpublished channel callback prevents runtime teardown"
-    fi
-
-    schedule_status=$(/usr/sbin/usfs_testctl schedule-status 2>/dev/null)
-    case "$schedule_status" in
-        *'schedule=5 reached=0x1006 '*'timed_out=0 active=0'*)
-            ;;
-        *)
-            tap_diag "deallocation schedule status: $schedule_status"
-            deallocation_failure=1 ;;
-    esac
-    usfs_coverage_expect_export lifecycle-deallocation-retry-term || deallocation_failure=1
-    USFS_COVERAGE_EVENT=lifecycle-deallocation-retry-term \
-        run_bounded_command "deallocation retry termination" "$COMMAND_TIMEOUT_SECONDS" rmdev -l usfs0 >/dev/null 2>&1 || deallocation_failure=1
-    restore_device || deallocation_failure=1
-    tap_ok "$deallocation_failure" "deallocation race drains before successful termination retry"
-else
-    tap_ok 1 "deallocation schedule arms before termination starts"
-    stop_owned_process "deallocation schedule arm" "$DEALLOCATION_ARM_PID" || true
-    if process_finished "$DEALLOCATION_ARM_PID"; then DEALLOCATION_ARM_PID=0; else exit 1; fi
-    tap_ok 1 "unpublished channel callback prevents runtime teardown"
-    tap_ok 1 "deallocation race drains before successful termination retry"
-fi
+# The old implementation-side MPX pre-entry/deallocation schedules were replaced
+# by the resident proxy checkpoints in proxy_lifecycle.sh.
 
 cycle_failure=0
 cycle=0

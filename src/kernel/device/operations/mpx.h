@@ -217,16 +217,7 @@ static int usfs_dev_mpx (const dev_t device_number, chan_t * output_value, const
     if (output_value == NULL)
         return EINVAL;
 
-    const int is_deallocation = channel_name == NULL;
-    const int admission_rc = usfs_lifecycle_mpx_enter (is_deallocation);
-    if (admission_rc != 0)
-        return admission_rc;
-
-    const int rc = process_mpx (device_number, output_value, channel_name);
-
-    usfs_lifecycle_mpx_leave ();
-
-    return rc;
+    return process_mpx (device_number, output_value, channel_name);
 }
 
 #endif

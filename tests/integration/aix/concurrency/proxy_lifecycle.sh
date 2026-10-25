@@ -1,0 +1,51 @@
+#!/usr/bin/bash
+# Copyright (c) 2026 Raman Dzehtsiar
+# SPDX-License-Identifier: MIT
+# Purpose: Verify deterministic dispatch/unload schedules with a resident proxy.
+# Usage: Run through make test on a testing or coverage AIX deployment.
+set -u
+. "${USFS_SOURCE_DIR:?}/tests/helpers/aix.sh"
+tap_plan 9
+tool=/usr/sbin/usfs_proxy_testctl
+opener=0
+cleanup()
+{
+    "$tool" release >/dev/null 2>&1 || true
+    if [ "$opener" -ne 0 ]; then wait "$opener" || true; fi
+    mkdev -l usfs0 >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+reached()
+{
+    [ "$("$tool" query)" = "$1" ]
+}
+for point in 1 2 3; do
+    if [ "$point" -eq 1 ]; then
+        usfs_coverage_checkpoint proxy-pre-admission-pre-term || exit 1
+        usfs_coverage_expect_export proxy-pre-admission-term || exit 1
+    fi
+    "$tool" arm "$point" || exit 1
+    "$tool" open &
+    opener=$!
+    usfs_wait_until "proxy barrier $point" 30 reached "$point"
+    tap_ok "$?" "proxy barrier $point reached explicitly"
+    before=$(/usr/sbin/usfsctl kexts | sed -n '/^proxy:/p')
+    if [ "$point" -eq 1 ]; then
+        USFS_COVERAGE_EVENT=proxy-pre-admission-term \
+            /usr/lib/methods/usfs/ucfgusfs -l usfs0
+        tap_ok "$?" "pre-admission callback does not prevent implementation unload"
+    else
+        if /usr/lib/methods/usfs/ucfgusfs -l usfs0; then result=1; else result=0; fi
+        tap_ok "$result" "admitted callback prevents implementation unload at point $point"
+    fi
+    "$tool" release || exit 1
+    wait "$opener"; result=$?
+    opener=0
+    mkdev -l usfs0 >/dev/null || result=1
+    after=$(/usr/sbin/usfsctl kexts | sed -n '/^proxy:/p')
+    before_id=$(printf '%s\n' "$before" | sed 's/.*module=\([^ ]*\).*/\1/')
+    after_id=$(printf '%s\n' "$after" | sed 's/.*module=\([^ ]*\).*/\1/')
+    [ "$before_id" = "$after_id" ] || result=1
+    tap_ok "$result" "callback completes safely and resident proxy identity survives point $point"
+done
+tap_finish

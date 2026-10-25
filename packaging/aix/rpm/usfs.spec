@@ -46,6 +46,7 @@ mkdir -p %{buildroot}/usr/share/doc/usfs
 mkdir -p %{buildroot}/usr/include/usfs
 mkdir -p %{buildroot}/usr/lib/pkgconfig
 
+cp %{usfs_build_root}/bin/usfs_proxy.kext %{buildroot}/usr/lib/drivers/usfs/usfs_proxy.kext
 cp %{usfs_build_root}/bin/usfs.kext %{buildroot}/usr/lib/drivers/usfs/usfs.kext
 cp %{usfs_build_root}/bin/cfgusfs %{buildroot}/usr/lib/methods/usfs/cfgusfs
 cp %{usfs_build_root}/bin/ucfgusfs %{buildroot}/usr/lib/methods/usfs/ucfgusfs
@@ -68,11 +69,12 @@ cp %{usfs_build_root}/bin/chusfs %{buildroot}/usr/sbin/chusfs
 cp %{usfs_build_root}/bin/libusfs.a %{buildroot}/usr/lib/libusfs.a
 cp %{usfs_source_root}/src/client/include/usfs/usfs.h %{buildroot}/usr/include/usfs/usfs.h
 cp %{usfs_build_root}/generated/usfs.pc %{buildroot}/usr/lib/pkgconfig/usfs.pc
+cp %{usfs_source_root}/docs/kernel-proxy-lifecycle.md %{buildroot}/usr/share/doc/usfs/kernel-proxy-lifecycle.md
 cp %{usfs_source_root}/LICENSE %{buildroot}/usr/share/doc/usfs/LICENSE
 cp %{usfs_source_archive} %{buildroot}/usr/share/doc/usfs/source.tar.gz
 
 chmod 550 %{buildroot}/usr/lib/methods/usfs/*
-chmod 550 %{buildroot}/usr/lib/drivers/usfs/usfs.kext
+chmod 550 %{buildroot}/usr/lib/drivers/usfs/usfs.kext %{buildroot}/usr/lib/drivers/usfs/usfs_proxy.kext
 chmod 555 %{buildroot}/usr/sbin/*
 chmod 444 %{buildroot}/usr/lib/objrepos/usfs.pddv.add
 chmod 444 %{buildroot}/usr/lib/objrepos/usfs.err %{buildroot}/usr/lib/objrepos/usfs.err.undo
@@ -80,7 +82,8 @@ chmod 444 %{buildroot}/usr/lib/nls/msg/en_US/usfs.cat
 chmod 444 %{buildroot}/usr/lib/ras/usfs.trcfmt %{buildroot}/usr/lib/ras/usfs_trace.trc %{buildroot}/usr/lib/ras/usfs_trace_remove.trc
 chmod 444 %{buildroot}/usr/lib/libusfs.a %{buildroot}/usr/include/usfs/usfs.h \
     %{buildroot}/usr/lib/pkgconfig/usfs.pc %{buildroot}/usr/share/doc/usfs/LICENSE \
-    %{buildroot}/usr/share/doc/usfs/source.tar.gz
+    %{buildroot}/usr/share/doc/usfs/source.tar.gz \
+    %{buildroot}/usr/share/doc/usfs/kernel-proxy-lifecycle.md
 
 {
     echo "package_version=%{version}-%{release}"
@@ -90,7 +93,7 @@ chmod 444 %{buildroot}/usr/lib/libusfs.a %{buildroot}/usr/include/usfs/usfs.h \
     echo "payload_sha256_begin"
     cd %{buildroot}
     /usr/bin/perl %{usfs_source_root}/scripts/aix/sha256.pl \
-        usr/lib/drivers/usfs/usfs.kext \
+        usr/lib/drivers/usfs/usfs.kext usr/lib/drivers/usfs/usfs_proxy.kext \
         usr/lib/methods/usfs/cfgusfs \
         usr/lib/methods/usfs/ucfgusfs \
         usr/lib/methods/usfs/chusfs \
@@ -100,7 +103,8 @@ chmod 444 %{buildroot}/usr/lib/libusfs.a %{buildroot}/usr/include/usfs/usfs.h \
         usr/lib/objrepos/usfs.err.undo usr/lib/ras/usfs.trcfmt \
         usr/lib/ras/usfs_trace.trc usr/lib/ras/usfs_trace_remove.trc \
         usr/lib/libusfs.a usr/include/usfs/usfs.h usr/lib/pkgconfig/usfs.pc \
-        usr/share/doc/usfs/LICENSE usr/share/doc/usfs/source.tar.gz
+        usr/share/doc/usfs/LICENSE usr/share/doc/usfs/source.tar.gz \
+        usr/share/doc/usfs/kernel-proxy-lifecycle.md
     echo "payload_sha256_end"
 } > %{buildroot}/usr/share/doc/usfs/build-manifest.txt
 chmod 444 %{buildroot}/usr/share/doc/usfs/build-manifest.txt
@@ -141,6 +145,7 @@ exit 0
 %defattr(-,root,system,-)
 %dir %attr(0550,root,system) /usr/lib/drivers/usfs
 %attr(0550,root,system) /usr/lib/drivers/usfs/usfs.kext
+%attr(0550,root,system) /usr/lib/drivers/usfs/usfs_proxy.kext
 %dir %attr(0550,root,system) /usr/lib/methods/usfs
 %attr(0550,root,system) /usr/lib/methods/usfs/cfgusfs
 %attr(0550,root,system) /usr/lib/methods/usfs/ucfgusfs
@@ -167,6 +172,8 @@ exit 0
 %attr(0444,root,system) /usr/share/doc/usfs/LICENSE
 %attr(0444,root,system) /usr/share/doc/usfs/source.tar.gz
 %attr(0444,root,system) /usr/share/doc/usfs/build-manifest.txt
+
+%attr(0444,root,system) /usr/share/doc/usfs/kernel-proxy-lifecycle.md
 
 %changelog
 * Mon Aug 03 2026 USFS maintainers - 0.1.0-1

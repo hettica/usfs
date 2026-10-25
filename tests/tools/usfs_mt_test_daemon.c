@@ -745,6 +745,28 @@ static int exec_isolation_probe_succeeded (pid_t child)
     return waitpid (child, &status, 0) == child && WIFEXITED (status) && WEXITSTATUS (status) == 0;
 }
 
+/* GNU make can pass jobserver FIFOs to the test process. Keep those inherited
+ * descriptors out of the exec helper so it tests only descriptors opened by
+ * the USFS client after this point. */
+static int mark_inherited_descriptors_close_on_exec (void)
+{
+    int file_descriptor;
+    const int limit = getdtablesize ();
+    for (file_descriptor = 3; file_descriptor < limit; ++file_descriptor)
+    {
+        const int flags = fcntl (file_descriptor, F_GETFD);
+        if (flags < 0)
+        {
+            if (errno == EBADF)
+                continue;
+            return 1;
+        }
+        if (fcntl (file_descriptor, F_SETFD, flags | FD_CLOEXEC) != 0)
+            return 1;
+    }
+    return 0;
+}
+
 static void stop_idle_worker (struct idle_loop * loop, pthread_t worker, unsigned int notifications)
 {
     unsigned int slot_index;
@@ -774,6 +796,8 @@ static int idle_exit_probe (int argc, char ** argv)
     int result = 1;
     pid_t child = -1;
 
+    if (mark_inherited_descriptors_close_on_exec () != 0)
+        goto out;
     if (parse_example_arguments (&command_options, argc, argv) != 0 || command_options.mountpoint == NULL)
         goto out;
     loop.single = command_options.singlethread;

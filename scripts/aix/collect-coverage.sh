@@ -78,7 +78,7 @@ stop_active_command()
 
 release_artifacts_ready()
 {
-    for artifact in usfs.kext cfgusfs ucfgusfs chusfs usfs_mirror usfs_memfs usfsctl; do
+    for artifact in usfs_proxy.kext usfs.kext cfgusfs ucfgusfs chusfs usfs_mirror usfs_memfs usfsctl; do
         [ -s "$build_directory/bin/$artifact" ] || return 1
     done
     return 0

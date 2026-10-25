@@ -78,6 +78,13 @@ static int usfs_lookup_device_number (dev_t * device_number)
 /* Releases the driver's major (and its minors) back to ODM. Returns USFS_SUCCESS. */
 static int usfs_release_device_numbers (int number_state)
 {
+    mid_t proxy_module;
+    struct usfs_proxy_status proxy_status;
+    const int proxy_state = usfs_proxy_query_user (&proxy_module, &proxy_status);
+    if (proxy_state == USFS_QUERY_ERROR) return USFS_FAILURE;
+    if (proxy_state == USFS_QUERY_PRESENT && proxy_status.abi == USFS_PROXY_ABI)
+        /* Failed devsw registration still owns this number for a retry. */
+        return USFS_SUCCESS;
     /* Configuration accepts only USFS_LOGICAL_DEVICE_NAME. This sole device
      * owns the major and all its minors, so teardown releases them together. */
     const int release_major = 1;
@@ -132,6 +139,7 @@ static int usfs_query_kext_lifecycle (mid_t module_id, dev_t device_number, uint
 
 int usfs_kext_unload (void)
 {
+    if (!usfs_proxy_detached ()) return USFS_FAILURE;
     const mid_t module_id = usfs_kext_get_module_id ();
     uint32_t lifecycle_state;
     if (module_id == USFS_MODULE_ID_NONE)
@@ -200,6 +208,9 @@ static int usfs_configure_device (const char * logical_device_name, int * cleanu
         return USFS_FAILURE;
     if (number_state == USFS_QUERY_ABSENT &&
         usfs_allocate_device_number (&device_number) != USFS_SUCCESS)
+        return USFS_FAILURE;
+
+    if (usfs_proxy_prepare_device (device_number) != USFS_SUCCESS)
         return USFS_FAILURE;
 
     if (usfs_create_device_node (logical_device_name, device_number) != USFS_SUCCESS)
@@ -379,6 +390,9 @@ static int usfs_configure_locked (const char * logical_device_name)
     int cleanup_complete = 1;
 
     if (usfs_configuration_identity_valid (logical_device_name) != USFS_SUCCESS)
+        return USFS_FAILURE;
+
+    if (usfs_proxy_ensure_loaded () != USFS_SUCCESS)
         return USFS_FAILURE;
 
     if (usfs_load_extension_for_configuration (&loaded_here) != USFS_SUCCESS)

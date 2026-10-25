@@ -110,8 +110,27 @@ static int probe_interrupted_read (void)
     return 0;
 }
 
-int main (void)
+static int hold_allocated_channel(const char *ready, const char *release)
 {
+    const int device = open("/dev/usfs0", O_RDWR | O_NONBLOCK);
+    if (device < 0) { perror("channel open"); return 1; }
+    const int marker = open(ready, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (marker < 0) { perror("ready marker"); close(device); return 1; }
+    close(marker);
+    const int gate = open(release, O_RDONLY);
+    if (gate < 0) { perror("release gate"); close(device); return 1; }
+    char byte;
+    const ssize_t received = read(gate, &byte, 1);
+    close(gate);
+    const int closed = close(device);
+    return received == 1 && closed == 0 ? 0 : 1;
+}
+
+int main (int argc, char **argv)
+{
+    if (argc == 4 && strcmp(argv[1], "hold-channel") == 0)
+        return hold_allocated_channel(argv[2], argv[3]);
+    if (argc != 1) return 2;
     const int device_descriptor = open_nonblocking_device ();
     if (device_descriptor < 0)
         return 1;

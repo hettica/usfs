@@ -10,7 +10,12 @@
  * arcs-only implementation; it does not link or embed libgcov.
  */
 
-#include "definitions.h"
+#include <sys/types.h>
+#include <sys/atomic_op.h>
+#include <sys/malloc.h>
+#include <sys/errno.h>
+#include <stdbool.h>
+#include <string.h>
 #include "runtime.h"
 
 typedef unsigned gcov_unsigned_t;

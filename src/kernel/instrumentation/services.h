@@ -37,8 +37,9 @@ int usfs_kunpin_deferred (void);
 int usfs_kcoverage_drain_fault (void);
 int usfs_kgfs_register (void);
 int usfs_kgfsdel (const int filesystem_type);
-int usfs_kdevswadd (const dev_t device_number, struct devsw * device_switch);
-int usfs_kdevswdel (const dev_t device_number);
+struct usfs_proxy_callbacks;
+int usfs_kproxy_attach (const struct usfs_proxy_callbacks * callbacks);
+int usfs_kproxy_teardown_checkpoint (void);
 int usfs_kcoverage_initialize (void);
 
 #endif

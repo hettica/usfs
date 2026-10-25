@@ -1,3 +1,4 @@
+#include "usfs_common.h"
 /*
  * Copyright (c) 2026 Raman Dzehtsiar
  * SPDX-License-Identifier: MIT
@@ -444,11 +445,40 @@ static int process_device_command (const int file_descriptor, const int argc, ch
     return rc;
 }
 
+static int proxy_snapshot(const char *directory)
+{
+    const int lock = usfs_config_lock_acquire();
+    if (lock < 0) return 1;
+    mid_t module;
+    struct usfs_proxy_status state;
+    int rc = 1;
+    unsigned char *buffer = NULL;
+    if (usfs_proxy_query_user(&module, &state) != USFS_QUERY_PRESENT) goto done;
+    buffer = calloc(1, USFS_GCOV_MAX_SNAPSHOT);
+    if (!buffer) goto done;
+    struct usfs_config_coverage_export request = {0};
+    request.magic = USFS_CONFIG_DDS_MAGIC;
+    request.abi_version = USFS_CONFIG_ABI_VERSION;
+    request.size = sizeof(request);
+    request.capacity = USFS_GCOV_MAX_SNAPSHOT;
+    request.user_buffer = (uint64_t)(unsigned long)buffer;
+    if (usfs_proxy_command(module, 0, USFS_PROXY_EXPORT, &request, sizeof(request))) goto done;
+    const struct usfs_gcov_container_header *header = (const void *)buffer;
+    if (header->total_size > USFS_GCOV_MAX_SNAPSHOT) goto done;
+    rc = container_to_directory(buffer, header->total_size, directory);
+done:
+    free(buffer);
+    if (usfs_config_lock_release(lock)) rc = 1;
+    return rc;
+}
+
 int main (const int argc, char ** argv)
 {
     int file_descriptor;
     int rc = 1;
 
+    if (argc == 3 && strcmp (argv[1], "proxy-snapshot") == 0)
+        return proxy_snapshot(argv[2]);
     if (argc == 4 && strcmp (argv[1], "unpack") == 0)
         return unpack_container_file (argv[2], argv[3]);
     if (argc < 2 || argc > 3)

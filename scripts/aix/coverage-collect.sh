@@ -60,6 +60,15 @@ bash "$USFS_SOURCE_DIR/scripts/aix/coverage-checkpoint.sh" snapshot "$run" final
 mkdir -p "$destination/kernel"
 cp -R "$kernel_data"/[0-9][0-9][0-9][0-9]-* "$destination/kernel/"
 
+# The resident proxy has its own gcov registry and survives implementation teardown.
+mkdir -p "$destination/proxy" "$report/graphs/proxy"
+/usr/sbin/usfs_coverage proxy-snapshot "$destination/proxy/final"
+find "$USFS_BINARY_DIR/CMakeFiles/_usfs_proxy_coverage_objects.dir" -name '*.gcno' -print |
+while IFS= read -r note; do
+    cp "$note" "$report/graphs/proxy/"
+    cp "$note" "$destination/proxy/final/"
+done
+
 actual_exports="$validation/actual-exports.txt"
 actual_generations="$validation/actual-generations.txt"
 : >"$actual_exports"
@@ -297,6 +306,11 @@ fi
         echo "ledger=manual-or-unrecorded"
     fi
     echo "aix=$(uname -a)"
+    echo "kernel_extension_status_begin"
+    /usr/sbin/usfsctl kexts
+    echo "kernel_extension_status_end"
+    echo "proxy_binary_sha256=$(perl "$USFS_SOURCE_DIR/scripts/aix/sha256.pl" "$USFS_BINARY_DIR/coverage/bin/usfs_proxy.kext" | awk '{ print $1 }')"
+    echo "implementation_binary_sha256=$(perl "$USFS_SOURCE_DIR/scripts/aix/sha256.pl" "$USFS_BINARY_DIR/coverage/bin/usfs.kext" | awk '{ print $1 }')"
     echo "gcc=$(gcc -dumpfullversion)"
     echo "gcov=$(gcov --version | sed -n '1p')"
     echo "kernel_snapshots=$kernel_snapshots"
@@ -313,6 +327,7 @@ fi
     echo "example_profiles=$(find "$destination/examples" -name '*.gcda' | wc -l)"
     echo "cli_profiles=$(find "$destination/cli" -name '*.gcda' | wc -l)"
     echo "aix_unit_profiles=$(find "$destination/aix-unit" -name '*.gcda' | wc -l)"
+    echo "proxy_profiles=$(find "$destination/proxy" -name '*.gcda' | wc -l)"
     if [ -f "$ledger" ] &&
        grep -E 'planned[	]e2e($|-)' "$ledger" >/dev/null; then
         echo "sigkill_user_profile_loss_expected=yes"

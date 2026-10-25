@@ -60,7 +60,7 @@ int main(void)
     struct usfs_connection second;
     struct usfs_connection *reserved;
 
-    tap_plan(&tap, 38);
+    tap_plan(&tap, 31);
     memset(&first, 0, sizeof(first));
     memset(&second, 0, sizeof(second));
 
@@ -189,32 +189,6 @@ int main(void)
            "lifecycle operations leave no lock held");
     tap_ok(&tap, lock_calls > 0,
            "lifecycle tests execute through real lock scopes");
-
-    tap_ok(&tap, usfs_lifecycle_mpx_enter(0) == EBUSY &&
-                    !usfs_lifecycle_mpx_has_users(),
-           "sealed callback guard refuses allocations without a lease");
-    tap_ok(&tap, usfs_lifecycle_mpx_activate() == 0 &&
-                    usfs_lifecycle_mpx_enter(0) == 0 &&
-                    usfs_lifecycle_mpx_has_users(),
-           "active callback guard grants an allocation lease");
-    tap_ok(&tap, usfs_lifecycle_mpx_begin_close() == 0 &&
-                    usfs_lifecycle_mpx_enter(0) == EBUSY,
-           "closing callback guard refuses new allocations");
-    tap_ok(&tap, usfs_lifecycle_mpx_enter(1) == 0 &&
-                    !usfs_lifecycle_mpx_seal(),
-           "closing callback guard admits final deallocation and prevents sealing");
-    usfs_lifecycle_mpx_leave();
-    usfs_lifecycle_mpx_leave();
-    tap_ok(&tap, !usfs_lifecycle_mpx_has_users() &&
-                    usfs_lifecycle_mpx_seal(),
-           "callback guard seals only after every lease returns");
-    tap_ok(&tap, usfs_lifecycle_mpx_enter(0) == EBUSY &&
-                    usfs_lifecycle_mpx_enter(1) == EBUSY,
-           "sealed callback guard refuses both callback classes");
-    usfs_lifecycle_mpx_reopen();
-    tap_ok(&tap, usfs_lifecycle_mpx_enter(0) == 0,
-           "rollback reopens callback admission");
-    usfs_lifecycle_mpx_leave();
 
     return tap_finish(&tap);
 }

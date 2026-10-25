@@ -604,6 +604,9 @@ static void print_usage (void)
         "Commands:\n"
         "  status            Show filesystem health and settings (default command).\n"
         "\n"
+        "  kexts             Inspect both extensions, even while USFS is offline.\n"
+        "  proxy unload --unsafe [--confirm-unsafe-unload]\n"
+        "                    Dangerous maintenance; requires root and confirmation.\n\n"
         "Tracing:\n"
         "  trace start [--profile PROFILE] [--output RAW_OUTPUT_PATH]\n"
         "    Start recording; requires root.\n\n"
@@ -663,8 +666,61 @@ static int should_process_trace_command (const int argc, char ** argv)
     return true;
 }
 
+static int process_kexts_command (void)
+{
+    mid_t module;
+    struct usfs_proxy_status proxy;
+    const int proxy_state = usfs_proxy_query_user (&module, &proxy);
+    const int proxy_error = proxy_state == USFS_QUERY_ERROR ? errno : 0;
+    const int main_state = usfs_kext_is_loaded ();
+    const int main_error = main_state == USFS_QUERY_ERROR ? errno : 0;
+    int rc = 0;
+    if (proxy_state == USFS_QUERY_ERROR || main_state == USFS_QUERY_ERROR)
+    {
+        fprintf (stderr, "Cannot inspect kernel extensions: %s\n",
+            strerror (proxy_error ? proxy_error : main_error));
+        rc = USFS_FAILURE;
+    }
+    else
+    {
+        printf ("proxy: loaded=%s module=%llu abi=%u state=%u calls=%u registered=%u build=%s variant=%s\n",
+            proxy_state == USFS_QUERY_PRESENT ? "yes" : "no",
+            (unsigned long long)module, proxy.abi, proxy.state, proxy.calls,
+            proxy.registered, proxy.proxy_build, proxy.variant);
+        printf ("implementation: loaded=%s module=%llu lifecycle=%u build=%s\n",
+            main_state == USFS_QUERY_PRESENT ? "yes" : "no",
+            (unsigned long long)usfs_kext_get_module_id (), proxy.lifecycle,
+            proxy.implementation_build);
+    }
+    return rc;
+}
+
+static int process_proxy_unload_command (int argc, char ** argv)
+{
+    if ((argc != 4 && argc != 5) || strcmp (argv[2], "unload") ||
+        strcmp (argv[3], "--unsafe") ||
+        (argc == 5 && strcmp (argv[4], "--confirm-unsafe-unload")))
+        return USFSCTL_WRONG_USAGE;
+    if (geteuid () != 0)
+    { fprintf (stderr, "Proxy maintenance requires root.\n"); return USFS_FAILURE; }
+    fprintf (stderr, "WARNING: unloading the resident proxy can crash AIX because a late device dispatch cannot be excluded. Normal USFS reload does not require this.\n");
+    if (argc == 4)
+    {
+        char confirmation[32];
+        if (!isatty (STDIN_FILENO))
+        { fprintf (stderr, "Noninteractive use requires --confirm-unsafe-unload.\n"); return USFS_FAILURE; }
+        fprintf (stderr, "Enter UNLOAD PROXY to confirm: ");
+        if (!fgets (confirmation, sizeof (confirmation), stdin) || strcmp (confirmation, "UNLOAD PROXY\n"))
+            return USFS_FAILURE;
+    }
+    const int rc = usfs_proxy_unsafe_unload ();
+    if (rc) fprintf (stderr, "Proxy removal failed or is busy; inspect usfsctl kexts before retrying.\n");
+    return rc;
+}
+
 static int process_status_command (void)
 {
+    if (process_kexts_command ()) return USFSCTL_UNAVAILABLE;
     struct kext_state state = { 0 };
 
     const int block_device_descriptor = open (status_device_file, O_RDONLY | O_NONBLOCK);
@@ -1040,6 +1096,11 @@ static int process_default_command (void)
 
 static int process_command (const int argc, char ** argv)
 {
+    if (argc == 2 && !strcmp (argv[1], "kexts"))
+        return process_kexts_command ();
+    if (argc >= 2 && !strcmp (argv[1], "proxy"))
+        return process_proxy_unload_command (argc, argv);
+
     if (should_process_default_command (argc))
         return process_default_command ();
 

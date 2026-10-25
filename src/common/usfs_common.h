@@ -55,6 +55,15 @@
 #include "usfs_proto.h"
 #include "usfs_config.h"
 #include "usfs_gcov.h"
+#include "usfs_proxy.h"
+
+int usfs_proxy_command(mid_t module, dev_t device, int command, void * data, size_t size);
+int usfs_proxy_query_user(mid_t * module, struct usfs_proxy_status * status);
+int usfs_proxy_ensure_loaded(void);
+int usfs_proxy_prepare_device(dev_t device);
+int usfs_proxy_detached(void);
+mid_t usfs_proxy_control_module(mid_t implementation_module);
+int usfs_proxy_unsafe_unload(void);
 
 /* ------------------------------------------------------------------------- *
  * Compile-time configuration

@@ -284,13 +284,6 @@ int has_active_connections (void);
 int usfs_lifecycle_state_read (void);
 int usfs_lifecycle_state_replace (int desired);
 int usfs_lifecycle_state_claim (int expected, int desired);
-int usfs_lifecycle_mpx_enter (const int is_deallocation);
-void usfs_lifecycle_mpx_leave (void);
-int usfs_lifecycle_mpx_begin_close (void);
-int usfs_lifecycle_mpx_has_users (void);
-int usfs_lifecycle_mpx_seal (void);
-void usfs_lifecycle_mpx_reopen (void);
-int usfs_lifecycle_mpx_activate (void);
 enum usfs_control_policy
 {
     USFS_CONTROL_EXACTLY_ONE_CONNECTION = 1,

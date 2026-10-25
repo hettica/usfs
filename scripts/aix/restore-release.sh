@@ -12,7 +12,9 @@ bash "$source_directory/scripts/aix/cleanup.sh"
 if lsdev -l usfs0 2>/dev/null | grep -q '^usfs0'; then
     rmdev -l usfs0
 fi
+bash "$source_directory/scripts/aix/switch-test-proxy.sh" "$build_directory" release
 bash "$source_directory/scripts/aix/install-variant.sh" release "$source_directory" "$build_directory"
 bash "$source_directory/scripts/aix/setup.sh"
+cmp "$build_directory/bin/usfs_proxy.kext" /usr/lib/drivers/usfs/usfs_proxy.kext
 cmp "$build_directory/bin/usfs.kext" /usr/lib/drivers/usfs/usfs.kext
 /usr/sbin/usfsctl status

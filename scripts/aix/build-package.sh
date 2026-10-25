@@ -36,7 +36,7 @@ mkdir -p "$topdir/BUILD" "$topdir/BUILDROOT" "$topdir/RPMS" \
     cd "$source_root"
     tar -cf "$topdir/SOURCES/usfs-source.tar" \
         LICENSE README.md .gitignore .clang-format CMakeLists.txt \
-        cmake examples packaging scripts src tests
+        cmake docs examples packaging scripts src tests
 )
 gzip -c "$topdir/SOURCES/usfs-source.tar" >"$source_archive"
 rm -f "$topdir/SOURCES/usfs-source.tar"
@@ -60,6 +60,8 @@ cp "$topdir/RPMS/ppc/$rpm_file" "$packages/$rpm_file"
 perl "$source_root/scripts/aix/verify-rpm.pl" \
     "$packages/$rpm_file" "$version" "$release" \
     /usr/lib/drivers/usfs/usfs.kext \
+    /usr/lib/drivers/usfs/usfs_proxy.kext \
+    /usr/share/doc/usfs/kernel-proxy-lifecycle.md \
     /usr/lib/methods/usfs/package_lifecycle \
     /usr/sbin/usfsctl \
     /usr/lib/libusfs.a \

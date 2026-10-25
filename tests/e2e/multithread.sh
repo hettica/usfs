@@ -76,7 +76,11 @@ cleanup()
     if is_mounted; then
         umount "$MOUNT" 2>/dev/null || true
     fi
-    rm -rf "$BASE"
+    if [[ "$FAILURES" -ne 0 ]]; then
+        echo "failure logs retained: $BASE"
+    else
+        rm -rf "$BASE"
+    fi
     return "$?"
 }
 trap cleanup EXIT HUP INT TERM

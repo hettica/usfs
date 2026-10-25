@@ -54,24 +54,6 @@ static unsigned free_connection_calls;
 static unsigned wake_calls;
 static unsigned release_slot_calls;
 static unsigned free_request_calls;
-static unsigned mpx_callbacks_entered;
-static unsigned mpx_callbacks_left;
-static unsigned mpx_callbacks_in_flight;
-
-int usfs_lifecycle_mpx_enter(const int is_deallocation)
-{
-    (void)is_deallocation;
-    mpx_callbacks_entered += 1;
-    mpx_callbacks_in_flight += 1;
-    return 0;
-}
-
-void usfs_lifecycle_mpx_leave(void)
-{
-    mpx_callbacks_left += 1;
-    mpx_callbacks_in_flight -= 1;
-}
-
 struct usfs_connection *get_connection_by_channel(chan_t channel)
 {
     if (channel < 0 || channel >= USFS_MAX_CONNECTIONS)
@@ -325,9 +307,6 @@ static void reset_state(void)
     wake_calls = 0;
     release_slot_calls = 0;
     free_request_calls = 0;
-    mpx_callbacks_entered = 0;
-    mpx_callbacks_left = 0;
-    mpx_callbacks_in_flight = 0;
 }
 
 static void test_read_ownership(struct tap_state *tap)
@@ -586,7 +565,7 @@ int main(void)
     chan_t channel;
     int index;
 
-    tap_plan (&tap, 125);
+    tap_plan (&tap, 124);
     reset_state();
     memset(&connection, 0, sizeof(connection));
     connection.refs_counter = 1;
@@ -707,8 +686,6 @@ int main(void)
     tap_ok (&tap, usfs_dev_mpx (0, &channel, "status") == EBUSY, "status channel obeys the lifecycle admission gate");
     g_gate_is_open = 1;
     tap_ok (&tap, usfs_dev_mpx (0, &channel, "status/extra") == EINVAL, "unknown status extensions remain unavailable");
-    tap_ok (&tap, mpx_callbacks_entered == mpx_callbacks_left && mpx_callbacks_in_flight == 0,
-            "mpx callbacks release their lifetime lease on every path");
 
     reset_state();
     memset(&connection, 0, sizeof(connection));

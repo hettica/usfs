@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "definitions.h"
+#include "usfs_proxy.h"
 
 #ifdef USFS_TESTING
     #include "instrumentation/testing/runtime.h"
@@ -148,24 +149,24 @@ int usfs_kgfsdel (const int filesystem_type)
     return gfsdel (filesystem_type);
 }
 
-int usfs_kdevswadd (const dev_t device_number, struct devsw * device_switch)
+int usfs_kproxy_attach (const struct usfs_proxy_callbacks * callbacks)
 {
 #ifdef USFS_TESTING
     const int rc = usfs_test_fault (USFS_TEST_FAULT_DEVSW_ADD);
     if (rc != 0)
         return rc;
 #endif
-    return devswadd (device_number, device_switch);
+    return usfs_proxy_attach (callbacks);
 }
 
-int usfs_kdevswdel (const dev_t device_number)
+int usfs_kproxy_teardown_checkpoint (void)
 {
 #ifdef USFS_TESTING
     const int rc = usfs_test_fault (USFS_TEST_FAULT_DEVSW_DEL);
     if (rc != 0)
         return rc;
 #endif
-    return devswdel (device_number);
+    return 0;
 }
 
 int usfs_kcoverage_initialize (void)

@@ -107,6 +107,7 @@ bash "$USFS_SOURCE_DIR/scripts/aix/cleanup.sh" >/dev/null 2>&1 || true
 if lsdev -l usfs0 2>/dev/null | grep -q '^usfs0'; then
     rmdev -l usfs0 >/dev/null
 fi
+bash "$USFS_SOURCE_DIR/scripts/aix/switch-test-proxy.sh" "$USFS_BINARY_DIR" coverage
 bash "$USFS_SOURCE_DIR/scripts/aix/install-variant.sh" coverage \
     "$USFS_SOURCE_DIR" "$USFS_BINARY_DIR"
 bash "$USFS_SOURCE_DIR/scripts/aix/setup.sh"
@@ -118,6 +119,7 @@ mkdir -p "$USFS_BINARY_DIR/coverage"
     echo "worktree_dirty=$dirty"
     perl "$USFS_SOURCE_DIR/scripts/aix/sha256.pl" \
         "$USFS_BINARY_DIR/coverage/bin/usfs.kext" \
+        "$USFS_BINARY_DIR/coverage/bin/usfs_proxy.kext" \
         "$USFS_BINARY_DIR/coverage/bin/libusfs.a" \
         "$USFS_BINARY_DIR/coverage/bin/usfs_mirror" \
         "$USFS_BINARY_DIR/coverage/bin/usfs_memfs" \
@@ -150,7 +152,14 @@ run_suite kernel-unit-aix /usr/sbin/usfs_testctl selftest all
 for group in contract fault concurrency; do
     run_suite "$group" run_scripts "$USFS_SOURCE_DIR"/tests/integration/aix/"$group"/*.sh
 done
-run_suite e2e run_scripts "$USFS_SOURCE_DIR"/tests/e2e/*.sh
+e2e_scripts=()
+for script in "$USFS_SOURCE_DIR"/tests/e2e/*.sh; do
+    case "$script" in
+        */production_proxy.sh|*/proxy_reload_stress.sh) ;;
+        *) e2e_scripts+=("$script") ;;
+    esac
+done
+run_suite e2e run_scripts "${e2e_scripts[@]}"
 
 bash "$USFS_SOURCE_DIR/scripts/aix/cleanup.sh"
 bash "$USFS_SOURCE_DIR/scripts/aix/coverage-collect.sh" "$run" complete

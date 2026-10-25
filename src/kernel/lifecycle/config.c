@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 #include "definitions.h"
+#include "usfs_proxy.h"
+#ifndef USFS_BUILD_REVISION
+#define USFS_BUILD_REVISION "unknown"
+#endif
+#ifndef USFS_IMPLEMENTATION_BUILD_ID
+#define USFS_IMPLEMENTATION_BUILD_ID USFS_BUILD_REVISION
+#endif
 #include "instrumentation/adapter.h"
 #include "instrumentation/services.h"
 #include "device/operations/close.h"
@@ -41,35 +48,18 @@ int usfs_device_number_valid (const dev_t device_number)
     return device_number == g_configured_device_number;
 }
 
-struct devsw g_device_driver_descriptor;
-
-/* Initializes the USFS device-driver descriptor. */
-void init_device_driver_descriptor (void)
+static int attach_proxy (void)
 {
-    memset (&g_device_driver_descriptor, 0, sizeof (g_device_driver_descriptor));
-
-    /* Keep fully prototyped callbacks despite devsw's legacy callback fields. */
-
-    // Install supported device entry points
-    g_device_driver_descriptor.d_open = usfs_dev_open;
-    g_device_driver_descriptor.d_close = usfs_dev_close;
-    g_device_driver_descriptor.d_read = usfs_dev_read;
-    g_device_driver_descriptor.d_write = usfs_dev_write;
-    g_device_driver_descriptor.d_ioctl = usfs_dev_ioctl;
-    g_device_driver_descriptor.d_mpx = usfs_dev_mpx;
-    g_device_driver_descriptor.d_config = usfs_kext_entry;
-    g_device_driver_descriptor.d_select = usfs_dev_select;
-
-    // Reject unsupported device entry points
-    g_device_driver_descriptor.d_strategy = nodev;
-    g_device_driver_descriptor.d_print = nodev;
-    g_device_driver_descriptor.d_dump = nodev;
-    g_device_driver_descriptor.d_revoke = nodev;
-
-    g_device_driver_descriptor.d_ttys = NULL;
-    g_device_driver_descriptor.d_dsdptr = NULL;
-
-    g_device_driver_descriptor.d_opts = DEV_MPSAFE | DEV_64BIT;
+    const struct usfs_proxy_callbacks callbacks = {
+        .abi = USFS_PROXY_ABI, .size = sizeof(callbacks),
+        .build = USFS_IMPLEMENTATION_BUILD_ID,
+        .open = usfs_dev_open, .close = usfs_dev_close,
+        .read = usfs_dev_read, .write = usfs_dev_write,
+        .ioctl = usfs_dev_ioctl, .mpx = usfs_dev_mpx,
+        .select = usfs_dev_select, .config = usfs_kext_entry,
+        .lifecycle = usfs_lifecycle_state_read
+    };
+    return usfs_kproxy_attach (&callbacks);
 }
 
 static void set_kext_state_code (const int new_state_code)
@@ -194,11 +184,10 @@ static int remove_device_registration (const dev_t device_number)
     if (!g_device_driver_is_registered)
         return 0;
 
-    const int rc = usfs_kdevswdel (device_number);
-    USFS_TRACE_CONTROL5 (USFS_TRACE_REGISTRATION, USFS_TRACE_REG_DEVSW, USFS_TRACE_ACTION_REMOVE, rc, usfs_lifecycle_state_read (), device_number);
-    if (rc != 0)
-        return rc;
-
+    (void)device_number;
+    const int rc = usfs_kproxy_teardown_checkpoint ();
+    if (rc != 0) return rc;
+    /* Proxy owns devsw for the entire boot. Its control path has drained calls. */
     g_device_driver_is_registered = false;
 
     return 0;
@@ -239,10 +228,6 @@ static int remove_registrations (const dev_t device_number)
     int rc = remove_device_registration (device_number);
     if (rc != 0)
         return rc;
-
-    /* Keep runtime locks until every callback that claimed the guard exits. */
-    if (usfs_lifecycle_mpx_has_users ())
-        return EBUSY;
 
     rc = remove_filesystem_registration ();
     if (rc != 0)
@@ -392,7 +377,7 @@ static int register_filesystem (void)
 
 static int register_device_driver (const dev_t device_number)
 {
-    const int rc = usfs_kdevswadd (device_number, &g_device_driver_descriptor);
+    const int rc = attach_proxy ();
 
     USFS_TRACE_CONTROL5 (USFS_TRACE_REGISTRATION, USFS_TRACE_REG_DEVSW, USFS_TRACE_ACTION_ADD, rc, usfs_lifecycle_state_read (), device_number);
 
@@ -428,7 +413,7 @@ static int register_and_activate_extension (const dev_t device_number, const str
 
     synchronized_with (g_lifecycle_lock)
     {
-        activation_rc = usfs_lifecycle_mpx_activate ();
+        activation_rc = usfs_proxy_activate ();
         if (activation_rc == 0)
         {
             g_gate_is_open = true;
@@ -471,7 +456,6 @@ static void initialize_runtime_descriptors (void)
     init_global_virtual_fs_operations ();
     init_global_virtual_inode_operations ();
     init_global_gfs_descriptor ();
-    init_device_driver_descriptor ();
 }
 
 static void record_configured_device (const dev_t device_number)
@@ -529,9 +513,6 @@ static int has_runtime_users_locked (void)
     if (g_status_channel_present)
         return true;
 
-    if (usfs_lifecycle_mpx_has_users ())
-        return true;
-
     return has_active_connections ();
 }
 
@@ -542,8 +523,6 @@ static void restore_cleanup_gate_locked (const int prior_state)
 
     set_kext_state_code (prior_state);
 
-    if (g_device_driver_is_registered)
-        usfs_lifecycle_mpx_reopen ();
 }
 
 static int is_cleanup_blocked_locked (void)
@@ -554,8 +533,6 @@ static int is_cleanup_blocked_locked (void)
     {
         kext_is_busy = has_runtime_users_locked ();
 
-        if (!kext_is_busy && g_kext_is_running_control_operation == 0)
-            kext_is_busy = !usfs_lifecycle_mpx_seal ();
     }
 
     return kext_is_busy || g_kext_is_running_control_operation != 0;
@@ -563,13 +540,6 @@ static int is_cleanup_blocked_locked (void)
 
 static int close_cleanup_gate_locked (const int prior_state)
 {
-    const int guard_rc = usfs_lifecycle_mpx_begin_close ();
-    if (guard_rc != 0)
-    {
-        restore_cleanup_gate_locked (prior_state);
-        return guard_rc;
-    }
-
     g_gate_is_open = false;
 
     if (!is_cleanup_blocked_locked ())

@@ -184,7 +184,7 @@ set(USFS_KERNEL_CORE_SOURCES
 function(usfs_kernel_objects target)
     add_library(${target} OBJECT EXCLUDE_FROM_ALL ${ARGN})
     target_compile_options(${target} PRIVATE ${USFS_DIAGNOSTIC_FLAGS})
-    target_compile_definitions(${target} PRIVATE ${USFS_KERNEL_DEFINITIONS})
+    target_compile_definitions(${target} PRIVATE ${USFS_KERNEL_DEFINITIONS} USFS_BUILD_REVISION="${USFS_BUILD_REVISION}")
     target_include_directories(${target} PRIVATE
         "${USFS_GENERATED_DIR}"
         "${CMAKE_SOURCE_DIR}/src/kernel"
@@ -202,7 +202,7 @@ add_custom_command(
     OUTPUT "${USFS_BIN_DIR}/usfs.kext"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${USFS_BIN_DIR}"
     COMMAND "${CMAKE_LINKER}" -b64 -e usfs_kext_entry
-        -o "${USFS_BIN_DIR}/usfs.kext" "-bI:${USFS_KERNEX_IMPORT_FILE}"
+        -o "${USFS_BIN_DIR}/usfs.kext" "-bI:${USFS_KERNEX_IMPORT_FILE}" "-bI:${CMAKE_SOURCE_DIR}/src/kernel/proxy/proxy.exp"
         $<TARGET_OBJECTS:_usfs_kernel_release_objects>
         $<TARGET_OBJECTS:_usfs_kernel_hooks> -lsys -lcsys
     COMMAND bash "${CMAKE_SOURCE_DIR}/scripts/aix/verify-kernel.sh"
@@ -215,7 +215,7 @@ add_custom_command(
 add_custom_target(_usfs_kernel_release DEPENDS "${USFS_BIN_DIR}/usfs.kext")
 
 add_library(_usfs_common_methods OBJECT EXCLUDE_FROM_ALL
-    src/common/usfs_common.c src/common/instrumentation/config_normal.c)
+    src/common/usfs_common.c src/common/proxy_control.c src/common/instrumentation/config_normal.c)
 usfs_common_target(_usfs_common_methods)
 
 foreach(_method IN ITEMS cfgusfs ucfgusfs chusfs)
@@ -243,8 +243,10 @@ function(usfs_add_program target output)
     usfs_set_output(${target} "${USFS_BIN_DIR}" "${output}")
 endfunction()
 
-usfs_add_program(_usfs_ctl usfsctl src/common/usfs_status.c src/cli/usfsctl.c)
-usfs_add_program(_usfs_coverage_ctl usfsctl src/common/usfs_status.c src/cli/usfsctl.c)
+usfs_add_program(_usfs_ctl usfsctl src/common/usfs_status.c src/cli/usfsctl.c $<TARGET_OBJECTS:_usfs_common_methods>)
+target_link_libraries(_usfs_ctl PRIVATE cfg odm)
+usfs_add_program(_usfs_coverage_ctl usfsctl src/common/usfs_status.c src/cli/usfsctl.c $<TARGET_OBJECTS:_usfs_coverage_methods>)
+target_link_libraries(_usfs_coverage_ctl PRIVATE cfg odm)
 target_compile_options(_usfs_coverage_ctl PRIVATE ${USFS_GCOV_FLAGS})
 target_link_options(_usfs_coverage_ctl PRIVATE ${USFS_GCOV_FLAGS})
 usfs_set_output(_usfs_coverage_ctl "${USFS_COVERAGE_BIN_DIR}" usfsctl)
@@ -304,7 +306,7 @@ add_custom_command(
     OUTPUT "${USFS_TEST_BIN_DIR}/usfs.kext"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${USFS_TEST_BIN_DIR}"
     COMMAND "${CMAKE_LINKER}" -b64 -e usfs_kext_entry
-        -o "${USFS_TEST_BIN_DIR}/usfs.kext" "-bI:${USFS_KERNEX_IMPORT_FILE}"
+        -o "${USFS_TEST_BIN_DIR}/usfs.kext" "-bI:${USFS_KERNEX_IMPORT_FILE}" "-bI:${CMAKE_SOURCE_DIR}/src/kernel/proxy/proxy.exp"
         $<TARGET_OBJECTS:_usfs_kernel_testing_core>
         $<TARGET_OBJECTS:_usfs_kernel_testing_instrumentation>
         $<TARGET_OBJECTS:_usfs_kernel_hooks> -lsys -lcsys
@@ -321,7 +323,7 @@ add_custom_target(_usfs_kernel_testing DEPENDS "${USFS_TEST_BIN_DIR}/usfs.kext")
 # Test and coverage methods share fault instrumentation; only coverage emits gcov.
 foreach(_variant IN ITEMS testing coverage)
     add_library(_usfs_${_variant}_methods OBJECT EXCLUDE_FROM_ALL
-        src/common/usfs_common.c src/common/instrumentation/config_testing.c)
+        src/common/usfs_common.c src/common/proxy_control.c src/common/instrumentation/config_testing.c)
     usfs_common_target(_usfs_${_variant}_methods)
     if(_variant STREQUAL coverage)
         target_compile_options(_usfs_${_variant}_methods PRIVATE ${USFS_GCOV_FLAGS})
@@ -430,13 +432,16 @@ usfs_add_unit(tap_selftest PORTABLE tests/harness/tap.c tests/harness/tap_selfte
 usfs_add_unit(configuration_methods_test PORTABLE tests/harness/tap.c
     tests/unit/aix/configuration_methods_test.c)
 usfs_add_unit(device_node_policy_test PORTABLE tests/harness/tap.c
-    src/common/instrumentation/config_normal.c tests/unit/aix/device_node_policy_test.c)
+    src/common/instrumentation/config_normal.c src/common/proxy_control.c tests/unit/aix/device_node_policy_test.c)
 target_compile_options(_usfs_unit_device_node_policy_test PRIVATE -pthread)
 target_compile_options(_usfs_coverage_unit_device_node_policy_test PRIVATE -pthread)
 target_link_libraries(_usfs_unit_device_node_policy_test PRIVATE cfg odm pthreads)
 target_link_libraries(_usfs_coverage_unit_device_node_policy_test PRIVATE cfg odm pthreads)
 usfs_add_unit(coverage_container_file_test PORTABLE tests/harness/tap.c
-    tests/unit/aix/coverage_container_file_test.c)
+    tests/unit/aix/coverage_container_file_test.c src/common/usfs_common.c
+    src/common/proxy_control.c src/common/instrumentation/config_normal.c)
+target_link_libraries(_usfs_unit_coverage_container_file_test PRIVATE cfg odm)
+target_link_libraries(_usfs_coverage_unit_coverage_container_file_test PRIVATE cfg odm)
 usfs_add_unit(io_probe_security_test PORTABLE tests/harness/tap.c
     tests/unit/aix/io_probe_security_test.c)
 usfs_add_unit(protocol_test PORTABLE tests/harness/tap.c src/common/usfs_validate.c
@@ -506,6 +511,7 @@ usfs_add_unit(fid_format_test KERNEL tests/harness/tap.c tests/unit/aix/fid_form
 usfs_add_unit(fid_ops_test KERNEL tests/harness/tap.c src/common/usfs_validate.c
     tests/unit/aix/fid_ops_test.c)
 usfs_add_unit(forced_unmount_test KERNEL tests/harness/tap.c tests/unit/aix/forced_unmount_test.c)
+usfs_add_unit(proxy_test KERNEL tests/harness/tap.c tests/unit/aix/proxy_test.c)
 usfs_add_unit(lifecycle_state_test KERNEL tests/harness/tap.c src/kernel/lifecycle/state.c
     tests/unit/aix/lifecycle_state_test.c)
 
@@ -562,7 +568,7 @@ add_custom_command(
     OUTPUT "${USFS_COVERAGE_BIN_DIR}/usfs.kext"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${USFS_COVERAGE_BIN_DIR}"
     COMMAND "${CMAKE_LINKER}" -b64 -e usfs_kext_entry
-        -o "${USFS_COVERAGE_BIN_DIR}/usfs.kext" "-bI:${USFS_KERNEX_IMPORT_FILE}"
+        -o "${USFS_COVERAGE_BIN_DIR}/usfs.kext" "-bI:${USFS_KERNEX_IMPORT_FILE}" "-bI:${CMAKE_SOURCE_DIR}/src/kernel/proxy/proxy.exp"
         $<TARGET_OBJECTS:_usfs_kernel_coverage_core>
         $<TARGET_OBJECTS:_usfs_kernel_coverage_instrumentation>
         $<TARGET_OBJECTS:_usfs_kernel_coverage_runtime>
@@ -598,7 +604,13 @@ foreach(_example IN ITEMS mirror memfs)
     target_link_libraries(_usfs_coverage_${_example} PRIVATE _usfs_client_coverage pthreads)
     usfs_set_output(_usfs_coverage_${_example} "${USFS_COVERAGE_BIN_DIR}" "usfs_${_example}")
 endforeach()
+usfs_add_test_tool(usfs_proxy_testctl tests/tools/usfs_proxy_testctl.c)
+target_sources(_usfs_testing_usfs_proxy_testctl PRIVATE $<TARGET_OBJECTS:_usfs_common_methods>)
+target_link_libraries(_usfs_testing_usfs_proxy_testctl PRIVATE cfg odm)
+add_dependencies(_usfs_testing_artifacts _usfs_testing_usfs_proxy_testctl)
 usfs_add_test_tool(usfs_coverage tests/tools/usfs_coverage.c)
+target_sources(_usfs_testing_usfs_coverage PRIVATE $<TARGET_OBJECTS:_usfs_common_methods>)
+target_link_libraries(_usfs_testing_usfs_coverage PRIVATE cfg odm)
 usfs_set_output(_usfs_testing_usfs_coverage "${USFS_COVERAGE_BIN_DIR}" usfs_coverage)
 
 add_custom_target(_usfs_coverage_artifacts DEPENDS
@@ -673,3 +685,87 @@ add_custom_target(soak
 
 message(STATUS "USFS public targets: package (default), test, test-e2e, coverage, soak")
 message(STATUS "Artifacts will be written below ${CMAKE_BINARY_DIR}")
+
+# Fingerprint resident code independently of the implementation's release revision.
+set(_proxy_identity_input "")
+file(GLOB_RECURSE _implementation_identity_sources CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/src/kernel/*" "${CMAKE_SOURCE_DIR}/src/common/*")
+list(SORT _implementation_identity_sources)
+set(_implementation_identity_input "")
+file(SHA256 "${CMAKE_SOURCE_DIR}/CMakeLists.txt" _build_recipe_hash)
+string(APPEND _implementation_identity_input "${_build_recipe_hash}")
+foreach(_source IN LISTS _implementation_identity_sources)
+    if(NOT IS_DIRECTORY "${_source}")
+        file(SHA256 "${_source}" _source_hash)
+        string(APPEND _implementation_identity_input "${_source_hash}")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_source}")
+    endif()
+endforeach()
+foreach(_variant IN ITEMS release testing coverage)
+    string(SHA256 _implementation_identity "${_implementation_identity_input}:${_variant}")
+    string(SUBSTRING "${_implementation_identity}" 0 40 _implementation_identity)
+    if(_variant STREQUAL release)
+        set(_implementation_core_target _usfs_kernel_release_objects)
+    else()
+        set(_implementation_core_target _usfs_kernel_${_variant}_core)
+    endif()
+    target_compile_definitions(${_implementation_core_target} PRIVATE
+        USFS_IMPLEMENTATION_BUILD_ID="${_implementation_identity}")
+endforeach()
+
+string(APPEND _proxy_identity_input "${_build_recipe_hash}")
+foreach(_source IN ITEMS src/kernel/proxy/proxy.c src/common/usfs_proxy.h src/kernel/instrumentation/proxy.h)
+    file(SHA256 "${CMAKE_SOURCE_DIR}/${_source}" _source_hash)
+    string(APPEND _proxy_identity_input "${_source_hash}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/${_source}")
+endforeach()
+# The implementation imports only these permanently resident kernel services.
+foreach(_variant IN ITEMS release testing coverage)
+    if(_variant STREQUAL release)
+        set(_proxy_dir "${USFS_BIN_DIR}")
+    elseif(_variant STREQUAL testing)
+        set(_proxy_dir "${USFS_TEST_BIN_DIR}")
+    else()
+        set(_proxy_dir "${USFS_COVERAGE_BIN_DIR}")
+    endif()
+    usfs_kernel_objects(_usfs_proxy_${_variant}_objects src/kernel/proxy/proxy.c)
+    string(SHA256 _proxy_identity "${_proxy_identity_input}:${_variant}")
+    string(SUBSTRING "${_proxy_identity}" 0 40 _proxy_identity)
+    target_compile_definitions(_usfs_proxy_${_variant}_objects PRIVATE
+        USFS_PROXY_VARIANT="${_variant}" USFS_PROXY_BUILD_ID="${_proxy_identity}")
+    if(NOT _variant STREQUAL release)
+        target_compile_definitions(_usfs_proxy_${_variant}_objects PRIVATE USFS_TESTING)
+    endif()
+    set(_proxy_extras)
+    set(_proxy_dependencies)
+    if(_variant STREQUAL coverage)
+        target_compile_definitions(_usfs_proxy_coverage_objects PRIVATE USFS_COVERAGE)
+        target_compile_options(_usfs_proxy_coverage_objects PRIVATE ${USFS_GCOV_FLAGS})
+        usfs_kernel_objects(_usfs_proxy_coverage_runtime src/kernel/instrumentation/coverage/runtime.c)
+        target_include_directories(_usfs_proxy_coverage_runtime PRIVATE "${CMAKE_SOURCE_DIR}/src/kernel/instrumentation/coverage")
+        set(_proxy_registry "${CMAKE_BINARY_DIR}/coverage/generated/proxy-registry.c")
+        add_custom_command(OUTPUT "${_proxy_registry}"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_BINARY_DIR}/coverage/generated"
+            COMMAND bash "${CMAKE_SOURCE_DIR}/scripts/aix/generate-gcov-registry.sh"
+                "${_proxy_registry}" $<TARGET_OBJECTS:_usfs_proxy_coverage_objects>
+            DEPENDS _usfs_proxy_coverage_objects $<TARGET_OBJECTS:_usfs_proxy_coverage_objects>
+            COMMAND_EXPAND_LISTS VERBATIM)
+        usfs_kernel_objects(_usfs_proxy_coverage_registry "${_proxy_registry}")
+        target_include_directories(_usfs_proxy_coverage_registry PRIVATE "${CMAKE_SOURCE_DIR}/src/kernel/instrumentation/coverage")
+        list(APPEND _proxy_extras $<TARGET_OBJECTS:_usfs_proxy_coverage_runtime> $<TARGET_OBJECTS:_usfs_proxy_coverage_registry>)
+        list(APPEND _proxy_dependencies _usfs_proxy_coverage_runtime _usfs_proxy_coverage_registry)
+    endif()
+    add_custom_command(OUTPUT "${_proxy_dir}/usfs_proxy.kext"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_proxy_dir}"
+        COMMAND "${CMAKE_LINKER}" -b64 -e usfs_proxy_entry
+            -o "${_proxy_dir}/usfs_proxy.kext"
+            "-bI:${USFS_KERNEX_IMPORT_FILE}"
+            "-bE:${CMAKE_SOURCE_DIR}/src/kernel/proxy/proxy.exp"
+            $<TARGET_OBJECTS:_usfs_proxy_${_variant}_objects> ${_proxy_extras} -lsys -lcsys
+        DEPENDS _usfs_proxy_${_variant}_objects ${_proxy_dependencies} ${_proxy_extras}
+            $<TARGET_OBJECTS:_usfs_proxy_${_variant}_objects>
+            "${CMAKE_SOURCE_DIR}/src/kernel/proxy/proxy.exp"
+        COMMAND_EXPAND_LISTS VERBATIM)
+    add_custom_target(_usfs_proxy_${_variant} DEPENDS "${_proxy_dir}/usfs_proxy.kext")
+    add_dependencies(_usfs_kernel_${_variant} _usfs_proxy_${_variant})
+endforeach()

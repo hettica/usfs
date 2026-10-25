@@ -128,6 +128,8 @@ int usfs_kext_is_loaded (void)
 
 int usfs_kext_load (void)
 {
+    if (usfs_proxy_ensure_loaded () != USFS_SUCCESS)
+        return USFS_FAILURE;
     struct cfg_load query = usfs_kext_make_query ();
 
     if (sysconfig (SYS_KLOAD, &query, sizeof (query)) != 0)
@@ -1108,7 +1110,8 @@ static int request_coverage_export (const mid_t module_id, const dev_t device_nu
     request.user_buffer = (uint64_t)(unsigned long)buffer;
 
     memset (&query, 0, sizeof (query));
-    query.kmid = module_id;
+    query.kmid = usfs_proxy_control_module (module_id);
+    if (!query.kmid) return USFS_FAILURE;
     query.cmd = export_command;
     query.devno = device_number;
     query.ddsptr = (caddr_t)&request;
@@ -1196,6 +1199,9 @@ static int prepare_device_configuration (struct cfg_dd * query, struct usfs_dev_
 static int usfs_devsw_send_command (const mid_t module_id, const dev_t device_number, const int command)
 {
     struct cfg_dd query = { .kmid = module_id, .devno = device_number, .cmd = command };
+    if (command != USFS_CFG_INIT)
+        query.kmid = usfs_proxy_control_module (module_id);
+    if (!query.kmid) return USFS_FAILURE;
     struct usfs_dev_cfg configuration;
     const char * coverage_run = getenv ("USFS_COVERAGE_SUITE");
     const char * coverage_event = getenv ("USFS_COVERAGE_EVENT");

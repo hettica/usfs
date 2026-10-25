@@ -28,11 +28,16 @@ count=0
 for object in "$@"; do
     symbols=$(nm -X64 -B "$object")
     lpbx_count=$(printf '%s\n' "$symbols" | grep -c ' LPBX..0$' || true)
+    counter_count=$(printf '%s\n' "$symbols" | grep -c ' __gcov0\.' || true)
     ctor_count=$(printf '%s\n' "$symbols" | grep -c 'T ._GLOBAL__I_' || true)
     dtor_count=$(printf '%s\n' "$symbols" | grep -c 'T ._GLOBAL__D_' || true)
-    if [ "$lpbx_count" -ne 1 ] || [ "$ctor_count" -ne 1 ] ||
+    # AIX 7.2 GCC may omit the local LPBX symbol from XCOFF while retaining
+    # gcov counters and the constructor. AIX 7.3 exposes LPBX normally.
+    if [ "$lpbx_count" -gt 1 ] ||
+       { [ "$lpbx_count" -eq 0 ] && [ "$counter_count" -eq 0 ]; } ||
+       [ "$ctor_count" -ne 1 ] ||
        [ "$dtor_count" -ne 1 ]; then
-        echo "$object: expected one LPBX..0, constructor, and destructor; got $lpbx_count/$ctor_count/$dtor_count" >&2
+        echo "$object: expected gcov descriptor or counters, constructor, and destructor; got LPBX=$lpbx_count counters=$counter_count constructor=$ctor_count destructor=$dtor_count" >&2
         exit 1
     fi
     unresolved=$(nm -X64 -u "$object" |

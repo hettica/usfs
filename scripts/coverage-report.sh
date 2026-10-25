@@ -78,6 +78,7 @@ product_exclusions=(
     "$USFS_SOURCE_DIR/src/kernel/instrumentation/testing/*"
 )
 
+capture proxy
 capture kernel
 capture client
 capture cli
@@ -85,7 +86,7 @@ capture examples
 capture aix-unit
 
 trace_args=()
-for component in kernel client cli examples; do
+for component in proxy kernel client cli examples; do
     if grep -q '^SF:' "$report/$component.info"; then
         trace_args+=(--add-tracefile "$report/$component.info")
     fi

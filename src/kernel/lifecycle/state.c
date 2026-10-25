@@ -16,17 +16,6 @@ static int g_kext_state = USFS_KEXT_DOWN;
 int g_gate_is_open = false;
 int g_kext_is_running_control_operation = false;
 
-enum usfs_mpx_guard_state
-{
-    USFS_MPX_GUARD_OPEN = 0,
-    USFS_MPX_GUARD_CLOSING = 1,
-    USFS_MPX_GUARD_SEALED = 2,
-    USFS_MPX_GUARD_STATE_MASK = 3,
-    USFS_MPX_GUARD_REFERENCE = 4
-};
-
-/* Keep the callback guard available until the extension itself is unpinned. */
-static int g_mpx_guard = USFS_MPX_GUARD_SEALED;
 struct usfs_runtime_limits g_usfs_runtime_limits = { USFS_DEFAULT_REQUEST_TIMEOUT_MS, USFS_DEFAULT_PAGER_TIMEOUT_MS, USFS_DEFAULT_MAX_OUTSTANDING };
 
 struct vnodeops gn_ops;
@@ -66,111 +55,6 @@ int usfs_lifecycle_state_claim (const int expected_state, const int desired_stat
     int observed_state = expected_state;
 
     return compare_and_swap (&g_kext_state, &observed_state, desired_state);
-}
-
-static int read_mpx_guard (void)
-{
-    int observed_guard = 0;
-
-    while (!compare_and_swap (&g_mpx_guard, &observed_guard, observed_guard))
-    {
-        /* A failed comparison refreshes observed_guard; retry the atomic read. */
-    }
-
-    return observed_guard;
-}
-
-int usfs_lifecycle_mpx_enter (const int is_deallocation)
-{
-    for (;;)
-    {
-        int observed_guard = read_mpx_guard ();
-        const int guard_state = observed_guard & USFS_MPX_GUARD_STATE_MASK;
-
-        if (guard_state == USFS_MPX_GUARD_SEALED)
-            return EBUSY;
-
-        if (!is_deallocation && guard_state != USFS_MPX_GUARD_OPEN)
-            return EBUSY;
-
-        if (observed_guard > INT_MAX - USFS_MPX_GUARD_REFERENCE)
-            return EBUSY;
-
-        const int desired_guard = observed_guard + USFS_MPX_GUARD_REFERENCE;
-
-        if (compare_and_swap (&g_mpx_guard, &observed_guard, desired_guard))
-            return 0;
-    }
-}
-
-void usfs_lifecycle_mpx_leave (void)
-{
-    for (;;)
-    {
-        int observed_guard = read_mpx_guard ();
-
-        if (observed_guard < USFS_MPX_GUARD_REFERENCE)
-            return;
-
-        const int desired_guard = observed_guard - USFS_MPX_GUARD_REFERENCE;
-
-        if (compare_and_swap (&g_mpx_guard, &observed_guard, desired_guard))
-            return;
-    }
-}
-
-int usfs_lifecycle_mpx_begin_close (void)
-{
-    for (;;)
-    {
-        int observed_guard = read_mpx_guard ();
-        const int guard_state = observed_guard & USFS_MPX_GUARD_STATE_MASK;
-
-        if (guard_state == USFS_MPX_GUARD_SEALED)
-            return 0;
-
-        if (guard_state != USFS_MPX_GUARD_OPEN)
-            return EBUSY;
-
-        const int desired_guard = (observed_guard & ~USFS_MPX_GUARD_STATE_MASK) | USFS_MPX_GUARD_CLOSING;
-
-        if (compare_and_swap (&g_mpx_guard, &observed_guard, desired_guard))
-            return 0;
-    }
-}
-
-int usfs_lifecycle_mpx_has_users (void)
-{
-    return (read_mpx_guard () & ~USFS_MPX_GUARD_STATE_MASK) != 0;
-}
-
-int usfs_lifecycle_mpx_seal (void)
-{
-    int expected_guard = USFS_MPX_GUARD_CLOSING;
-
-    if (compare_and_swap (&g_mpx_guard, &expected_guard, USFS_MPX_GUARD_SEALED))
-        return true;
-
-    return expected_guard == USFS_MPX_GUARD_SEALED;
-}
-
-void usfs_lifecycle_mpx_reopen (void)
-{
-    for (;;)
-    {
-        int observed_guard = read_mpx_guard ();
-        const int desired_guard = observed_guard & ~USFS_MPX_GUARD_STATE_MASK;
-
-        if (compare_and_swap (&g_mpx_guard, &observed_guard, desired_guard))
-            return;
-    }
-}
-
-int usfs_lifecycle_mpx_activate (void)
-{
-    int expected_guard = USFS_MPX_GUARD_SEALED;
-
-    return compare_and_swap (&g_mpx_guard, &expected_guard, USFS_MPX_GUARD_OPEN) ? 0 : EBUSY;
 }
 
 int has_active_connections (void)

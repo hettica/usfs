@@ -208,7 +208,7 @@ restore_development_install()
 trap restore_development_install EXIT HUP INT TERM
 
 echo "TAP version 13"
-echo "1..24"
+echo "1..27"
 
 mkdir -p "$BUILD_ROOT"
 build_release r1 1 test-r1 >/dev/null || exit 1
@@ -228,7 +228,7 @@ R3=$BUILD_ROOT/r3/packages/usfs-0.1.0-3.aix$AIX_VERSION.ppc.rpm
 R3_INTERRUPTED=$BUILD_ROOT/interrupted/packages/usfs-0.1.0-3.interrupted.aix$AIX_VERSION.ppc.rpm
 R99=$BUILD_ROOT/prerequisite/packages/usfs-0.1.0-99.aix$AIX_VERSION.ppc.rpm
 
-RPM_REQUIRED="/usr/lib/drivers/usfs/usfs.kext /usr/lib/methods/usfs/package_lifecycle /usr/lib/ras/usfs.trcfmt /usr/sbin/usfsctl /usr/share/doc/usfs/build-manifest.txt"
+RPM_REQUIRED="/usr/lib/drivers/usfs/usfs.kext /usr/lib/drivers/usfs/usfs_proxy.kext /usr/lib/methods/usfs/package_lifecycle /usr/lib/ras/usfs.trcfmt /usr/sbin/usfsctl /usr/share/doc/usfs/kernel-proxy-lifecycle.md /usr/share/doc/usfs/build-manifest.txt"
 check "RPM headers and payload tables are valid" remote \
     "perl $ROOT/scripts/aix/verify-rpm.pl $R1 0.1.0 1 $RPM_REQUIRED && perl $ROOT/scripts/aix/verify-rpm.pl $R2 0.1.0 2 $RPM_REQUIRED && perl $ROOT/scripts/aix/verify-rpm.pl $R3 0.1.0 3 $RPM_REQUIRED"
 check "package requires the matching AIX major and minor version" remote \
@@ -236,6 +236,22 @@ check "package requires the matching AIX major and minor version" remote \
 check "missing prerequisite blocks the RPM transaction" remote "! rpm -U --test $R99 >/tmp/usfs-prereq.log 2>&1 && grep -q usfs-release-test-prerequisite /tmp/usfs-prereq.log"
 
 check "release 1 installs and configures usfs0" remote "rpm -Uvh --replacepkgs $R1 >/tmp/usfs-rpm-install.log 2>&1 && rpm -q usfs | grep -q 'usfs-0.1.0-1' && lsdev -l usfs0 | grep -q Available"
+proxy_module_id()
+{
+    /usr/sbin/usfsctl kexts | sed -n 's/^proxy: .*module=\([^ ]*\).*/\1/p'
+}
+resident_proxy_healthy()
+{
+    /usr/sbin/usfsctl kexts | grep -q '^proxy: loaded=yes' &&
+        /usr/sbin/usfsctl kexts | grep -q '^implementation: loaded=yes' &&
+        [[ "$(genkex | awk '$NF == "/usr/lib/drivers/usfs/usfs_proxy.kext" { n++ } END { print n + 0 }')" -eq 1 ]]
+}
+proxy_identity_stable()
+{
+    [[ "$(proxy_module_id)" = "$package_proxy_id" ]]
+}
+check "package loads one resident proxy and one implementation" resident_proxy_healthy
+package_proxy_id=$(proxy_module_id)
 check "installed usfsctl reports a healthy production kext" remote "/usr/sbin/usfsctl | grep -q '^USFS health: HEALTHY$'"
 check "installed USFS errpt and trace templates are registered" remote "errpt -t -j 367CFADB,03CB297B,0B6DD74B,BDAF4D05,5D669390 | grep -q USFS_TIMEOUT && grep -q '^F5F1 .*\"USFS CONTROL\"' /etc/trcfmt && grep -q '^F5F2 .*\"USFS REQUEST\"' /etc/trcfmt && grep -q '^F5F3 .*\"USFS FILESYSTEM\"' /etc/trcfmt && trcrpt -c -t /etc/trcfmt >/dev/null && test ! -e /usr/sbin/usfs_logdump"
 check "foreign trace hook ownership blocks replacement and is cleaned" \
@@ -249,6 +265,7 @@ check "failed direct teardown preserves the installed version and payload digest
 check "unavailable direct teardown preserves residual installation for repair" retained_registration_case missing
 
 check "release 2 upgrades the loaded extension" remote "rpm -Uvh $R2 >/tmp/usfs-rpm-upgrade.log 2>&1 && rpm -q usfs | grep -q 'usfs-0.1.0-2' && lsdev -l usfs0 | grep -q Available"
+check "compatible RPM upgrade retains the resident proxy instance" proxy_identity_stable
 check "retained release 1 artifact rolls back release 2" remote "rpm -Uvh --oldpackage $R1 >/tmp/usfs-rpm-rollback.log 2>&1 && rpm -q usfs | grep -q 'usfs-0.1.0-1' && lsdev -l usfs0 | grep -q Available"
 
 check "interrupted pre-install aborts without replacing release 1" remote "! rpm -Uvh $R3_INTERRUPTED >/tmp/usfs-rpm-interrupted.log 2>&1 && rpm -q usfs | grep -q 'usfs-0.1.0-1' && lsdev -l usfs0 | grep -q Defined"
@@ -261,6 +278,8 @@ check "packaged device can enter the boot-time Defined state" remote "rmdev -l u
 check "AIX cfgmgr boot discovery restores the packaged device" remote "cfgmgr >/tmp/usfs-rpm-cfgmgr.log 2>&1 && lsdev -l usfs0 | grep -q Available && set -- \$(ls -l /dev/usfs0); test \"\$1\" = crw-rw---- && test \"\$3\" = root && test \"\$4\" = system"
 
 check "uninstall removes package, ODM, device, extension, RAS, trace, and VFS state" remote "rpm -e usfs >/tmp/usfs-rpm-erase.log 2>&1 && ! rpm -q usfs >/dev/null 2>&1 && test -z \"\$(lsdev -l usfs0 2>/dev/null)\" && test -z \"\$(odmget -q 'uniquetype=cdr/fs/usfs' PdDv 2>/dev/null)\" && test -z \"\$(odmget -q 'rule=/usr/lib/methods/usfs/boot_rule' Config_Rules 2>/dev/null)\" && test -z \"\$(errpt -t -j 367CFADB,03CB297B,0B6DD74B,BDAF4D05,5D669390 2>/dev/null)\" && ! grep -q '^F5F[123] .*\"USFS ' /etc/trcfmt && test ! -e /dev/usfs0 && test ! -e /usr/lib/drivers/usfs/usfs.kext && test ! -e /usr/sbin/usfsctl && ! grep -q '^usfs[[:space:]]' /etc/vfs"
+check "package removal leaves only the resident inert proxy" remote \
+    "$BUILD_ROOT/r1/bin/usfsctl kexts | grep -q '^proxy: loaded=yes' && $BUILD_ROOT/r1/bin/usfsctl kexts | grep -q '^implementation: loaded=no'"
 
 check "verified fresh installation works without an existing teardown method" remote \
     "rpm -Uvh $R1 >/tmp/usfs-rpm-fresh.log 2>&1 && rpm -V usfs && /usr/sbin/usfsctl"
