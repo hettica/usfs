@@ -431,6 +431,12 @@ endfunction()
 usfs_add_unit(tap_selftest PORTABLE tests/harness/tap.c tests/harness/tap_selftest.c)
 usfs_add_unit(configuration_methods_test PORTABLE tests/harness/tap.c
     tests/unit/aix/configuration_methods_test.c)
+usfs_add_unit(proxy_control_test PORTABLE tests/harness/tap.c tests/unit/aix/proxy_control_test.c)
+usfs_add_unit(usfsctl_test PORTABLE tests/harness/tap.c src/common/usfs_status.c tests/unit/aix/usfsctl_test.c)
+usfs_add_unit(sync_dispatch_test KERNEL tests/harness/tap.c tests/unit/aix/sync_dispatch_test.c)
+usfs_add_unit(normal_instrumentation_test PORTABLE tests/harness/tap.c
+    src/common/instrumentation/config_normal.c src/kernel/instrumentation/hooks.c
+    tests/unit/aix/normal_instrumentation_test.c)
 usfs_add_unit(device_node_policy_test PORTABLE tests/harness/tap.c
     src/common/instrumentation/config_normal.c src/common/proxy_control.c tests/unit/aix/device_node_policy_test.c)
 target_compile_options(_usfs_unit_device_node_policy_test PRIVATE -pthread)
