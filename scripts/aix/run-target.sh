@@ -128,6 +128,7 @@ run_non_e2e()
         tests/integration/aix/contract/mount_metadata.sh \
         tests/integration/aix/contract/disconnect_matrix.sh \
         tests/integration/aix/contract/mmap_pager.sh \
+        tests/integration/aix/contract/mapped_sharing.sh \
         tests/integration/aix/fault/configuration_methods.sh \
         tests/integration/aix/fault/init_retry.sh \
         tests/integration/aix/fault/init_matrix.sh \

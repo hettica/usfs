@@ -129,6 +129,13 @@ int gn_open (struct vnode * file_vnode, int32long64_t open_flags, ext_t extensio
     if (rc != 0)
         return rc;
 
+    rc = reserve_shared_open (node, open_flags);
+    if (rc != 0)
+    {
+        usfs_open_state_discard (open_state);
+        return rc;
+    }
+
     const struct open_request_context request_context = { .file_vnode = file_vnode,
                                                           .mount_data = mount_data,
                                                           .node = node,
@@ -154,12 +161,14 @@ int gn_open (struct vnode * file_vnode, int32long64_t open_flags, ext_t extensio
 
     if (rc != 0)
     {
+        release_shared_open_reservation (node, open_flags);
         usfs_open_state_discard (open_state);
         return rc;
     }
 
     open_state->fh = file_handle;
     attach_open_state (node, open_state);
+    release_shared_open_reservation (node, open_flags);
     *file_info = (caddr_t)open_state;
 
     return 0;

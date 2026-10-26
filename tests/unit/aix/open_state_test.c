@@ -281,6 +281,107 @@ static void test_unmap_release_failure (struct tap_state * tap)
             "unmap reports a final vnode release failure after balancing mapping ownership");
 }
 
+static void test_mapping_share_exclusion (struct tap_state * tap)
+{
+    struct usfs_node node = { 0 };
+    struct gnode gnode = { 0 };
+    struct vnode vnode = { 0 };
+    struct usfs_open_state shared = { .flags = FREAD | FRSHARE, .refs = 1, .active = true };
+    node.gn = &gnode;
+    node.vn = &vnode;
+    gnode.gn_vnode = &vnode;
+    gnode.gn_data = (caddr_t)&node;
+    vnode.v_gnode = &gnode;
+    vnode.v_count = 1;
+
+    tap_ok (tap, reserve_shared_open (&node, FREAD) == 0 && node.pending_shared_opens == 0,
+            "ordinary opens do not reserve loader sharing");
+
+    node.write_mapping_count = 1;
+    tap_ok (tap, reserve_shared_open (&node, FREAD | FRSHARE) == ETXTBSY && node.pending_shared_opens == 0,
+            "writable mappings exclude shared opens even without an open writer");
+    node.write_mapping_count = 0;
+
+    tap_ok (tap, reserve_shared_open (&node, FREAD | FRSHARE) == 0 && node.pending_shared_opens == 1,
+            "shared open reserves admission before backend I/O");
+    tap_ok (tap, usfs_retain_mapping_state (&vnode, 0) == ETXTBSY && node.mapping_count == 0 && vnode.v_count == 1,
+            "an in-flight shared open excludes racing writable mapping publication");
+    tap_ok (tap, usfs_retain_mapping_state (&vnode, SHM_RDONLY) == 0,
+            "read-only mappings remain compatible with shared opens");
+    usfs_release_mapping_state (&vnode, SHM_RDONLY);
+    usfs_vnode_release_locked (&vnode);
+
+    tap_ok (tap, usfs_retain_mapping_state (&vnode, SHM_COPY) == 0 && node.write_mapping_count == 0,
+            "private copy-on-write mappings remain compatible with shared opens");
+    usfs_release_mapping_state (&vnode, SHM_COPY);
+    usfs_vnode_release_locked (&vnode);
+
+    release_shared_open_reservation (&node, FREAD | FRSHARE);
+    tap_ok (tap, node.pending_shared_opens == 0 && usfs_retain_mapping_state (&vnode, 0) == 0,
+            "failed shared-open cleanup permits a subsequent writable mapping");
+    tap_ok (tap, reserve_shared_open (&node, FREAD | FRSHARE) == ETXTBSY,
+            "a published writable mapping wins the reciprocal admission race");
+    usfs_release_mapping_state (&vnode, 0);
+    usfs_vnode_release_locked (&vnode);
+
+    node.opens = &shared;
+    tap_ok (tap, usfs_retain_mapping_state (&vnode, 0) == ETXTBSY,
+            "a committed shared handle excludes writable mapping publication");
+    node.opens = NULL;
+    tap_ok (tap, reserve_shared_open (&node, FREAD | FRSHARE) == 0,
+            "the last writable unmap permits a shared open without pager reclamation");
+    release_shared_open_reservation (&node, FREAD | FRSHARE);
+
+    node.pending_shared_opens = UINT32_MAX;
+    tap_ok (tap, reserve_shared_open (&node, FREAD | FRSHARE) == EOVERFLOW && node.pending_shared_opens == UINT32_MAX,
+            "shared-open reservation overflow preserves existing ownership");
+    node.pending_shared_opens = 0;
+    tap_ok (tap, vnode.v_count == 1 && node.mapping_count == 0 && usfs_fake_kernel.lock_depth == 0,
+            "share admission balances mapping ownership and kernel locks");
+}
+
+static void test_writable_shared_open_mapping (struct tap_state * tap)
+{
+    struct usfs_node node = { 0 };
+    struct gnode gnode = { 0 };
+    struct vnode vnode = { 0 };
+    struct usfs_open_state * shared = NULL;
+    const int32long64_t flags = FREAD | FWRITE | FRSHARE;
+    node.gn = &gnode;
+    node.vn = &vnode;
+    gnode.gn_vnode = &vnode;
+    gnode.gn_data = (caddr_t)&node;
+    vnode.v_gnode = &gnode;
+    vnode.v_count = 1;
+
+    tap_ok (tap, allocate_open_state (flags, &shared) == 0 && reserve_shared_open (&node, flags) == 0,
+            "a writable shared open reserves backend admission");
+    attach_open_state (&node, shared);
+    tap_ok (tap, usfs_retain_mapping_state (&vnode, 0) == ETXTBSY && node.mapping_count == 0,
+            "the pending reservation still excludes mappings during writable handle publication");
+    release_shared_open_reservation (&node, flags);
+    tap_ok (tap, usfs_retain_mapping_state (&vnode, 0) == 0 && node.write_mapping_count == 1,
+            "a completed writable shared open permits its own writable mapping");
+    tap_ok (tap, reserve_shared_open (&node, FREAD | FRSHARE) == ETXTBSY && node.pending_shared_opens == 0,
+            "the writable owner's mapping excludes another shared open");
+
+    tap_ok (tap, usfs_close_open_state (&node, (caddr_t)shared) == 0,
+            "the writable shared owner can close while its mapping remains");
+    usfs_put_open_reference (&vnode, shared, 0, NULL);
+    tap_ok (tap, node.opens == NULL && node.write_mapping_count == 1 &&
+                 reserve_shared_open (&node, FREAD | FRSHARE) == ETXTBSY,
+            "closing the writable shared owner preserves its mapping's sharing exclusion");
+    tap_ok (tap, usfs_release_mapping_state (&vnode, 0) == 0,
+            "the writable shared owner's final mapping can be released");
+    usfs_vnode_release_locked (&vnode);
+    tap_ok (tap, reserve_shared_open (&node, FREAD | FRSHARE) == 0,
+            "sharing becomes available after the writable shared owner's final unmap");
+    release_shared_open_reservation (&node, FREAD | FRSHARE);
+    tap_ok (tap, vnode.v_count == 1 && node.mapping_count == 0 && node.pending_shared_opens == 0 &&
+                 usfs_fake_kernel.lock_depth == 0 && usfs_fake_kernel.allocation_balance == 0,
+            "writable shared ownership balances reservations, mappings, references and locks");
+}
+
 int main(void)
 {
     struct tap_state tap;
@@ -292,7 +393,7 @@ int main(void)
     struct usfs_open_state *release = NULL;
     uint64_t fh = 0;
 
-    tap_plan (&tap, 35);
+    tap_plan (&tap, 56);
     usfs_fake_kernel_reset();
     memset(&node, 0, sizeof(node));
     memset(&gnode, 0, sizeof(gnode));
@@ -398,5 +499,7 @@ int main(void)
     test_borrowed_lifetime(&tap);
     test_unmap_flush_failure (&tap);
     test_unmap_release_failure (&tap);
+    test_mapping_share_exclusion (&tap);
+    test_writable_shared_open_mapping (&tap);
     return tap_finish(&tap);
 }

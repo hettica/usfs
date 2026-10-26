@@ -44,6 +44,57 @@ static void attach_open_state (struct usfs_node * node, struct usfs_open_state *
     }
 }
 
+/* Share reservations and mapping admission use the same lock. A backend has
+ * no last-unmap notification and cannot infer this from a pager lease, which
+ * can outlive every application mapping. Do not hold global_lock over I/O. */
+static int reserve_shared_open (struct usfs_node * node, const int32long64_t open_flags)
+{
+    if ((open_flags & FRSHARE) == 0)
+        return 0;
+
+    write_synchronized_with (global_lock)
+    {
+        if (node->write_mapping_count != 0)
+            return ETXTBSY;
+
+        if (node->pending_shared_opens == UINT32_MAX)
+            return EOVERFLOW;
+
+        node->pending_shared_opens += 1;
+    }
+
+    return 0;
+}
+
+static void release_shared_open_reservation (struct usfs_node * node, const int32long64_t open_flags)
+{
+    if ((open_flags & FRSHARE) == 0)
+        return;
+
+    write_synchronized_with (global_lock)
+    {
+        node->pending_shared_opens -= 1;
+    }
+}
+
+/* Caller holds global_lock. A completed FRSHARE | FWRITE open may map its
+ * own file writable; the backend excludes other writers when admitting it.
+ * Read-only shared handles remain protected through their final reference.
+ * Pending opens still exclude mappings until backend admission completes. */
+static int shared_open_blocks_write_mapping (const struct usfs_node * node)
+{
+    if (node->pending_shared_opens != 0)
+        return true;
+
+    for (const struct usfs_open_state * opened = node->opens; opened != NULL; opened = opened->next)
+    {
+        if ((opened->flags & (FRSHARE | FWRITE)) == FRSHARE)
+            return true;
+    }
+
+    return false;
+}
+
 static struct usfs_open_state ** usfs_open_state_link_locked (struct usfs_node * node, const struct usfs_open_state * open_state)
 {
     struct usfs_open_state ** open_state_link = &node->opens;
@@ -226,6 +277,9 @@ static int usfs_retain_mapping_state (struct vnode * file_vnode, const uint64_t 
 
     write_synchronized_with (global_lock)
     {
+        if (is_write_mapping && shared_open_blocks_write_mapping (node))
+            return ETXTBSY;
+
         if (!can_retain_mapping_state (node, is_write_mapping))
             return EOVERFLOW;
 

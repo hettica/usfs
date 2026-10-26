@@ -196,6 +196,7 @@ struct usfs_node
     uint32_t mapping_count;
     uint32_t read_mapping_count;
     uint32_t write_mapping_count;
+    uint32_t pending_shared_opens; // O_RSHARE requests awaiting backend completion; global_lock.
     /* Sticky until vnode reclamation; protected by namespace_lock/mutation_lock. */
     uint32_t cache_shared_writable;
     uint64_t pager_token; /* Client-owned object lease for this VMM segment. */

@@ -31,6 +31,17 @@ The resource remains available after close, rename, unlink, and the final
 ends the lease after the segment is deleted. A failed segment deletion retains
 the vnode and pager lease rather than freeing storage the VMM might address.
 
+USFS excludes `O_RSHARE` opens while writable shared mappings exist, including
+after their original file descriptors close. Pending shared opens and completed
+read-only shared opens also exclude writable mapping admission. A completed
+`O_RDWR | O_RSHARE` open may establish its own writable mapping, matching AIX;
+that mapping continues to exclude subsequent shared opens after close.
+These decisions are serialized in the kernel because backend pager leases do
+not describe the last application unmap.
+The last writable unmap permits sharing without waiting for VMM cache eviction.
+Backends must still enforce shared-open exclusion against their ordinary writers
+and any independently accessible backing files.
+
 A successful map increments the vnode mapping count and holds the vnode.
 Unmap drops that count and hold, while the pager resource remains until VMM
 teardown. AIX also supplies no usable per-open handle to vnode-wide fsync;
