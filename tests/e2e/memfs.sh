@@ -20,7 +20,7 @@
 #
 # Environment knobs:
 #   MEMFS_PHASES  comma-separated phases, or "all"        (default all)
-#                 createatomic tree rw openhandles durability mmap truncate rename link symlink attrs openunlink
+#                 createatomic tree rw openhandles rshare durability mmap truncate rename link symlink attrs openunlink
 #                 nospc inodecap notempty df concurrent shutdown readonly
 #   SIZE_MB       capacity of the file system             (default 8)
 #   N_DAEMONS     concurrent daemons in the shutdown phase (default 2)
@@ -311,6 +311,32 @@ phase_openhandles()
         fail "per-open routing failed: probe='$got' content='$content'"
     fi
     return "$?"
+}
+
+phase_rshare()
+{
+    local mountpoint=$1
+    local probe="${TMPDIR:-/tmp}/usfs_rshare_probe_$$"
+    local fixture_source
+    fixture_source=$(cd "$(dirname "$0")/fixtures" && pwd)
+    local compiler=${CC:-/opt/freeware/bin/gcc}
+    local output rc
+
+    say "STEP rshare: memfs rejects read-share opens and creates"
+    if ! "$compiler" -maix64 -Wall -Wextra -Werror -o "$probe" \
+        "$fixture_source/rshare_probe.c" >>"$LOGFILE" 2>&1; then
+        fail "cannot build the read-share probe"
+        return
+    fi
+
+    output=$("$probe" "$mountpoint" 2>&1)
+    rc=$?
+    rm -f "$probe" "$mountpoint/rshare-existing" "$mountpoint/rshare-absent"
+    if [[ "$rc" -eq 0 && "$output" = RSHARE_REJECT_OK ]]; then
+        say "OK   memfs rejects read-share open and create without publishing a file"
+    else
+        fail "memfs read-share rejection failed (rc=$rc): $output"
+    fi
 }
 
 phase_createatomic()
@@ -1091,7 +1117,7 @@ snapshot "before start"
 
 # Phases that share one long-lived file system.
 if phase_enabled createatomic || phase_enabled tree || phase_enabled rw ||
-   phase_enabled openhandles ||
+   phase_enabled openhandles || phase_enabled rshare ||
    phase_enabled durability ||
    phase_enabled mmap ||
    phase_enabled truncate ||
@@ -1119,6 +1145,7 @@ if phase_enabled createatomic || phase_enabled tree || phase_enabled rw ||
         phase_enabled tree       && phase_tree       "$mmnt"
         phase_enabled rw         && phase_rw         "$mmnt"
         phase_enabled openhandles && phase_openhandles "$mmnt"
+        phase_enabled rshare     && phase_rshare     "$mmnt"
         phase_enabled durability && phase_durability "$mmnt"
         phase_enabled mmap       && phase_mmap       "$mmnt"
         phase_enabled truncate   && phase_truncate   "$mmnt"

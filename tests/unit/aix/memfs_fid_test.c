@@ -100,6 +100,34 @@ static void test_initial_identities (struct tap_state * tap, struct fid_test_fix
     );
 }
 
+static void test_read_share_rejection (struct tap_state * tap)
+{
+    struct usfs_open_file file_info = { .open_flags = O_RDONLY | O_RSHARE };
+    struct stat initial_attributes = { .st_mode = S_IFREG | 0644, .st_uid = getuid (), .st_gid = getgid () };
+    struct stat created_attributes = { 0 };
+
+    tap_ok (
+        tap,
+        filesystem_operations.open (NULL, "/before/file", &file_info) == -EOPNOTSUPP && file_info.value == 0,
+        "memfs rejects read-share opens without publishing a handle"
+    );
+    tap_ok (
+        tap,
+        filesystem_operations.create (NULL, "/before/blocked", 0644, &file_info) == -EOPNOTSUPP &&
+            resolve ("/before/blocked", NULL, NULL) == NULL && file_info.value == 0,
+        "memfs rejects read-share creates without publishing a file"
+    );
+    tap_ok (
+        tap,
+        filesystem_operations.create_attr (
+            NULL, "/before/blocked-attr", &initial_attributes, USFS_INITIAL_MODE | USFS_INITIAL_UID, USFS_CREATE_WITH_OPEN,
+            &created_attributes, &file_info
+        ) == -EOPNOTSUPP &&
+            resolve ("/before/blocked-attr", NULL, NULL) == NULL && file_info.value == 0,
+        "memfs rejects read-share attribute creates without publishing a file"
+    );
+}
+
 static struct usfs_expected_entry memfs_test_entry (const char * path)
 {
     struct usfs_expected_entry expected = { .path = path };
@@ -274,7 +302,7 @@ int main (void)
     struct tap_state tap;
     struct fid_test_fixture fixture = { 0 };
 
-    tap_plan (&tap, 20);
+    tap_plan (&tap, 23);
 
     g_root = inode_new (S_IFDIR | 0755, getuid (), getgid ());
     if (g_root == NULL)
@@ -291,6 +319,7 @@ int main (void)
     fixture.replacement_handle.open_flags = O_RDWR;
 
     test_initial_identities (&tap, &fixture);
+    test_read_share_rejection (&tap);
     const struct mem_dirent * first_entry = g_root->entries;
     const nlink_t first_links = first_entry->inode->nlink;
     dir_remove (g_root, NULL);

@@ -137,6 +137,8 @@ struct usfs_client_options
  * operations report the engine's unsupported or read-only error. Automatic
  * mounting is read-only when no mutating callbacks are supplied.
  * Backends must synchronize their state when using more than one worker.
+ * open_flags can include O_RSHARE. Backends must enforce its write exclusion
+ * or reject the open with -EOPNOTSUPP.
  * A callback must not synchronously access its own mount through the kernel.
  *
  * Application data remains the pointer supplied at creation. Initialization

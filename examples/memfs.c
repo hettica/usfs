@@ -982,6 +982,9 @@ static int create_file_with_attributes_locked (
     if (!are_creation_attributes_valid (initial_attributes, valid_attribute_mask, creation_activation, file_info))
         return -EINVAL;
 
+    if (file_info != NULL && (file_info->open_flags & O_RSHARE) != 0)
+        return -EOPNOTSUPP;
+
     if (resolve (path, &parent_inode, &entry_name) != NULL)
         return -EEXIST;
 
@@ -1040,6 +1043,9 @@ static int create_file_locked (const struct usfs_client_request * request, const
     struct mem_dirent * prepared_entry = NULL;
     struct mem_handle * prepared_handle;
 
+    if ((file_info->open_flags & O_RSHARE) != 0)
+        return -EOPNOTSUPP;
+
     inode = resolve (path, &parent_inode, &entry_name);
     if (parent_inode == NULL)
         return -ENOENT;
@@ -1087,6 +1093,9 @@ static int open_file_locked (const char * path, struct usfs_open_file * file_inf
 {
     struct mem_inode * inode = resolve (path, NULL, NULL);
     uint64_t id;
+
+    if ((file_info->open_flags & O_RSHARE) != 0)
+        return -EOPNOTSUPP;
 
     if (inode == NULL)
         return -ENOENT;

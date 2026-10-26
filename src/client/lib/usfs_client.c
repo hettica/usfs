@@ -51,7 +51,7 @@ static int translate_open_flags (const uint32_t flags)
 {
     const uint32_t access = flags & (USFS_KERNEL_FREAD | USFS_KERNEL_FWRITE);
     const uint32_t consumed = O_CREAT | O_EXCL | O_TRUNC | O_NOCTTY | _FLARGEFILE | _FCLOEXEC | _FNOFOLLOW | _FEXEC | _FKERNEL;
-    const uint32_t retained = O_APPEND | O_NONBLOCK | _FNDELAY;
+    const uint32_t retained = O_APPEND | O_NONBLOCK | _FNDELAY | O_RSHARE;
 
     if (access == 0 && (flags & _FEXEC) == 0)
         return -EINVAL;

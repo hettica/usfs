@@ -423,7 +423,7 @@ static int open_file (const struct usfs_client_request * request, const char * p
     if ((file_info->open_flags & O_ACCMODE) != O_RDONLY)
         return -EROFS;
 
-    const int file_descriptor = open (source_path, O_RDONLY);
+    const int file_descriptor = open (source_path, O_RDONLY | (file_info->open_flags & O_RSHARE));
     if (file_descriptor == -1)
         return -errno;
 

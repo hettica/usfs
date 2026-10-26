@@ -1208,6 +1208,18 @@ static void test_create_flags (struct tap_state * tap)
                     captured_reply.error == 0 && released_flags == O_RDONLY,
                 "AIX executable OPEN and RELEASE retain a readable backend handle"
             );
+
+            open_body.flags = FREAD | O_RSHARE | _FLARGEFILE;
+            release.flags = open_body.flags;
+            release.fh = 456;
+            tap_ok (
+                tap,
+                handle_open_request (&context, (char *)&open_body, sizeof (open_body)) == 0 && captured_reply.error == 0 &&
+                    opened_flags == (O_RDONLY | O_RSHARE) &&
+                    handle_release_request (&context, (char *)&release, sizeof (release)) == 0 &&
+                    captured_reply.error == 0 && released_flags == (O_RDONLY | O_RSHARE),
+                "AIX shared-library OPEN preserves read-share access for the backend"
+            );
         }
         (last_native_result = usfs_client_destroy (&f));
     }
@@ -4638,7 +4650,7 @@ static void test_create_without_adopted_node (struct tap_state * tap)
 int main (void)
 {
     struct tap_state tap;
-    tap_plan (&tap, 303);
+    tap_plan (&tap, 304);
     test_create_without_adopted_node (&tap);
     test_worker_capacity_notifications (&tap);
     test_pager_tokens (&tap);

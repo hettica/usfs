@@ -531,6 +531,52 @@ phase_exec()
     fi
 }
 
+phase_library_load()
+{
+    # World-readable AIX modules stay in the global loader cache after dlclose.
+    # Keep this fixture private so a successful load cannot pin the test mount.
+    local mountpoint=$1
+    local fixture_source
+    fixture_source=$(cd "$(dirname "$0")/fixtures" && pwd)
+    local compiler=${CC:-/opt/freeware/bin/gcc}
+
+    say "STEP library load: building a private AIX shared module and archive"
+    if ! "$compiler" -maix64 -O0 -Wall -Wextra -Werror -fPIC -shared -Wl,-bexpall \
+        -o "$FIXTURE/libload.so" "$fixture_source/libload_library.c" >>"$LOGFILE" 2>&1 ||
+       ! (cd "$FIXTURE" && /usr/bin/ar -X64 -q libload.a libload.so) >>"$LOGFILE" 2>&1 ||
+       ! "$compiler" -maix64 -O0 -Wall -Wextra -Werror -o "$FIXTURE/libload_probe" \
+        "$fixture_source/libload_probe.c" >>"$LOGFILE" 2>&1 ||
+       ! chmod 0700 "$FIXTURE/libload.so" "$FIXTURE/libload.a"; then
+        fail "cannot build the private shared-library fixture"
+        return
+    fi
+
+    local kind path out rc
+    for kind in direct member; do
+        if [[ "$kind" = direct ]]; then
+            path=libload.so
+        else
+            path='libload.a(libload.so)'
+        fi
+
+        out=$("$FIXTURE/libload_probe" "$kind" "$FIXTURE/$path" 2>&1)
+        rc=$?
+        if [[ "$rc" -ne 0 || "$out" != 'LOAD_OK answer=4242' ]]; then
+            fail "private $kind library fails from JFS2 (rc=$rc): $out"
+            continue
+        fi
+        say "OK   private $kind library loads from JFS2"
+
+        out=$("$FIXTURE/libload_probe" "$kind" "$mountpoint/$path" 2>&1)
+        rc=$?
+        if [[ "$rc" -eq 0 && "$out" = 'LOAD_OK answer=4242' ]]; then
+            say "OK   private $kind library loads from the USFS mirror"
+        else
+            fail "private $kind library fails from the USFS mirror (rc=$rc): $out"
+        fi
+    done
+}
+
 phase_real()
 {
     say "STEP real: mirroring $MIRROR_SRC"
@@ -684,7 +730,10 @@ if phase_enabled structure || phase_enabled content || phase_enabled dotdot ||
         phase_enabled statfs     && phase_statfs     "$fmnt"
         phase_enabled concurrent && phase_concurrent "$fmnt"
         phase_enabled identity   && phase_identity   "$fmnt"
-        phase_enabled exec       && phase_exec       "$fmnt"
+        if phase_enabled exec; then
+            phase_exec "$fmnt"
+            phase_library_load "$fmnt"
+        fi
 
         say "STEP stopping the fixture mirror"
         stop_mirror "$fpid" "$fmnt"
