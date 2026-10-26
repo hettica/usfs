@@ -5,7 +5,7 @@
 # Purpose:
 #   Exercise AIX vnode compatibility and durability behavior: fsync, range
 #   fsync, close-time flush, and filesystem sync reach the daemon and
-#   propagate errors, while fclear and record locks return ENOSYS.
+#   propagate errors, while fclear returns ENOSYS and record locks succeed.
 #
 # Usage:
 #   Run through `make test` in the AIX CMake binary directory.
@@ -179,7 +179,7 @@ if start_daemon; then
     expect_success syncfs-try "TRY sync before failed type FORCE" "$MOUNT"
     expect_eio syncfs-type "filesystem-type sync failure" "$MOUNT"
     expect_unsupported fclear "AIX fclear"
-    expect_unsupported lock "record locking"
+    expect_success lock "record locking"
 
     expect_request_count 19 3 \
         "exactly three fsync requests reach the daemon"
@@ -209,7 +209,7 @@ else
     tap_ok 1 "TRY sync before failed type FORCE succeeds after daemon acknowledgement"
     tap_ok 1 "filesystem-type sync failure propagates daemon EIO"
     tap_ok 1 "AIX fclear fails explicitly with ENOSYS"
-    tap_ok 1 "record locking fails explicitly with ENOSYS"
+    tap_ok 1 "record locking succeeds"
     tap_ok 1 "exactly three fsync requests reach the daemon"
     tap_ok 1 "every file close sends a flush request"
     tap_ok 1 "specific and type-wide filesystem sync requests reach the daemon"

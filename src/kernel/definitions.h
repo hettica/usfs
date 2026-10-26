@@ -14,6 +14,7 @@
 #include <sys/dir.h>
 #include <sys/dump.h>
 #include <sys/errno.h>
+#include <sys/flock.h>
 #include <sys/gfs.h>
 #include <sys/intr.h>
 #include <sys/lock_alloc.h>

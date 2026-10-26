@@ -20,7 +20,7 @@
 #
 # Environment knobs:
 #   MEMFS_PHASES  comma-separated phases, or "all"        (default all)
-#                 createatomic tree rw openhandles rshare durability mmap truncate rename link symlink attrs openunlink
+#                 createatomic tree rw openhandles rshare lock durability mmap truncate rename link symlink attrs openunlink
 #                 nospc inodecap notempty df concurrent shutdown readonly
 #   SIZE_MB       capacity of the file system             (default 8)
 #   N_DAEMONS     concurrent daemons in the shutdown phase (default 2)
@@ -336,6 +336,32 @@ phase_rshare()
         say "OK   memfs rejects read-share open and create without publishing a file"
     else
         fail "memfs read-share rejection failed (rc=$rc): $output"
+    fi
+}
+
+phase_lock()
+{
+    local mountpoint=$1
+    local probe="${TMPDIR:-/tmp}/usfs_record_lock_probe_$$"
+    local fixture_source
+    fixture_source=$(cd "$(dirname "$0")/fixtures" && pwd)
+    local compiler=${CC:-/opt/freeware/bin/gcc}
+    local output rc
+
+    say "STEP lock: process-owned record locks, contention, wait, and close"
+    if ! "$compiler" -maix64 -Wall -Wextra -Werror -o "$probe" \
+        "$fixture_source/record_lock_probe.c" >>"$LOGFILE" 2>&1; then
+        fail "cannot build the record-lock probe"
+        return
+    fi
+
+    output=$("$probe" "$mountpoint/record-lock-file" 2>&1)
+    rc=$?
+    rm -f "$probe" "$mountpoint/record-lock-file"
+    if [[ "$rc" -eq 0 && "$output" = RECORD_LOCK_OK ]]; then
+        say "OK   record locks coordinate processes and release on close"
+    else
+        fail "record-lock behavior failed (rc=$rc): $output"
     fi
 }
 
@@ -1117,7 +1143,7 @@ snapshot "before start"
 
 # Phases that share one long-lived file system.
 if phase_enabled createatomic || phase_enabled tree || phase_enabled rw ||
-   phase_enabled openhandles || phase_enabled rshare ||
+   phase_enabled openhandles || phase_enabled rshare || phase_enabled lock ||
    phase_enabled durability ||
    phase_enabled mmap ||
    phase_enabled truncate ||
@@ -1146,6 +1172,7 @@ if phase_enabled createatomic || phase_enabled tree || phase_enabled rw ||
         phase_enabled rw         && phase_rw         "$mmnt"
         phase_enabled openhandles && phase_openhandles "$mmnt"
         phase_enabled rshare     && phase_rshare     "$mmnt"
+        phase_enabled lock       && phase_lock       "$mmnt"
         phase_enabled durability && phase_durability "$mmnt"
         phase_enabled mmap       && phase_mmap       "$mmnt"
         phase_enabled truncate   && phase_truncate   "$mmnt"

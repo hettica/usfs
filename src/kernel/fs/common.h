@@ -44,6 +44,7 @@ static int allocate_gnode (struct gnode ** allocated_gnode, short * occurrence_o
         return ENOMEM;
 
     memset (gnode, 0, sizeof (struct gnode));
+    gnode->gn_reclk_event = EVENT_NULL;
 
     // Initialize file operations
     gnode->gn_ops = &gn_ops;

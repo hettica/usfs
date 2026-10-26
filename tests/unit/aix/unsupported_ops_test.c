@@ -28,7 +28,6 @@
 #include "fs/operations/not_implemented/vnode_getxacl.h"
 #include "fs/operations/not_implemented/vnode_setxacl.h"
 #include "fs/operations/not_implemented/vnode_memcntl.h"
-#include "fs/operations/not_implemented/vnode_lockctl.h"
 #include "fs/operations/not_implemented/vnode_mknod.h"
 #include "fs/operations/not_implemented/vnode_erdwr_attr.h"
 
@@ -37,7 +36,7 @@ int main(void)
     struct tap_state tap;
     offset_t offset = 123;
 
-    tap_plan(&tap, 25);
+    tap_plan(&tap, 24);
     tap_ok(&tap, usfs_cntl(NULL, 0, NULL, 0, NULL) == ENOSYS,
            "vfs control is explicitly unsupported");
     tap_ok(&tap, usfs_quotactl(NULL, 0, 0, NULL, NULL) == ENOSYS,
@@ -82,8 +81,6 @@ int main(void)
            "extended ACL write is explicitly unsupported");
     tap_ok(&tap, gn_memcntl(NULL, 0, NULL, NULL) == ENOSYS,
            "memory attachment control is explicitly unsupported");
-    tap_ok(&tap, gn_lockctl(NULL, 0, NULL, 0, NULL, NULL, NULL) == ENOSYS,
-           "record locking is explicitly unsupported");
     tap_ok(&tap, gn_mknod(NULL, NULL, 0, 0, NULL) == ENOSYS,
            "special-file creation is explicitly unsupported");
     tap_ok(&tap,

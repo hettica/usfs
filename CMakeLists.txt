@@ -484,6 +484,7 @@ usfs_add_unit(pager_completion_test KERNEL tests/harness/tap.c src/common/usfs_v
 usfs_add_unit(mapping_pager_test KERNEL tests/harness/tap.c src/kernel/fs/io_helpers.c
     tests/unit/aix/mapping_pager_test.c)
 usfs_add_unit(unsupported_ops_test KERNEL tests/harness/tap.c tests/unit/aix/unsupported_ops_test.c)
+usfs_add_unit(lockctl_test KERNEL tests/harness/tap.c tests/unit/aix/lockctl_test.c)
 # Keep the trivial stubs callable for direct unit assertions.
 target_compile_options(_usfs_unit_unsupported_ops_test PRIVATE -O0)
 target_compile_options(_usfs_coverage_unit_unsupported_ops_test PRIVATE -O0)

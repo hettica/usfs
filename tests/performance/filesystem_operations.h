@@ -44,7 +44,7 @@ enum metadata_operation
     META_MAPPED_FLUSH,
     META_APPEND,
     META_IOCTL_UNSUPPORTED,
-    META_LOCK_UNSUPPORTED,
+    META_LOCK,
     META_FCLEAR_UNSUPPORTED,
     META_FIFO_UNSUPPORTED,
     META_FID_CAPTURE,
@@ -93,7 +93,7 @@ static const char * const metadata_names[META_COUNT] = { "stat-path",
                                                          "mapped-flush",
                                                          "append-write",
                                                          "ioctl-unsupported",
-                                                         "record-lock-unsupported",
+                                                         "record-lock",
                                                          "fclear-unsupported",
                                                          "mkfifo-unsupported",
                                                          "fid-capture-composite",
@@ -370,10 +370,12 @@ static int execute_metadata_iteration (struct metadata_context * context, const 
             errno = 0;
             rc = ioctl (context->descriptor, 0, NULL);
             return rc == -1 && (errno == ENOSYS || errno == ENOTTY) ? 0 : -1;
-        case META_LOCK_UNSUPPORTED:
-            errno = 0;
+        case META_LOCK:
             rc = fcntl (context->descriptor, F_SETLK, &file_lock);
-            return rc == -1 && errno == ENOSYS ? 0 : -1;
+            if (rc != 0)
+                return -1;
+            file_lock.l_type = F_UNLCK;
+            return fcntl (context->descriptor, F_SETLK, &file_lock) == 0 ? 0 : -1;
         case META_FCLEAR_UNSUPPORTED:
             errno = 0;
             rc = fclear (context->descriptor, OVERHEAD_PAGE_BYTES);

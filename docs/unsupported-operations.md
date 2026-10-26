@@ -12,7 +12,6 @@ current kernel implementation.
 
 | Application operation | Current result | USFS entry point |
 | --- | --- | --- |
-| Record locking through `fcntl` (`F_GETLK`, `F_SETLK`, `F_SETLKW`) | Unsupported. `F_SETLK` returned `ENOSYS`. | `vnop_lockctl` |
 | `pathconf` and `fpathconf` | Unsupported. `_PC_NAME_MAX` queries returned `ENOSYS`. | `vnop_finfo` |
 | `fclear` | Unsupported; returns `ENOSYS` in the integration test. | `vnop_fclear` |
 | File or directory `ioctl` | Unsupported; the file probe returned `ENOSYS`. | `vnop_ioctl` |
@@ -37,7 +36,11 @@ The following AIX interfaces also have no USFS implementation:
 
 The entry-point inventory comes from
 [`src/kernel/fs/operations/not_implemented`](../src/kernel/fs/operations/not_implemented/).
+Record locking through `fcntl` (`F_GETLK`, `F_SETLK`, `F_SETLKW`) is implemented
+by AIX `common_reclock` on each USFS gnode. Locks coordinate users of the same
+USFS mount; a mirror's underlying JFS2 path has separate lock state.
+
 The repository's unsupported-operation unit test and vnode compatibility test
-check the explicit `ENOSYS` results; the performance test also measures
-pathname and descriptor truncation and records current `ioctl`, lock,
-`fclear`, and FIFO behavior.
+check the remaining explicit `ENOSYS` results; the performance test also
+measures pathname and descriptor truncation and records current `ioctl`,
+record-lock, `fclear`, and FIFO behavior.
