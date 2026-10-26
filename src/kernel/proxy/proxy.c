@@ -92,14 +92,33 @@ int usfs_proxy_activate(void)
     return rc;
 }
 
-static int enter(struct usfs_proxy_callbacks * callbacks)
+/* Called by the implementation after its resource check, before teardown.
+ * No cleanup callback may enter implementation code after this succeeds. */
+int usfs_proxy_seal(void)
+{
+    simple_lock(&dispatch_lock);
+    int rc = 0;
+    if (!control_busy || !implementation.config ||
+        (status.state != USFS_PROXY_CLOSING && status.state != USFS_PROXY_CLOSED))
+        rc = EBUSY;
+    else if (status.calls)
+        rc = EBUSY;
+    else
+        status.state = USFS_PROXY_CLOSED;
+    simple_unlock(&dispatch_lock);
+    return rc;
+}
+
+static int enter(struct usfs_proxy_callbacks * callbacks, int cleanup)
 {
     checkpoint(1);
     simple_lock(&dispatch_lock);
     int rc = 0;
     if (!implementation.config)
         rc = ENODEV;
-    else if (status.state != USFS_PROXY_ACTIVE || status.calls == UINT_MAX)
+    else if ((status.state != USFS_PROXY_ACTIVE &&
+              !(cleanup && status.state == USFS_PROXY_CLOSING)) ||
+             status.calls == UINT_MAX)
         rc = EBUSY;
     else
     {
@@ -125,7 +144,7 @@ static int leave(int rc)
  * sequence and function descriptor/TOC accesses on POWER. */
 #define FORWARD(member, arguments) \
     struct usfs_proxy_callbacks callbacks; \
-    int rc = enter(&callbacks); \
+    int rc = enter(&callbacks, 0); \
     if (rc) return rc; \
     rc = callbacks.member arguments; \
     return leave(rc)
@@ -133,7 +152,13 @@ static int leave(int rc)
 static int proxy_open(dev_t d, ulong f, chan_t c, int x)
 { FORWARD(open, (d, f, c, x)); }
 static int proxy_close(dev_t d, chan_t c)
-{ FORWARD(close, (d, c)); }
+{
+    struct usfs_proxy_callbacks callbacks;
+    int rc = enter(&callbacks, 1);
+    if (rc) return rc;
+    rc = callbacks.close(d, c);
+    return leave(rc);
+}
 static int proxy_read(dev_t d, struct uio * u, chan_t c, int x)
 { FORWARD(read, (d, u, c, x)); }
 static int proxy_write(dev_t d, struct uio * u, chan_t c, int x)
@@ -141,7 +166,13 @@ static int proxy_write(dev_t d, struct uio * u, chan_t c, int x)
 static int proxy_ioctl(dev_t d, int n, void * p, ulong f, chan_t c, int x)
 { FORWARD(ioctl, (d, n, p, f, c, x)); }
 static int proxy_mpx(dev_t d, chan_t * c, const char * n)
-{ FORWARD(mpx, (d, c, n)); }
+{
+    struct usfs_proxy_callbacks callbacks;
+    int rc = enter(&callbacks, n == NULL);
+    if (rc) return rc;
+    rc = callbacks.mpx(d, c, n);
+    return leave(rc);
+}
 static int proxy_select(dev_t d, int e, ushort * r, int c)
 { FORWARD(select, (d, e, r, c)); }
 
@@ -164,7 +195,7 @@ static void reject_pager_buffers(struct buf * head)
 void usfs_proxy_pager_strategy(struct buf * head, int flags, int path)
 {
     struct usfs_proxy_callbacks callbacks;
-    if (enter(&callbacks) != 0)
+    if (enter(&callbacks, 0) != 0)
     {
         reject_pager_buffers(head);
         return;
@@ -265,11 +296,16 @@ static int forward_configuration(dev_t device, int command, struct uio * io)
         return EBUSY;
     }
     control_busy = 1;
-    status.state = USFS_PROXY_CLOSED;
+    status.state = command == CFG_TERM && status.state == USFS_PROXY_ACTIVE ?
+        USFS_PROXY_CLOSING : USFS_PROXY_CLOSED;
     callbacks = implementation;
     simple_unlock(&dispatch_lock);
+    if (command == CFG_TERM) checkpoint(4);
     const int rc = callbacks.config(device, command, io);
-    const int lifecycle = callbacks.lifecycle();
+    /* A successful deferred coverage drain may unpin the implementation.
+     * Its lifecycle callback is then no longer safe to invoke. */
+    const int lifecycle = command == USFS_CFG_INSTRUMENTATION_DRAIN && rc == 0 ?
+        (int)USFS_KEXT_STATE_DOWN : callbacks.lifecycle();
     simple_lock(&dispatch_lock);
     status.lifecycle = (uint32_t)lifecycle;
     if (lifecycle == USFS_KEXT_STATE_DOWN)
@@ -280,6 +316,8 @@ static int forward_configuration(dev_t device, int command, struct uio * io)
     }
     else if (lifecycle == USFS_KEXT_STATE_ACTIVE)
         status.state = USFS_PROXY_ACTIVE;
+    else
+        status.state = USFS_PROXY_CLOSED;
     control_busy = 0;
     simple_unlock(&dispatch_lock);
     return rc;

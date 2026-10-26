@@ -12,7 +12,7 @@ set -u
 
 . "${USFS_SOURCE_DIR:?}/tests/helpers/aix.sh"
 
-BASE=/tmp/usfs-system-trace.$$
+BASE=${TMPDIR:-/tmp}/usfs-system-trace.$$
 RAW=$BASE/full.trc
 REPORT=$RAW.txt
 EXPLICIT=$BASE/explicit.txt
@@ -38,7 +38,12 @@ tap_ok "$?" "registered AIX formatter database is valid"
 
 /usr/sbin/usfsctl trace start --profile full --output "$RAW" \
     >"$BASE/start.out" 2>"$BASE/start.err"
-tap_ok "$?" "full native trace starts through usfsctl"
+start_rc=$?
+tap_ok "$start_rc" "full native trace starts through usfsctl"
+if [[ "$start_rc" -ne 0 ]]; then
+    sed 's/^/# /' "$BASE/start.err"
+    exit 1
+fi
 
 /usr/sbin/usfsctl trace status >"$BASE/status.out" 2>&1
 tap_ok $(grep -q "profile=full raw_output_path=$RAW" "$BASE/status.out"; echo $?) \

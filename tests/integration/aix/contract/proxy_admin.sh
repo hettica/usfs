@@ -5,7 +5,7 @@
 # Usage: USFS_SOURCE_DIR=/path/to/source bash tests/integration/aix/contract/proxy_admin.sh
 set -u
 . "${USFS_SOURCE_DIR:?}/tests/helpers/aix.sh"
-tap_plan 8
+tap_plan 9
 base=${TMPDIR:-/tmp}/usfs-proxy-admin-$$
 mkdir -p "$base" || exit 1
 cleanup()
@@ -26,6 +26,12 @@ result=$?
 grep -q '^proxy: loaded=yes' "$base/status" || result=1
 grep -q '^implementation: loaded=yes' "$base/status" || result=1
 tap_ok "$result" 'status includes both extensions and filesystem health'
+
+if /usr/sbin/usfs_proxy_testctl direct-term >"$base/direct-term" 2>&1; then result=0; else result=1; fi
+/usr/sbin/usfsctl kexts >"$base/after-direct-term" 2>&1 || result=1
+grep -q '^proxy: loaded=yes .* state=1 ' "$base/after-direct-term" || result=1
+grep -q '^implementation: loaded=yes' "$base/after-direct-term" || result=1
+tap_ok "$result" 'direct implementation CFG_TERM is rejected while attached'
 
 if /usr/sbin/usfsctl proxy unload --unsafe </dev/null >"$base/refused" 2>&1; then result=1; else result=0; fi
 grep -q 'Noninteractive use requires' "$base/refused" || result=1

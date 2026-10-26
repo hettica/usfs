@@ -5,7 +5,8 @@
 
 static int pin_error, add_error, del_error, unpin_error;
 static int pager_add_error, pager_del_error, pager_adds, pager_dels, add_calls, completed;
-static int locks, implementation_state, callback_error, forwarded;
+static int locks, implementation_state, callback_error, forwarded, lifecycle_queries;
+static int probe_closing, closing_observed;
 static struct devsw installed;
 int pincode(int (*entry)()) { (void)entry; return pin_error; }
 int unpincode(int (*entry)()) { (void)entry; return unpin_error; }
@@ -40,15 +41,39 @@ static int test_mpx(dev_t d, chan_t *c, const char *n)
 static int test_select(dev_t d, int e, ushort *r, int c)
 { (void)d; (void)e; (void)r; (void)c; return called(); }
 static int test_config(dev_t d, int n, struct uio *u)
-{ (void)d; (void)n; (void)u; return called(); }
-static int test_lifecycle(void) { return implementation_state; }
+{
+    (void)u;
+    if (probe_closing)
+    {
+        chan_t channel = 0;
+        struct usfs_proxy_callbacks lease;
+        const int close_rc = proxy_close(d, channel);
+        const int deallocate_rc = proxy_mpx(d, &channel, NULL);
+        const int allocation_rc = proxy_mpx(d, &channel, "status");
+        const int open_rc = proxy_open(d, 0, channel, 0);
+        const int enter_rc = enter(&lease, 1);
+        const int busy_rc = usfs_proxy_seal();
+        if (enter_rc == 0) leave(0);
+        const int seal_rc = usfs_proxy_seal();
+        const int sealed_close_rc = proxy_close(d, channel);
+        closing_observed = n == CFG_TERM && status.state == USFS_PROXY_CLOSED &&
+            close_rc == 0 && deallocate_rc == 0 &&
+            allocation_rc == EBUSY && open_rc == EBUSY &&
+            enter_rc == 0 && busy_rc == EBUSY &&
+            seal_rc == 0 && sealed_close_rc == EBUSY && !status.calls;
+        probe_closing = 0;
+        return EBUSY;
+    }
+    return called();
+}
+static int test_lifecycle(void) { ++lifecycle_queries; return implementation_state; }
 static void test_pager(struct buf *b, int flags, int path)
 { (void)b; (void)flags; (void)path; ++forwarded; }
 
 int main(void)
 {
     struct tap_state tap;
-    tap_plan(&tap, 36);
+    tap_plan(&tap, 39);
     struct usfs_proxy_callbacks table = {
         .abi=USFS_PROXY_ABI, .size=sizeof(table), .build="test",
         .open=test_open, .close=test_close, .read=test_io, .write=test_io,
@@ -97,6 +122,8 @@ int main(void)
     tap_ok(&tap, forward_configuration(41,CFG_TERM,NULL)==EBUSY && implementation.config,
            "teardown cannot race incomplete attachment");
     tap_ok(&tap, usfs_proxy_activate()==0 && proxy_open(41,0,0,0)==0 && !status.calls, "forwarding runs outside lock and returns reference");
+    tap_ok(&tap, usfs_proxy_seal()==EBUSY && status.state==USFS_PROXY_ACTIVE,
+           "seal cannot close dispatch outside proxy-controlled termination");
     int before_pager = forwarded;
     usfs_proxy_pager_strategy(NULL, 0, 0);
     tap_ok(&tap, forwarded==before_pager+1 && !status.calls,
@@ -106,18 +133,30 @@ int main(void)
     callback_error=0;
     tap_ok(&tap, proxy_read(41,NULL,0,0)==0 && proxy_write(41,NULL,0,0)==0 && proxy_ioctl(41,0,NULL,0,0,0)==0 && proxy_select(41,0,NULL,0)==0, "all device trampolines forward");
     status.calls=UINT_MAX;
-    tap_ok(&tap, enter(&lease)==EBUSY && status.calls==UINT_MAX, "reference counter cannot overflow");
-    status.calls=0; enter(&lease);
+    tap_ok(&tap, enter(&lease,0)==EBUSY && status.calls==UINT_MAX, "reference counter cannot overflow");
+    status.calls=0; enter(&lease,0);
     tap_ok(&tap, forward_configuration(41,CFG_TERM,NULL)==EBUSY && implementation.config, "admitted callback prevents teardown");
     leave(0); control_busy=1;
     tap_ok(&tap, forward_configuration(41,CFG_TERM,NULL)==EBUSY, "control operations exclude one another");
-    control_busy=0; callback_error=EBUSY; implementation_state=USFS_KEXT_STATE_ACTIVE;
+    control_busy=0; callback_error=0; implementation_state=USFS_KEXT_STATE_ACTIVE;
+    probe_closing=1;
+    tap_ok(&tap, forward_configuration(41,CFG_TERM,NULL)==EBUSY && closing_observed &&
+           status.state==USFS_PROXY_ACTIVE,
+           "closing admits cleanup, counts it for sealing, and restores admission on busy rollback");
+    callback_error=EBUSY;
     tap_ok(&tap, forward_configuration(41,CFG_TERM,NULL)==EBUSY && status.state==USFS_PROXY_ACTIVE, "busy resources restore admission");
     callback_error=EIO; implementation_state=USFS_KEXT_STATE_CLEANUP_REQUIRED;
     tap_ok(&tap, forward_configuration(41,CFG_TERM,NULL)==EIO && status.state==USFS_PROXY_CLOSED && implementation.config, "partial teardown retains implementation");
     tap_ok(&tap, usfs_proxy_entry(41,USFS_PROXY_UNSAFE_TERM,NULL)==EBUSY, "maintenance cannot remove attached implementation");
     callback_error=0; implementation_state=USFS_KEXT_STATE_DOWN;
-    tap_ok(&tap, forward_configuration(41,CFG_TERM,NULL)==0 && !implementation.config && status.state==USFS_PROXY_EMPTY, "successful teardown detaches after return");
+    const int queries_before_drain = lifecycle_queries;
+    tap_ok(&tap, forward_configuration(41,USFS_CFG_INSTRUMENTATION_DRAIN,NULL)==0 &&
+           lifecycle_queries==queries_before_drain && !implementation.config &&
+           status.state==USFS_PROXY_EMPTY,
+           "successful coverage drain detaches without calling an unpinned implementation");
+    tap_ok(&tap, usfs_proxy_attach(&table)==0 && usfs_proxy_activate()==0 &&
+           forward_configuration(41,CFG_TERM,NULL)==0 && !implementation.config &&
+           status.state==USFS_PROXY_EMPTY, "successful teardown detaches after return");
     tap_ok(&tap, proxy_mpx(41,NULL,"")==ENODEV && !status.calls, "delayed pre-admission callback is safe after detach");
     struct buf late = { 0 };
     late.b_bcount = 4096;

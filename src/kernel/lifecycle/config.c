@@ -38,8 +38,18 @@ enum
 static int g_locks_are_initialized = false;
 static int g_filesystem_is_registered = false;
 static int g_device_driver_is_registered = false;
+/* Sticky until this implementation is unloaded. Direct CFG_TERM is permitted
+ * only for failed initialization that never attached to the proxy. */
+static volatile int g_proxy_attachment_established = false;
 static int g_configuration_command = CONFIGURATION_COMMAND_NONE;
 static dev_t g_configured_device_number = 0;
+
+static int proxy_configuration_entry (dev_t device_number, int command, struct uio * user_io_request);
+
+static int proxy_attachment_established (void)
+{
+    return __sync_fetch_and_add (&g_proxy_attachment_established, 0) != 0;
+}
 
 /* Set before devsw registration and stable until all callbacks are drained. */
 int usfs_device_number_valid (const dev_t device_number)
@@ -55,11 +65,14 @@ static int attach_proxy (void)
         .open = usfs_dev_open, .close = usfs_dev_close,
         .read = usfs_dev_read, .write = usfs_dev_write,
         .ioctl = usfs_dev_ioctl, .mpx = usfs_dev_mpx,
-        .select = usfs_dev_select, .config = usfs_kext_entry,
+        .select = usfs_dev_select, .config = proxy_configuration_entry,
         .lifecycle = usfs_lifecycle_state_read,
         .pager = usfs_pager_strategy
     };
-    return usfs_kproxy_attach (&callbacks);
+    const int rc = usfs_kproxy_attach (&callbacks);
+    if (rc == 0)
+        (void)__sync_bool_compare_and_swap (&g_proxy_attachment_established, 0, 1);
+    return rc;
 }
 
 static void set_kext_state_code (const int new_state_code)
@@ -591,6 +604,19 @@ static int clean_up_configured_extension (const dev_t device_number, const struc
     if (rc != 0)
         return rc;
 
+    if (proxy_attachment_established ())
+    {
+        const int seal_rc = usfs_proxy_seal ();
+        if (seal_rc != 0)
+        {
+            synchronized_with (g_lifecycle_lock)
+            {
+                restore_cleanup_gate_locked (prior_state);
+            }
+            return seal_rc;
+        }
+    }
+
     const int device_removal_rc = remove_device_registration (device_number);
     if (device_removal_rc != 0)
     {
@@ -673,6 +699,11 @@ static int is_public_configuration_command (const int command)
 
 int usfs_kext_entry (const dev_t device_number, const int command, struct uio * user_io_request)
 {
+    /* SYS_CFGDD can address this module directly. Once attached, termination
+     * must pass through the resident proxy's reference and seal checks. */
+    if (command == USFS_CFG_TERM && proxy_attachment_established ())
+        return EBUSY;
+
     g_configuration_command = command;
 
     if (is_instrumentation_cfg_command (command))
@@ -681,5 +712,19 @@ int usfs_kext_entry (const dev_t device_number, const int command, struct uio * 
     if (is_public_configuration_command (command))
         return process_public_configuration_command (device_number, command, user_io_request);
 
+    return EINVAL;
+}
+
+/* This address is handed only to the resident proxy; SYS_CFGDD still enters
+ * usfs_kext_entry and cannot select this callback by choosing our module ID. */
+static int proxy_configuration_entry (dev_t device_number, int command, struct uio * user_io_request)
+{
+    g_configuration_command = command;
+    if (command == USFS_CFG_TERM)
+        return process_term_command (device_number, user_io_request);
+    if (is_instrumentation_cfg_command (command))
+        return process_instrumentation_cfg_command (command, user_io_request);
+    if (command == USFS_CFG_QUERY_LIFECYCLE)
+        return process_query_lifecycle_command (user_io_request);
     return EINVAL;
 }

@@ -1,4 +1,5 @@
 #!/unix
 usfs_proxy_attach
 usfs_proxy_activate
+usfs_proxy_seal
 usfs_proxy_pager_strategy

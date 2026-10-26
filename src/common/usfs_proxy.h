@@ -7,7 +7,7 @@
 #include <sys/inttypes.h>
 
 #define USFS_PROXY_PATH "/usr/lib/drivers/usfs/usfs_proxy.kext"
-#define USFS_PROXY_ABI 2u
+#define USFS_PROXY_ABI 3u
 #define USFS_PROXY_PAGER_BUFFER_COUNT 64u
 #define USFS_PROXY_PAGER_RESERVED_WRITES 16u
 #define USFS_PROXY_QUERY 0x55535001
@@ -17,6 +17,7 @@
 #define USFS_PROXY_EMPTY 0u
 #define USFS_PROXY_ACTIVE 1u
 #define USFS_PROXY_CLOSED 2u
+#define USFS_PROXY_CLOSING 3u
 #define USFS_PROXY_ID_SIZE 64
 
 struct usfs_proxy_status
@@ -39,7 +40,7 @@ struct usfs_proxy_status
 struct usfs_proxy_test_control
 {
     uint32_t operation; /* 0 query, 1 arm, 2 release */
-    uint32_t point;     /* 1 before admission, 2 admitted, 3 returned */
+    uint32_t point;     /* 1 before admission, 2 admitted, 3 returned, 4 closing */
     uint32_t reached;
     uint32_t reserved;
 };
@@ -65,6 +66,7 @@ struct usfs_proxy_callbacks
 };
 int usfs_proxy_attach(const struct usfs_proxy_callbacks * callbacks);
 int usfs_proxy_activate(void);
+int usfs_proxy_seal(void);
 void usfs_proxy_pager_strategy(struct buf *, int, int);
 #endif
 #endif

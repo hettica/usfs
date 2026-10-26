@@ -30,7 +30,7 @@ static int proxy_test_command(struct uio * io)
     if (!io || io->uio_resid != sizeof(request)) return EINVAL;
     int rc = uiomove((caddr_t)&request, sizeof(request), UIO_WRITE, io);
     if (rc) return rc;
-    if (request.reserved || request.operation > 2 || request.point > 3) return EINVAL;
+    if (request.reserved || request.operation > 2 || request.point > 4) return EINVAL;
     int wake = 0;
     simple_lock(&dispatch_lock);
     if (request.operation == 1 && barrier_point)

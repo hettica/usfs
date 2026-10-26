@@ -247,10 +247,17 @@ collect_build_profiles()
         base=$(basename "$data" .gcda)
         note="$report/graphs/$component/$base.gcno"
         [ -f "$note" ] || { echo "missing graph for $data" >&2; exit 1; }
+        cp "$data" "$note" "$validation/"
+        if ! (cd "$validation" && gcov -b -c "$base.gcno" >/dev/null); then
+            # Direct test launches share this build-tree path. An intentionally
+            # killed daemon can leave a partial profile; required graceful
+            # profiles are checked separately in per-process directories.
+            echo "skipping invalid optional build-tree profile: $data" >&2
+            rm -f "$validation/$base.gcno" "$validation/$base.gcda"
+            continue
+        fi
         mkdir -p "$profile_destination"
         cp "$data" "$note" "$profile_destination/"
-        cp "$data" "$note" "$validation/"
-        (cd "$validation" && gcov -b -c "$base.gcno" >/dev/null)
         rm -f "$validation/$base.gcno" "$validation/$base.gcda"
     done
 }

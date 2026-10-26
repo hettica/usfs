@@ -44,9 +44,9 @@ or admission is closed, the trampoline completes each buffer with `EIO` without
 entering implementation code. Normal implementation teardown still releases
 its own filesystem and I/O resources, but does not call `vm_umount`.
 Explicit unsafe proxy removal calls `vm_umount` before removing the proxy's
-device registration. The proxy ABI is 2 because the callback table and status
-now include this pager contract. `usfsctl kexts` shows `pager=1` while the
-resident registration is present.
+device registration. The proxy ABI is 3 because the callback table, pager
+contract, and termination seal must agree across both modules. `usfsctl kexts`
+shows `pager=1` while the resident registration is present.
 
 This ownership change addresses a measured reload-cycle memory problem. On an
 AIX 7.3 SMP guest, the former implementation-owned `vm_mounte`/`vm_umount`
@@ -59,11 +59,15 @@ the tested conditions; they do not identify the internal AIX owner of the
 previously retained pages. See the local memory-investigation evidence for
 the measurements and limits.
 
-Normal termination closes dispatch admission. If any admitted callback remains,
-it returns busy without destroying resources. Otherwise it executes the existing
-filesystem teardown through its exclusive control path. Mounts, channels,
-connections, and other resources still prevent termination. Busy rejection
-restores admission if the implementation remains active. Partial cleanup retains
+Normal termination first enters a closing phase. New opens and channel allocations
+are rejected, while close and channel deallocation can finish under dispatch
+references. Before freeing implementation resources, the implementation asks the
+proxy to seal admission; sealing fails busy if any callback remains. Mounts,
+channels, connections, and other resources still prevent termination. Busy rejection
+restores admission if the implementation remains active. A direct `CFG_TERM` sent
+to the implementation module is rejected after attachment; the proxy uses a
+private configuration callback for termination, lifecycle queries, and deferred
+coverage export. Partial cleanup retains
 the implementation and permits retry with ordinary dispatch closed.
 
 Only after callbacks have returned and the implementation reports `DOWN` does
@@ -88,9 +92,10 @@ mkdev -l usfs0
 
 `usfsctl kexts` inspects both extensions even without the status device. It reports
 loaded identity, proxy ABI and variant, attachment state, references, and recorded
-implementation lifecycle. Numeric proxy states are 0 (empty), 1 (active), and 2
-(closed). Query failures are not reported as absence. Default/status output also
-reports filesystem health when the implementation is available.
+implementation lifecycle. Numeric proxy states are 0 (empty), 1 (active), 2
+(closed), and 3 (closing). Query failures are not reported as absence.
+Default/status output also reports filesystem health when the implementation
+is available.
 The running build fields are source-content identities for the loaded proxy and
 implementation variants. A file replacement does not change either running ID.
 
@@ -138,9 +143,11 @@ separately from safe implementation-unload tests; a crash fails the run.
 Native unit tests exercise callback accounting, interface validation, overflow,
 busy rollback, partial teardown, service failures, and maintenance preconditions.
 Test-only barriers deterministically stop callbacks before admission, after
-admission, and after implementation return. The pre-admission test unloads the
-implementation and resumes the callback; the other schedules prove unloading is
-rejected until references are returned. Barriers are explicitly released.
+admission, and after implementation return, and pause termination during closing.
+The pre-admission test unloads the implementation and resumes the callback;
+the other schedules prove unloading is rejected until references are returned.
+The closing test releases a real status channel before sealing. Barriers are
+explicitly released.
 
 `make test` runs the lifecycle regression with the existing integration suite;
 `make test-e2e` first runs production mount, verified I/O, safe unload/reload,
