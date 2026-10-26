@@ -36,7 +36,6 @@ enum
  * entry point or losing track of a resource that remains registered.
  */
 static int g_locks_are_initialized = false;
-static int g_pager_is_registered = false;
 static int g_filesystem_is_registered = false;
 static int g_device_driver_is_registered = false;
 static int g_configuration_command = CONFIGURATION_COMMAND_NONE;
@@ -57,7 +56,8 @@ static int attach_proxy (void)
         .read = usfs_dev_read, .write = usfs_dev_write,
         .ioctl = usfs_dev_ioctl, .mpx = usfs_dev_mpx,
         .select = usfs_dev_select, .config = usfs_kext_entry,
-        .lifecycle = usfs_lifecycle_state_read
+        .lifecycle = usfs_lifecycle_state_read,
+        .pager = usfs_pager_strategy
     };
     return usfs_kproxy_attach (&callbacks);
 }
@@ -208,21 +208,6 @@ static int remove_filesystem_registration (void)
     return 0;
 }
 
-static int remove_pager_registration (void)
-{
-    if (!g_pager_is_registered)
-        return 0;
-
-    const int rc = usfs_pager_unregister ();
-    USFS_TRACE_CONTROL5 (USFS_TRACE_REGISTRATION, USFS_TRACE_REG_PAGER, USFS_TRACE_ACTION_REMOVE, rc, usfs_lifecycle_state_read (), 0);
-    if (rc != 0)
-        return rc;
-
-    g_pager_is_registered = false;
-
-    return 0;
-}
-
 static int remove_registrations (const dev_t device_number)
 {
     int rc = remove_device_registration (device_number);
@@ -233,7 +218,7 @@ static int remove_registrations (const dev_t device_number)
     if (rc != 0)
         return rc;
 
-    return remove_pager_registration ();
+    return 0;
 }
 
 static int remove_runtime_resources (const dev_t device_number)
@@ -351,18 +336,6 @@ static int pin_kext_memory (const struct usfs_dev_cfg * device_configuration)
     return rc;
 }
 
-static int register_pager (void)
-{
-    const int rc = usfs_pager_register ();
-
-    USFS_TRACE_CONTROL5 (USFS_TRACE_REGISTRATION, USFS_TRACE_REG_PAGER, USFS_TRACE_ACTION_ADD, rc, usfs_lifecycle_state_read (), 0);
-
-    if (rc == 0)
-        g_pager_is_registered = true;
-
-    return rc;
-}
-
 static int register_filesystem (void)
 {
     const int rc = usfs_kgfs_register ();
@@ -393,10 +366,6 @@ static int register_and_activate_extension (const dev_t device_number, const str
     const uint32_t generation = device_configuration->generation;
 
     int rc = initialize_instrumentation ();
-    if (rc != 0)
-        return cleanup_failed_initialization (device_number, should_defer_cleanup, generation, rc);
-
-    rc = register_pager ();
     if (rc != 0)
         return cleanup_failed_initialization (device_number, should_defer_cleanup, generation, rc);
 

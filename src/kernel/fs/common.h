@@ -839,7 +839,7 @@ void init_global_virtual_inode_operations ()
      * the same descriptor with the thrpgio_t ABI. Preserve the descriptor
      * bits through a union so both identities remain exactly equal.
      */
-    strategy_entry.pager = usfs_pager_strategy;
+    strategy_entry.pager = usfs_proxy_pager_strategy;
 
     gn_ops.vn_link = gn_link;
     gn_ops.vn_mkdir = gn_mkdir;

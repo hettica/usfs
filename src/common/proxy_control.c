@@ -64,7 +64,7 @@ int usfs_proxy_prepare_device(dev_t device)
     mid_t module;
     struct usfs_proxy_status status;
     if (usfs_proxy_query_user(&module, &status) != USFS_QUERY_PRESENT) return USFS_FAILURE;
-    if (status.registered)
+    if (status.registered && status.pager_registered)
         return status.device == (uint64_t)device ? USFS_SUCCESS : USFS_FAILURE;
     return usfs_proxy_command(module, device, CFG_INIT, NULL, 0) ? USFS_FAILURE : USFS_SUCCESS;
 }

@@ -35,6 +35,30 @@ The proxy owns the device-switch registration and the associated major/minor
 reservation. Ordinary unconfiguration removes `/dev/usfs0` but retains those
 numbers while the resident registration exists. Reconfiguration reuses them.
 
+The proxy also owns the AIX pager registration. It calls `vm_mounte` once when
+the resident proxy initializes and keeps that registration across ordinary
+implementation unload/reload. A pager request enters a resident trampoline,
+acquires the same dispatch reference as a device call, and then invokes the
+attached implementation's strategy callback. If the implementation is detached
+or admission is closed, the trampoline completes each buffer with `EIO` without
+entering implementation code. Normal implementation teardown still releases
+its own filesystem and I/O resources, but does not call `vm_umount`.
+Explicit unsafe proxy removal calls `vm_umount` before removing the proxy's
+device registration. The proxy ABI is 2 because the callback table and status
+now include this pager contract. `usfsctl kexts` shows `pager=1` while the
+resident registration is present.
+
+This ownership change addresses a measured reload-cycle memory problem. On an
+AIX 7.3 SMP guest, the former implementation-owned `vm_mounte`/`vm_umount`
+pair with 64 pager buffers added 52 pinned 4 KiB-equivalent pages per stable
+cycle. Halving the buffer count halved the increase. With the resident pager,
+pinned pages rose during the first 20 cycles, then changed by only 18
+over cycles 20 through 100. An AIX 7.2 guest changed by two pinned pages over
+100 cycles. These tests establish that the repeatable growth is absent under
+the tested conditions; they do not identify the internal AIX owner of the
+previously retained pages. See the local memory-investigation evidence for
+the measurements and limits.
+
 Normal termination closes dispatch admission. If any admitted callback remains,
 it returns busy without destroying resources. Otherwise it executes the existing
 filesystem teardown through its exclusive control path. Mounts, channels,

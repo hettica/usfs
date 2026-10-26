@@ -4,8 +4,7 @@
 #ifndef USFS_FS_PAGER_H
 #define USFS_FS_PAGER_H
 
-#define USFS_PAGER_BUFFER_COUNT    64
-#define USFS_PAGER_RESERVED_WRITES 16
+#define USFS_PAGER_BUFFER_COUNT USFS_PROXY_PAGER_BUFFER_COUNT
 
 enum usfs_pager_direction
 {
@@ -459,29 +458,6 @@ void usfs_pager_strategy (struct buf * head, const int flags, const int path)
     }
 
     release_retained_references (references, retained_reference_count);
-}
-
-static void initialize_pager_info (struct thrpginfo * info)
-{
-    memset (info, 0, sizeof (*info));
-    info->mysize = sizeof (*info);
-    info->bufstsz = sizeof (bufthrio_t);
-    info->numbufs = USFS_PAGER_BUFFER_COUNT;
-    info->numwresvd = USFS_PAGER_RESERVED_WRITES;
-}
-
-int usfs_pager_register (void)
-{
-    struct thrpginfo info;
-
-    initialize_pager_info (&info);
-
-    return vm_mounte (D_REMOTE | D_THRPGIO | D_ENHANCEDIO, (dev_t)&usfs_pager_strategy, &info);
-}
-
-int usfs_pager_unregister (void)
-{
-    return vm_umount (D_REMOTE, (dev_t)&usfs_pager_strategy);
 }
 
 #endif

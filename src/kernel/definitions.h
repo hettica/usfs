@@ -55,6 +55,7 @@
 #include "instrumentation/trace.h"
 #include "synchronized.h"
 #include "usfs_config.h"
+#include "usfs_proxy.h"
 #include "usfs_proto.h"
 #include "usfs_validate.h"
 
@@ -292,8 +293,6 @@ enum usfs_control_policy
 int usfs_lifecycle_control_enter (chan_t collector, enum usfs_control_policy policy);
 void usfs_lifecycle_control_leave (void);
 void usfs_pager_strategy (struct buf *, int, int);
-int usfs_pager_register (void);
-int usfs_pager_unregister (void);
 
 int usfs_init (struct gfs * gfsp);
 int usfs_mount (struct vfs * vfsp, struct ucred * crp);

@@ -6,6 +6,7 @@
 #include <unistd.h>
 #undef _MSGQSUPPORT
 #include <sys/device.h>
+#include <sys/buf.h>
 #include <sys/errno.h>
 #include <sys/lock_alloc.h>
 #include <sys/lock_def.h>
@@ -13,6 +14,7 @@
 #include <sys/sleep.h>
 #include <sys/systm.h>
 #include <sys/uio.h>
+#include <sys/vmuser.h>
 #include <limits.h>
 #include <string.h>
 #include "usfs_proxy.h"
@@ -45,7 +47,7 @@ int usfs_proxy_attach(const struct usfs_proxy_callbacks * callbacks)
 {
     if (!__sync_bool_compare_and_swap(&setup_busy, 0, 1))
         return EBUSY;
-    if (!initialized || !status.registered)
+    if (!initialized || !status.registered || !status.pager_registered)
     {
         __sync_lock_release(&setup_busy);
         return ENODEV;
@@ -55,7 +57,8 @@ int usfs_proxy_attach(const struct usfs_proxy_callbacks * callbacks)
         memchr(callbacks->build, 0, sizeof(callbacks->build)) == NULL ||
         !callbacks->open || !callbacks->close || !callbacks->read ||
         !callbacks->write || !callbacks->ioctl || !callbacks->mpx ||
-        !callbacks->select || !callbacks->config || !callbacks->lifecycle)
+        !callbacks->select || !callbacks->config || !callbacks->lifecycle ||
+        !callbacks->pager)
     {
         __sync_lock_release(&setup_busy);
         return EINVAL;
@@ -142,13 +145,60 @@ static int proxy_mpx(dev_t d, chan_t * c, const char * n)
 static int proxy_select(dev_t d, int e, ushort * r, int c)
 { FORWARD(select, (d, e, r, c)); }
 
+/* The VMM can enter a strategy descriptor after implementation teardown.
+ * Complete every rejected buffer from resident code without touching a vnode
+ * or any memory owned by the replaceable extension. */
+static void reject_pager_buffers(struct buf * head)
+{
+    for (struct buf * buffer = head; buffer != NULL; )
+    {
+        struct buf * next = buffer->av_forw;
+        buffer->b_resid = buffer->b_bcount;
+        buffer->b_flags |= B_ERROR;
+        buffer->b_error = EIO;
+        iodone(buffer);
+        buffer = next;
+    }
+}
+
+void usfs_proxy_pager_strategy(struct buf * head, int flags, int path)
+{
+    struct usfs_proxy_callbacks callbacks;
+    if (enter(&callbacks) != 0)
+    {
+        reject_pager_buffers(head);
+        return;
+    }
+    callbacks.pager(head, flags, path);
+    (void)leave(0);
+}
+
+static int register_pager(void)
+{
+    struct thrpginfo info;
+    memset(&info, 0, sizeof(info));
+    info.mysize = sizeof(info);
+    info.bufstsz = sizeof(bufthrio_t);
+    info.numbufs = USFS_PROXY_PAGER_BUFFER_COUNT;
+    info.numwresvd = USFS_PROXY_PAGER_RESERVED_WRITES;
+    const int rc = vm_mounte(D_REMOTE | D_THRPGIO | D_ENHANCEDIO,
+                             (dev_t)&usfs_proxy_pager_strategy, &info);
+    if (rc == 0)
+    {
+        simple_lock(&dispatch_lock);
+        status.pager_registered = 1;
+        simple_unlock(&dispatch_lock);
+    }
+    return rc;
+}
+
 static int initialize(dev_t device)
 {
     int rc = 0;
     if (initialized)
     {
         if (status.device != (uint64_t)device) return EBUSY;
-        if (status.registered) return 0;
+        if (status.registered && status.pager_registered) return 0;
     }
     else
     {
@@ -166,27 +216,30 @@ static int initialize(dev_t device)
         control_busy = 0;
         initialized = 1;
     }
-    struct devsw descriptor;
-    memset(&descriptor, 0, sizeof(descriptor));
-    descriptor.d_open = proxy_open;
-    descriptor.d_close = proxy_close;
-    descriptor.d_read = proxy_read;
-    descriptor.d_write = proxy_write;
-    descriptor.d_ioctl = proxy_ioctl;
-    descriptor.d_mpx = proxy_mpx;
-    descriptor.d_select = proxy_select;
-    descriptor.d_config = usfs_proxy_entry;
-    descriptor.d_strategy = descriptor.d_print = descriptor.d_dump = descriptor.d_revoke = nodev;
-    descriptor.d_opts = DEV_MPSAFE | DEV_64BIT;
-    rc = devswadd(device, &descriptor);
-    if (!rc)
+    if (!status.registered)
     {
+        struct devsw descriptor;
+        memset(&descriptor, 0, sizeof(descriptor));
+        descriptor.d_open = proxy_open;
+        descriptor.d_close = proxy_close;
+        descriptor.d_read = proxy_read;
+        descriptor.d_write = proxy_write;
+        descriptor.d_ioctl = proxy_ioctl;
+        descriptor.d_mpx = proxy_mpx;
+        descriptor.d_select = proxy_select;
+        descriptor.d_config = usfs_proxy_entry;
+        descriptor.d_strategy = descriptor.d_print = descriptor.d_dump = descriptor.d_revoke = nodev;
+        descriptor.d_opts = DEV_MPSAFE | DEV_64BIT;
+        rc = devswadd(device, &descriptor);
+        if (rc) return rc;
         simple_lock(&dispatch_lock);
         status.registered = 1;
         simple_unlock(&dispatch_lock);
     }
-    /* Failed registration remains explicitly queryable and can be removed by
-     * maintenance; do not discard ownership after a partial initialization. */
+    if (!status.pager_registered)
+        rc = register_pager();
+    /* Both registrations retain ownership after a partial initialization and
+     * can be retried without duplicate devsw or pager entries. */
     return rc;
 }
 
@@ -265,7 +318,20 @@ int usfs_proxy_entry(dev_t device, int command, struct uio * io)
         { simple_unlock(&dispatch_lock); __sync_lock_release(&setup_busy); return EBUSY; }
         control_busy = 1;
         simple_unlock(&dispatch_lock);
-        int rc = status.registered ? devswdel((dev_t)status.device) : 0;
+        int rc = status.pager_registered ?
+            vm_umount(D_REMOTE, (dev_t)&usfs_proxy_pager_strategy) : 0;
+        if (rc)
+        {
+            simple_lock(&dispatch_lock);
+            control_busy = 0;
+            simple_unlock(&dispatch_lock);
+            __sync_lock_release(&setup_busy);
+            return rc;
+        }
+        simple_lock(&dispatch_lock);
+        status.pager_registered = 0;
+        simple_unlock(&dispatch_lock);
+        rc = status.registered ? devswdel((dev_t)status.device) : 0;
         if (rc)
         {
             simple_lock(&dispatch_lock);

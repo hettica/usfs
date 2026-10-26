@@ -683,10 +683,10 @@ static int process_kexts_command (void)
     }
     else
     {
-        printf ("proxy: loaded=%s module=%llu abi=%u state=%u calls=%u registered=%u build=%s variant=%s\n",
+        printf ("proxy: loaded=%s module=%llu abi=%u state=%u calls=%u registered=%u pager=%u build=%s variant=%s\n",
             proxy_state == USFS_QUERY_PRESENT ? "yes" : "no",
             (unsigned long long)module, proxy.abi, proxy.state, proxy.calls,
-            proxy.registered, proxy.proxy_build, proxy.variant);
+            proxy.registered, proxy.pager_registered, proxy.proxy_build, proxy.variant);
         printf ("implementation: loaded=%s module=%llu lifecycle=%u build=%s\n",
             main_state == USFS_QUERY_PRESENT ? "yes" : "no",
             (unsigned long long)usfs_kext_get_module_id (), proxy.lifecycle,

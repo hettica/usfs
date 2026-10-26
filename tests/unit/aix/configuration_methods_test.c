@@ -24,7 +24,7 @@ int usfs_proxy_ensure_loaded(void) { return 0; }
 int usfs_proxy_prepare_device(dev_t d) { (void)d; return 0; }
 int usfs_proxy_detached(void) { return 1; }
 int usfs_proxy_query_user(mid_t *m, struct usfs_proxy_status *s)
-{ *m = proxy_resident ? 321 : 0; memset(s, 0, sizeof(*s)); s->abi = proxy_resident ? USFS_PROXY_ABI : 0; s->registered = proxy_resident && proxy_registered; return proxy_resident ? USFS_QUERY_PRESENT : USFS_QUERY_ABSENT; }
+{ *m = proxy_resident ? 321 : 0; memset(s, 0, sizeof(*s)); s->abi = proxy_resident ? USFS_PROXY_ABI : 0; s->registered = proxy_resident && proxy_registered; s->pager_registered = s->registered; return proxy_resident ? USFS_QUERY_PRESENT : USFS_QUERY_ABSENT; }
 
 static struct cfg_load usfs_kext_make_query(void)
 {
