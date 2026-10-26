@@ -454,7 +454,7 @@ static int write_snapshot_unit (struct snapshot_writer * writer, const struct gc
 {
     struct usfs_gcov_unit_header * unit = (struct usfs_gcov_unit_header *)writer->cursor;
     const char * filename = get_filename_basename (info->filename);
-    unsigned filename_length;
+    unsigned filename_length = 0;
 
     const int filename_rc = validate_unit_filename (filename, &filename_length);
     if (filename_rc != 0)
@@ -469,7 +469,7 @@ static int write_snapshot_unit (struct snapshot_writer * writer, const struct gc
     writer->cursor += USFS_GCOV_ALIGN8 (filename_length);
 
     const unsigned remaining_bytes = writer->size_bytes - (unsigned)(writer->cursor - (unsigned char *)writer->header);
-    unsigned gcda_size;
+    unsigned gcda_size = 0;
 
     const int rc = write_unit_records (info, writer->cursor, remaining_bytes, &gcda_size);
     if (rc != 0)

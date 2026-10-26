@@ -88,33 +88,91 @@ mid_t usfs_proxy_control_module(mid_t implementation_module)
     return implementation_module;
 }
 
-int usfs_proxy_unsafe_unload(void)
+static int release_device_reservations (char * driver_name)
 {
-    const int lock = usfs_config_lock_acquire();
-    if (lock < 0) return USFS_FAILURE;
-    int rc = USFS_FAILURE;
-    mid_t module;
-    struct usfs_proxy_status status;
-    const int state = usfs_proxy_query_user(&module, &status);
-    if (usfs_kext_is_loaded() != USFS_QUERY_ABSENT) goto done;
-    if (state == USFS_QUERY_ABSENT) { rc = USFS_SUCCESS; goto done; }
-    if (state != USFS_QUERY_PRESENT || status.state != USFS_PROXY_EMPTY || status.calls) goto done;
-    if (status.abi && usfs_proxy_command(module, (dev_t)status.device, USFS_PROXY_UNSAFE_TERM, NULL, 0)) goto done;
-    struct cfg_load unload;
-    memset(&unload, 0, sizeof(unload));
+    const int major_number = genmajor (driver_name);
+    if (major_number < 0)
+        return USFS_FAILURE;
+
+    int minor_count = -1;
+    const int * minor_number = getminor (major_number, &minor_count, driver_name);
+
+    if (minor_number != NULL && minor_count == 1)
+        return reldevno (driver_name, 1) ? USFS_FAILURE : USFS_SUCCESS;
+
+    if (minor_number == NULL && minor_count == 0)
+        return relmajor (driver_name) ? USFS_FAILURE : USFS_SUCCESS;
+
+    return USFS_FAILURE;
+}
+
+static int release_proxy_device_numbers (void)
+{
+    // ODM accepts a mutable driver name; keep the shared name const-qualified.
+    char * driver_name = strdup (USFS_DRIVER_NAME);
+    if (driver_name == NULL)
+        return USFS_FAILURE;
+
+    const int rc = release_device_reservations (driver_name);
+
+    free (driver_name);
+
+    return rc;
+}
+
+// The caller holds the configuration lock throughout teardown and ODM cleanup.
+static int unload_detached_proxy (void)
+{
+    mid_t module = 0;
+    struct usfs_proxy_status status = { 0 };
+    const int state = usfs_proxy_query_user (&module, &status);
+
+    if (usfs_kext_is_loaded () != USFS_QUERY_ABSENT)
+        return USFS_FAILURE;
+
+    if (state == USFS_QUERY_ABSENT)
+        return USFS_SUCCESS;
+
+    if (state != USFS_QUERY_PRESENT)
+        return USFS_FAILURE;
+
+    if (status.state != USFS_PROXY_EMPTY)
+        return USFS_FAILURE;
+
+    if (status.calls != 0)
+        return USFS_FAILURE;
+
+    if (status.abi != 0)
+    {
+        const int rc = usfs_proxy_command (module, (dev_t)status.device, USFS_PROXY_UNSAFE_TERM, NULL, 0);
+        if (rc != 0)
+            return USFS_FAILURE;
+    }
+
+    struct cfg_load unload = { 0 };
+
     unload.kmid = module;
-    if (sysconfig(SYS_KULOAD, &unload, sizeof(unload))) goto done;
-    if (usfs_proxy_query_user(&module, &status) != USFS_QUERY_ABSENT) goto done;
-    /* Only verified removal permits releasing the major/minor reservation. */
-    int count = -1;
-    const int major = genmajor((char *)USFS_DRIVER_NAME);
-    if (major < 0) goto done;
-    const int * minor = getminor(major, &count, (char *)USFS_DRIVER_NAME);
-    if (minor && count == 1)
-        rc = reldevno((char *)USFS_DRIVER_NAME, 1) ? USFS_FAILURE : USFS_SUCCESS;
-    else if (!minor && count == 0)
-        rc = relmajor((char *)USFS_DRIVER_NAME) ? USFS_FAILURE : USFS_SUCCESS;
-done:
-    if (usfs_config_lock_release(lock)) rc = USFS_FAILURE;
+
+    if (sysconfig (SYS_KULOAD, &unload, sizeof (unload)) != 0)
+        return USFS_FAILURE;
+
+    if (usfs_proxy_query_user (&module, &status) != USFS_QUERY_ABSENT)
+        return USFS_FAILURE;
+
+    // Only verified removal permits releasing the major/minor reservation.
+    return release_proxy_device_numbers ();
+}
+
+int usfs_proxy_unsafe_unload (void)
+{
+    const int configuration_lock = usfs_config_lock_acquire ();
+    if (configuration_lock < 0)
+        return USFS_FAILURE;
+
+    int rc = unload_detached_proxy ();
+
+    if (usfs_config_lock_release (configuration_lock) != 0)
+        rc = USFS_FAILURE;
+
     return rc;
 }

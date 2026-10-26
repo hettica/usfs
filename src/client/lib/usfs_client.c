@@ -2993,6 +2993,24 @@ static int adopt_created_attributes (
     return rc;
 }
 
+static int fail_attribute_creation (
+    const struct request_context * context,
+    const struct usfs_create_attr_in * request,
+    struct create_resources * resources,
+    const int error
+)
+{
+    struct usfs_client * client = context->client;
+
+    if (request->activation == USFS_CREATE_OPEN && client->ops.release != NULL)
+        client->ops.release (get_callback_request (), resources->path.data, &resources->opened.file_info);
+
+    fail_session (client, error);
+    free (resources->handle);
+
+    return send_reply (context, error, NULL, 0);
+}
+
 static int finish_attribute_creation (
     const struct request_context * context,
     const struct usfs_create_attr_in * request,
@@ -3004,26 +3022,18 @@ static int finish_attribute_creation (
     const struct usfs_in_hdr * request_header = context->header;
 
     struct client_node * node = NULL;
-    int rc = adopt_created_attributes (client, metadata, &resources->prepared_node, &node);
-
-    if (rc == 0 && resources->handle != NULL && node == NULL)
-        rc = EIO;
+    const int rc = adopt_created_attributes (client, metadata, &resources->prepared_node, &node);
 
     destroy_node (resources->prepared_node);
 
     if (rc != 0)
-    {
-        if (request->activation == USFS_CREATE_OPEN && client->ops.release != NULL)
-            client->ops.release (get_callback_request (), resources->path.data, &resources->opened.file_info);
-
-        fail_session (client, rc);
-        free (resources->handle);
-
-        return send_reply (context, rc, NULL, 0);
-    }
+        return fail_attribute_creation (context, request, resources, rc);
 
     if (resources->handle != NULL)
     {
+        if (node == NULL)
+            return fail_attribute_creation (context, request, resources, EIO);
+
         resources->opened.nodeid = node->id;
         publish_client_handle (client, resources->handle, &resources->opened);
     }

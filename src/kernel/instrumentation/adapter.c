@@ -212,7 +212,7 @@ int usfs_checkpoint (const enum usfs_checkpoint checkpoint)
 #endif
 }
 
-void usfs_instrumentation_node_created (struct usfs_mount_data * mount_data, const uint64_t node_id)
+void usfs_instrumentation_node_created (const struct usfs_mount_data * mount_data, const uint64_t node_id)
 {
 #ifdef USFS_TESTING
     usfs_test_node_created (mount_data, node_id);

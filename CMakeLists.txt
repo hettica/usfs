@@ -513,6 +513,7 @@ usfs_add_unit(fid_ops_test KERNEL tests/harness/tap.c src/common/usfs_validate.c
     tests/unit/aix/fid_ops_test.c)
 usfs_add_unit(forced_unmount_test KERNEL tests/harness/tap.c tests/unit/aix/forced_unmount_test.c)
 usfs_add_unit(proxy_test KERNEL tests/harness/tap.c tests/unit/aix/proxy_test.c)
+usfs_add_unit(gcov_runtime_test KERNEL tests/harness/tap.c tests/unit/aix/gcov_runtime_test.c)
 usfs_add_unit(lifecycle_state_test KERNEL tests/harness/tap.c src/kernel/lifecycle/state.c
     tests/unit/aix/lifecycle_state_test.c)
 

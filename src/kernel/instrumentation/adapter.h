@@ -53,7 +53,7 @@ int usfs_prepare_deferred_cleanup (void);
 int usfs_checkpoint (const enum usfs_checkpoint checkpoint);
 
 /* Observation calls never sleep and may be made while global_lock is held. */
-void usfs_instrumentation_node_created (struct usfs_mount_data * mount_data, const uint64_t node_id);
+void usfs_instrumentation_node_created (const struct usfs_mount_data * mount_data, const uint64_t node_id);
 void usfs_instrumentation_node_reclaimed (const uint64_t node_id, const int is_linked);
 void usfs_instrumentation_node_reused (const enum usfs_instrumentation_node_reuse source);
 void usfs_instrumentation_parent_rebuilt (void);

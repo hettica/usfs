@@ -1,30 +1,34 @@
 // Copyright (c) 2026 Raman Dzehtsiar
 // SPDX-License-Identifier: MIT
 /* Private instrumentation boundary for the independent resident proxy. */
+#ifdef USFS_COVERAGE
+    #include "instrumentation/coverage/runtime.h"
+#endif
+
 #ifdef USFS_TESTING
 static uint32_t barrier_point;
 static uint32_t barrier_reached;
 static tid_t barrier_event = EVENT_NULL;
-static void checkpoint(uint32_t point)
+static void checkpoint (Simple_lock * dispatch_lock, const uint32_t point)
 {
-    simple_lock(&dispatch_lock);
+    simple_lock (dispatch_lock);
     while (barrier_point == point)
     {
         barrier_reached = point;
         e_assert_wait(&barrier_event, 0);
-        simple_unlock(&dispatch_lock);
+        simple_unlock (dispatch_lock);
         e_block_thread();
-        simple_lock(&dispatch_lock);
+        simple_lock (dispatch_lock);
     }
-    simple_unlock(&dispatch_lock);
+    simple_unlock (dispatch_lock);
 }
 #else
-#define checkpoint(point) ((void)0)
+#define checkpoint(dispatch_lock, point) ((void)0)
 #endif
 
 #ifdef USFS_TESTING
 static int proxy_test_busy(void) { return barrier_point != 0; }
-static int proxy_test_command(struct uio * io)
+static int proxy_test_command (Simple_lock * dispatch_lock, struct uio * io)
 {
     struct usfs_proxy_test_control request;
     if (!io || io->uio_resid != sizeof(request)) return EINVAL;
@@ -32,7 +36,7 @@ static int proxy_test_command(struct uio * io)
     if (rc) return rc;
     if (request.reserved || request.operation > 2 || request.point > 4) return EINVAL;
     int wake = 0;
-    simple_lock(&dispatch_lock);
+    simple_lock (dispatch_lock);
     if (request.operation == 1 && barrier_point)
         rc = EBUSY;
     else if (request.operation == 1)
@@ -41,7 +45,7 @@ static int proxy_test_command(struct uio * io)
     { wake = barrier_reached != 0; barrier_reached = 0; barrier_point = 0; }
     else
         rc = (int)barrier_reached; /* query encoded as errno for test helper */
-    simple_unlock(&dispatch_lock);
+    simple_unlock (dispatch_lock);
     /* Only signal an admitted checkpoint; no waiter exists after arm alone. */
     if (wake) e_wakeup(&barrier_event);
     return rc;
@@ -51,7 +55,6 @@ static int proxy_test_busy(void) { return 0; }
 #endif
 
 #ifdef USFS_COVERAGE
-#include "instrumentation/coverage/runtime.h"
 static int proxy_export_counters(struct uio *io)
 {
     struct usfs_config_coverage_export request;
@@ -75,14 +78,26 @@ static int proxy_export_counters(struct uio *io)
 }
 #endif
 
-static int proxy_instrument_command(int command, struct uio *io, int *handled)
+static int proxy_instrument_command (
+    const int command,
+    struct uio * io,
+    int * handled,
+    Simple_lock * dispatch_lock,
+    const struct usfs_proxy_callbacks * implementation,
+    const struct usfs_proxy_status * status,
+    int * control_busy
+)
 {
     (void)io; /* Production has no instrumentation command payload. */
+    (void)dispatch_lock;
+    (void)implementation;
+    (void)status;
+    (void)control_busy;
     *handled = 1;
     if (command == USFS_PROXY_TEST)
     {
 #ifdef USFS_TESTING
-        return proxy_test_command(io);
+        return proxy_test_command (dispatch_lock, io);
 #else
         return ENOTTY;
 #endif
@@ -90,17 +105,17 @@ static int proxy_instrument_command(int command, struct uio *io, int *handled)
     if (command == USFS_PROXY_EXPORT)
     {
 #ifdef USFS_COVERAGE
-        simple_lock(&dispatch_lock);
-        if (control_busy || (implementation.config &&
-            status.state == USFS_PROXY_CLOSED &&
-            status.lifecycle == USFS_KEXT_STATE_DOWN))
-        { simple_unlock(&dispatch_lock); return EBUSY; }
-        control_busy = 1;
-        simple_unlock(&dispatch_lock);
+        simple_lock (dispatch_lock);
+        if (*control_busy || (implementation->config &&
+            status->state == USFS_PROXY_CLOSED &&
+            status->lifecycle == USFS_KEXT_STATE_DOWN))
+        { simple_unlock (dispatch_lock); return EBUSY; }
+        *control_busy = 1;
+        simple_unlock (dispatch_lock);
         const int rc = proxy_export_counters(io);
-        simple_lock(&dispatch_lock);
-        control_busy = 0;
-        simple_unlock(&dispatch_lock);
+        simple_lock (dispatch_lock);
+        *control_busy = 0;
+        simple_unlock (dispatch_lock);
         return rc;
 #else
         return ENOTTY;

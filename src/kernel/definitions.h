@@ -182,6 +182,13 @@ struct usfs_node_lock_occurrences
     short vn_lock_occurrence;
 };
 
+struct usfs_node_mapping_counts
+{
+    uint32_t total; // Live mappings retaining this vnode; protected by global_lock.
+    uint32_t read;  // Live read-only or private mappings; protected by global_lock.
+    uint32_t write; // Live shared writable mappings; protected by global_lock.
+};
+
 struct usfs_node
 {
     struct usfs_node_lock_occurrences lock_occurrences;
@@ -193,9 +200,7 @@ struct usfs_node
     uint64_t parent;
     uint64_t lookup_refs; /* successful reply transfers, including vnode reuse */
     struct usfs_open_state * opens;
-    uint32_t mapping_count;
-    uint32_t read_mapping_count;
-    uint32_t write_mapping_count;
+    struct usfs_node_mapping_counts mappings; // Mapping references grouped by access mode.
     uint32_t pending_shared_opens; // O_RSHARE requests awaiting backend completion; global_lock.
     /* Sticky until vnode reclamation; protected by namespace_lock/mutation_lock. */
     uint32_t cache_shared_writable;

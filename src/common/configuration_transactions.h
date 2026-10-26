@@ -4,9 +4,16 @@
 #ifndef USFS_CONFIGURATION_TRANSACTIONS_H
 #define USFS_CONFIGURATION_TRANSACTIONS_H
 
-/* Included by the configuration implementation after its AIX service helpers.
- * The native unit suite supplies deterministic services to exercise failure
- * ownership without risking a live registration on the preceding revision. */
+/* The configuration implementation and native unit suite provide these local
+ * services. Declare the boundary so this header can precede their definitions. */
+static struct cfg_load usfs_kext_make_query (void);
+static int usfs_create_device_node (const char * logical_device_name, dev_t device_number);
+static int usfs_validate_device_node (const char * logical_device_name, dev_t device_number, int number_state);
+static int usfs_remove_device_node (const char * logical_device_name, dev_t device_number, int number_state);
+static int usfs_mark_device_available (const char * logical_device_name);
+static int usfs_mark_device_defined (const char * logical_device_name);
+static int usfs_device_is_available (const char * logical_device_name);
+static int usfs_devsw_send_command (mid_t module_id, dev_t device_number, int command);
 
 /* Resolves (or assigns) the major number for the driver. Returns USFS_SUCCESS. */
 static int usfs_get_major_number (int * major)

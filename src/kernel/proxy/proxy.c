@@ -19,6 +19,7 @@
 #include <string.h>
 #include "usfs_proxy.h"
 #include "usfs_config.h"
+#include "instrumentation/proxy.h"
 
 #ifndef USFS_BUILD_REVISION
 #define USFS_BUILD_REVISION "unknown"
@@ -40,8 +41,6 @@ static int pinned;
  * with attachment and explicit maintenance removal using an atomic gate. */
 static volatile int setup_busy;
 int usfs_proxy_entry(dev_t device, int command, struct uio * io);
-
-#include "instrumentation/proxy.h"
 
 int usfs_proxy_attach(const struct usfs_proxy_callbacks * callbacks)
 {
@@ -111,7 +110,7 @@ int usfs_proxy_seal(void)
 
 static int enter(struct usfs_proxy_callbacks * callbacks, int cleanup)
 {
-    checkpoint(1);
+    checkpoint (&dispatch_lock, 1);
     simple_lock(&dispatch_lock);
     int rc = 0;
     if (!implementation.config)
@@ -127,13 +126,13 @@ static int enter(struct usfs_proxy_callbacks * callbacks, int cleanup)
     }
     simple_unlock(&dispatch_lock);
     if (!rc)
-        checkpoint(2);
+        checkpoint (&dispatch_lock, 2);
     return rc;
 }
 
 static int leave(int rc)
 {
-    checkpoint(3);
+    checkpoint (&dispatch_lock, 3);
     simple_lock(&dispatch_lock);
     --status.calls;
     simple_unlock(&dispatch_lock);
@@ -259,7 +258,10 @@ static int initialize(dev_t device)
         descriptor.d_mpx = proxy_mpx;
         descriptor.d_select = proxy_select;
         descriptor.d_config = usfs_proxy_entry;
-        descriptor.d_strategy = descriptor.d_print = descriptor.d_dump = descriptor.d_revoke = nodev;
+        descriptor.d_strategy = nodev;
+        descriptor.d_print = nodev;
+        descriptor.d_dump = nodev;
+        descriptor.d_revoke = nodev;
         descriptor.d_opts = DEV_MPSAFE | DEV_64BIT;
         rc = devswadd(device, &descriptor);
         if (rc) return rc;
@@ -300,7 +302,7 @@ static int forward_configuration(dev_t device, int command, struct uio * io)
         USFS_PROXY_CLOSING : USFS_PROXY_CLOSED;
     callbacks = implementation;
     simple_unlock(&dispatch_lock);
-    if (command == CFG_TERM) checkpoint(4);
+    if (command == CFG_TERM) checkpoint (&dispatch_lock, 4);
     const int rc = callbacks.config(device, command, io);
     /* A successful deferred coverage drain may unpin the implementation.
      * Its lifecycle callback is then no longer safe to invoke. */
@@ -323,82 +325,152 @@ static int forward_configuration(dev_t device, int command, struct uio * io)
     return rc;
 }
 
-int usfs_proxy_entry(dev_t device, int command, struct uio * io)
+static int query_proxy_status (struct uio * io)
+{
+    if (io == NULL)
+        return EINVAL;
+
+    struct usfs_proxy_status snapshot = { 0 };
+
+    if (io->uio_resid != sizeof (snapshot))
+        return EINVAL;
+
+    simple_lock (&dispatch_lock);
+    snapshot = status;
+    simple_unlock (&dispatch_lock);
+
+    return uiomove ((caddr_t)&snapshot, sizeof (snapshot), UIO_READ, io);
+}
+
+// The caller holds the dispatch lock while reserving the control operation.
+static int reserve_proxy_removal (void)
+{
+    if (implementation.config != NULL)
+        return EBUSY;
+
+    if (status.calls != 0)
+        return EBUSY;
+
+    if (control_busy)
+        return EBUSY;
+
+    if (proxy_test_busy ())
+        return EBUSY;
+
+    control_busy = 1;
+
+    return 0;
+}
+
+static int remove_proxy_registrations (void)
+{
+    if (status.pager_registered)
+    {
+        const int rc = vm_umount (D_REMOTE, (dev_t)&usfs_proxy_pager_strategy);
+        if (rc != 0)
+            return rc;
+    }
+
+    simple_lock (&dispatch_lock);
+    status.pager_registered = 0;
+    simple_unlock (&dispatch_lock);
+
+    if (status.registered)
+    {
+        const int rc = devswdel ((dev_t)status.device);
+        if (rc != 0)
+            return rc;
+    }
+
+    simple_lock (&dispatch_lock);
+    status.registered = 0;
+    simple_unlock (&dispatch_lock);
+
+    return 0;
+}
+
+static int finish_proxy_removal (void)
+{
+    // Explicitly unsafe: pre-entry AIX dispatch is not counted here.
+    if (pinned)
+    {
+        const int rc = unpincode ((int (*)())usfs_proxy_entry);
+        if (rc != 0)
+            return rc;
+    }
+
+    lock_free (&dispatch_lock);
+    initialized = 0;
+    pinned = 0;
+
+    return 0;
+}
+
+// The setup gate excludes initialization and attachment throughout removal.
+static int remove_idle_proxy (void)
+{
+    simple_lock (&dispatch_lock);
+    int rc = reserve_proxy_removal ();
+    simple_unlock (&dispatch_lock);
+
+    if (rc != 0)
+        return rc;
+
+    rc = remove_proxy_registrations ();
+    if (rc == 0)
+        rc = finish_proxy_removal ();
+
+    if (rc != 0)
+    {
+        simple_lock (&dispatch_lock);
+        control_busy = 0;
+        simple_unlock (&dispatch_lock);
+    }
+
+    return rc;
+}
+
+static int remove_proxy (void)
+{
+    if (!__sync_bool_compare_and_swap (&setup_busy, 0, 1))
+        return EBUSY;
+
+    const int rc = remove_idle_proxy ();
+
+    __sync_lock_release (&setup_busy);
+
+    return rc;
+}
+
+int usfs_proxy_entry (dev_t device, int command, struct uio * io)
 {
     if (command == CFG_INIT)
     {
-        if (!__sync_bool_compare_and_swap(&setup_busy, 0, 1)) return EBUSY;
-        const int rc = initialize(device);
-        __sync_lock_release(&setup_busy);
+        if (!__sync_bool_compare_and_swap (&setup_busy, 0, 1))
+            return EBUSY;
+
+        const int rc = initialize (device);
+
+        __sync_lock_release (&setup_busy);
+
         return rc;
     }
-    if (!initialized) return ENODEV;
+
+    if (!initialized)
+        return ENODEV;
+
     if (command == USFS_PROXY_QUERY)
-    {
-        struct usfs_proxy_status snapshot;
-        if (!io || io->uio_resid != sizeof(snapshot)) return EINVAL;
-        simple_lock(&dispatch_lock);
-        snapshot = status;
-        simple_unlock(&dispatch_lock);
-        return uiomove((caddr_t)&snapshot, sizeof(snapshot), UIO_READ, io);
-    }
+        return query_proxy_status (io);
+
     int instrumentation_handled = 0;
-    const int instrumentation_rc = proxy_instrument_command(command, io,
-                                                             &instrumentation_handled);
-    if (instrumentation_handled) return instrumentation_rc;
+    const int instrumentation_rc = proxy_instrument_command (
+        command, io, &instrumentation_handled, &dispatch_lock, &implementation, &status, &control_busy
+    );
+    if (instrumentation_handled)
+        return instrumentation_rc;
+
     if (command == USFS_PROXY_UNSAFE_TERM)
-    {
-        if (!__sync_bool_compare_and_swap(&setup_busy, 0, 1)) return EBUSY;
-        simple_lock(&dispatch_lock);
-        if (implementation.config || status.calls || control_busy)
-        { simple_unlock(&dispatch_lock); __sync_lock_release(&setup_busy); return EBUSY; }
-        if (proxy_test_busy())
-        { simple_unlock(&dispatch_lock); __sync_lock_release(&setup_busy); return EBUSY; }
-        control_busy = 1;
-        simple_unlock(&dispatch_lock);
-        int rc = status.pager_registered ?
-            vm_umount(D_REMOTE, (dev_t)&usfs_proxy_pager_strategy) : 0;
-        if (rc)
-        {
-            simple_lock(&dispatch_lock);
-            control_busy = 0;
-            simple_unlock(&dispatch_lock);
-            __sync_lock_release(&setup_busy);
-            return rc;
-        }
-        simple_lock(&dispatch_lock);
-        status.pager_registered = 0;
-        simple_unlock(&dispatch_lock);
-        rc = status.registered ? devswdel((dev_t)status.device) : 0;
-        if (rc)
-        {
-            simple_lock(&dispatch_lock);
-            control_busy = 0;
-            simple_unlock(&dispatch_lock);
-            __sync_lock_release(&setup_busy);
-            return rc;
-        }
-        simple_lock(&dispatch_lock);
-        status.registered = 0;
-        simple_unlock(&dispatch_lock);
-        /* Explicitly unsafe: pre-entry AIX dispatch is not counted here. */
-        if (pinned)
-        {
-            rc = unpincode((int (*)())usfs_proxy_entry);
-            if (rc)
-            {
-                simple_lock(&dispatch_lock);
-                control_busy = 0;
-                simple_unlock(&dispatch_lock);
-                __sync_lock_release(&setup_busy);
-                return rc;
-            }
-        }
-        lock_free(&dispatch_lock);
-        initialized = 0;
-        pinned = 0;
-        __sync_lock_release(&setup_busy);
-        return 0;
-    }
-    return forward_configuration(device, command, io);
+        return remove_proxy ();
+
+    return forward_configuration (device, command, io);
 }

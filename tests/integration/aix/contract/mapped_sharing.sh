@@ -24,7 +24,9 @@ is_mounted()
 
 process_exited()
 {
-    ! kill -0 "$1" 2>/dev/null
+    local process_id=$1
+
+    ! kill -0 "$process_id" 2>/dev/null
 }
 
 cleanup()

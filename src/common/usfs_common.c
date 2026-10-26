@@ -6,6 +6,7 @@
 #include "vfs_text.h"
 
 #include <limits.h>
+#include "configuration_transactions.h"
 
 /* Shared implementation for the AIX ODM configuration methods. */
 
@@ -1230,8 +1231,6 @@ static int usfs_devsw_send_command (const mid_t module_id, const dev_t device_nu
 
     return USFS_SUCCESS;
 }
-
-#include "configuration_transactions.h"
 
 /* ------------------------------------------------------------------------- *
  * Argument parsing

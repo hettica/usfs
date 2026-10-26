@@ -427,13 +427,13 @@ static int _call_no_reply (
     const uint64_t nodeid,
     const void * body,
     const uint32_t body_length,
-    struct ucred * credentials
+    const struct ucred * credentials
 )
 {
     return _call_conn_no_reply (mount_data != NULL ? mount_data->conn : NULL, opcode, nodeid, body, body_length, credentials);
 }
 
-static int _sync_connection (struct usfs_connection * connection, const uint32_t mode, struct ucred * credentials)
+static int _sync_connection (struct usfs_connection * connection, const uint32_t mode, const struct ucred * credentials)
 {
     struct usfs_syncfs_in body;
 

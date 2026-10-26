@@ -13,18 +13,20 @@ status_fd_open=0
 cleanup()
 {
     "$tool" release >/dev/null 2>&1 || true
-    if [ "$opener" -ne 0 ]; then wait "$opener" || true; fi
-    if [ "$status_fd_open" -ne 0 ]; then exec 3<&-; fi
-    if [ "$terminator" -ne 0 ]; then wait "$terminator" || true; fi
+    if [[ "$opener" -ne 0 ]]; then wait "$opener" || true; fi
+    if [[ "$status_fd_open" -ne 0 ]]; then exec 3<&-; fi
+    if [[ "$terminator" -ne 0 ]]; then wait "$terminator" || true; fi
     mkdev -l usfs0 >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 reached()
 {
-    [ "$("$tool" query)" = "$1" ]
+    local expected_point=$1
+
+    [[ "$("$tool" query)" = "$expected_point" ]]
 }
 for point in 1 2 3; do
-    if [ "$point" -eq 1 ]; then
+    if [[ "$point" -eq 1 ]]; then
         usfs_coverage_checkpoint proxy-pre-admission-pre-term || exit 1
         usfs_coverage_expect_export proxy-pre-admission-term || exit 1
     fi
@@ -34,7 +36,7 @@ for point in 1 2 3; do
     usfs_wait_until "proxy barrier $point" 30 reached "$point"
     tap_ok "$?" "proxy barrier $point reached explicitly"
     before=$(/usr/sbin/usfsctl kexts | sed -n '/^proxy:/p')
-    if [ "$point" -eq 1 ]; then
+    if [[ "$point" -eq 1 ]]; then
         USFS_COVERAGE_EVENT=proxy-pre-admission-term \
             /usr/lib/methods/usfs/ucfgusfs -l usfs0
         tap_ok "$?" "pre-admission callback does not prevent implementation unload"
@@ -49,7 +51,7 @@ for point in 1 2 3; do
     after=$(/usr/sbin/usfsctl kexts | sed -n '/^proxy:/p')
     before_id=$(printf '%s\n' "$before" | sed 's/.*module=\([^ ]*\).*/\1/')
     after_id=$(printf '%s\n' "$after" | sed 's/.*module=\([^ ]*\).*/\1/')
-    [ "$before_id" = "$after_id" ] || result=1
+    [[ "$before_id" = "$after_id" ]] || result=1
     tap_ok "$result" "callback completes safely and resident proxy identity survives point $point"
 done
 

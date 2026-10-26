@@ -253,7 +253,7 @@ static void test_unmap_flush_failure (struct tap_state * tap)
     tap_ok (tap, rc == ENOSPC && connection_aborts == 1, "unmap returns its writeback error and quarantines the connection");
     tap_ok (
         tap,
-        release_calls == 1 && release_during_flush == 0 && node.opens == NULL && node.mapping_count == 0 && gnode.gn_mwrcnt == 0 &&
+        release_calls == 1 && release_during_flush == 0 && node.opens == NULL && node.mappings.total == 0 && gnode.gn_mwrcnt == 0 &&
             vnode.v_count == 1 && usfs_fake_kernel_clean (),
         "failed unmap writeback still releases mapping and vnode ownership exactly once"
     );
@@ -277,7 +277,7 @@ static void test_unmap_release_failure (struct tap_state * tap)
     const int rc = gn_unmap (&vnode, SHM_RDONLY, &credentials);
     vnode_release_error = 0;
 
-    tap_ok (tap, rc == EIO && vnode.v_count == 1 && node.mapping_count == 0 && gnode.gn_mrdcnt == 0,
+    tap_ok (tap, rc == EIO && vnode.v_count == 1 && node.mappings.total == 0 && gnode.gn_mrdcnt == 0,
             "unmap reports a final vnode release failure after balancing mapping ownership");
 }
 
@@ -297,21 +297,21 @@ static void test_mapping_share_exclusion (struct tap_state * tap)
     tap_ok (tap, reserve_shared_open (&node, FREAD) == 0 && node.pending_shared_opens == 0,
             "ordinary opens do not reserve loader sharing");
 
-    node.write_mapping_count = 1;
+    node.mappings.write = 1;
     tap_ok (tap, reserve_shared_open (&node, FREAD | FRSHARE) == ETXTBSY && node.pending_shared_opens == 0,
             "writable mappings exclude shared opens even without an open writer");
-    node.write_mapping_count = 0;
+    node.mappings.write = 0;
 
     tap_ok (tap, reserve_shared_open (&node, FREAD | FRSHARE) == 0 && node.pending_shared_opens == 1,
             "shared open reserves admission before backend I/O");
-    tap_ok (tap, usfs_retain_mapping_state (&vnode, 0) == ETXTBSY && node.mapping_count == 0 && vnode.v_count == 1,
+    tap_ok (tap, usfs_retain_mapping_state (&vnode, 0) == ETXTBSY && node.mappings.total == 0 && vnode.v_count == 1,
             "an in-flight shared open excludes racing writable mapping publication");
     tap_ok (tap, usfs_retain_mapping_state (&vnode, SHM_RDONLY) == 0,
             "read-only mappings remain compatible with shared opens");
     usfs_release_mapping_state (&vnode, SHM_RDONLY);
     usfs_vnode_release_locked (&vnode);
 
-    tap_ok (tap, usfs_retain_mapping_state (&vnode, SHM_COPY) == 0 && node.write_mapping_count == 0,
+    tap_ok (tap, usfs_retain_mapping_state (&vnode, SHM_COPY) == 0 && node.mappings.write == 0,
             "private copy-on-write mappings remain compatible with shared opens");
     usfs_release_mapping_state (&vnode, SHM_COPY);
     usfs_vnode_release_locked (&vnode);
@@ -336,7 +336,7 @@ static void test_mapping_share_exclusion (struct tap_state * tap)
     tap_ok (tap, reserve_shared_open (&node, FREAD | FRSHARE) == EOVERFLOW && node.pending_shared_opens == UINT32_MAX,
             "shared-open reservation overflow preserves existing ownership");
     node.pending_shared_opens = 0;
-    tap_ok (tap, vnode.v_count == 1 && node.mapping_count == 0 && usfs_fake_kernel.lock_depth == 0,
+    tap_ok (tap, vnode.v_count == 1 && node.mappings.total == 0 && usfs_fake_kernel.lock_depth == 0,
             "share admission balances mapping ownership and kernel locks");
 }
 
@@ -357,10 +357,10 @@ static void test_writable_shared_open_mapping (struct tap_state * tap)
     tap_ok (tap, allocate_open_state (flags, &shared) == 0 && reserve_shared_open (&node, flags) == 0,
             "a writable shared open reserves backend admission");
     attach_open_state (&node, shared);
-    tap_ok (tap, usfs_retain_mapping_state (&vnode, 0) == ETXTBSY && node.mapping_count == 0,
+    tap_ok (tap, usfs_retain_mapping_state (&vnode, 0) == ETXTBSY && node.mappings.total == 0,
             "the pending reservation still excludes mappings during writable handle publication");
     release_shared_open_reservation (&node, flags);
-    tap_ok (tap, usfs_retain_mapping_state (&vnode, 0) == 0 && node.write_mapping_count == 1,
+    tap_ok (tap, usfs_retain_mapping_state (&vnode, 0) == 0 && node.mappings.write == 1,
             "a completed writable shared open permits its own writable mapping");
     tap_ok (tap, reserve_shared_open (&node, FREAD | FRSHARE) == ETXTBSY && node.pending_shared_opens == 0,
             "the writable owner's mapping excludes another shared open");
@@ -368,7 +368,7 @@ static void test_writable_shared_open_mapping (struct tap_state * tap)
     tap_ok (tap, usfs_close_open_state (&node, (caddr_t)shared) == 0,
             "the writable shared owner can close while its mapping remains");
     usfs_put_open_reference (&vnode, shared, 0, NULL);
-    tap_ok (tap, node.opens == NULL && node.write_mapping_count == 1 &&
+    tap_ok (tap, node.opens == NULL && node.mappings.write == 1 &&
                  reserve_shared_open (&node, FREAD | FRSHARE) == ETXTBSY,
             "closing the writable shared owner preserves its mapping's sharing exclusion");
     tap_ok (tap, usfs_release_mapping_state (&vnode, 0) == 0,
@@ -377,7 +377,7 @@ static void test_writable_shared_open_mapping (struct tap_state * tap)
     tap_ok (tap, reserve_shared_open (&node, FREAD | FRSHARE) == 0,
             "sharing becomes available after the writable shared owner's final unmap");
     release_shared_open_reservation (&node, FREAD | FRSHARE);
-    tap_ok (tap, vnode.v_count == 1 && node.mapping_count == 0 && node.pending_shared_opens == 0 &&
+    tap_ok (tap, vnode.v_count == 1 && node.mappings.total == 0 && node.pending_shared_opens == 0 &&
                  usfs_fake_kernel.lock_depth == 0 && usfs_fake_kernel.allocation_balance == 0,
             "writable shared ownership balances reservations, mappings, references and locks");
 }
@@ -429,9 +429,9 @@ int main(void)
 
     tap_ok(&tap, usfs_retain_mapping_state(&vnode, SHM_RDONLY) == 0 &&
                  usfs_retain_mapping_state(&vnode, 0) == 0 &&
-                 node.mapping_count == 2 && vnode.v_count == 5,
+                 node.mappings.total == 2 && vnode.v_count == 5,
            "read and write mappings hold the vnode independently of open descriptions");
-    tap_ok(&tap, node.read_mapping_count == 1 && node.write_mapping_count == 1,
+    tap_ok(&tap, node.mappings.read == 1 && node.mappings.write == 1,
            "mapping access types have separate object-scoped counts");
 
     tap_ok(&tap, usfs_close_open_state(&node, (caddr_t)reader) == 0 &&
@@ -450,48 +450,48 @@ int main(void)
     usfs_open_state_discard(release);
     release = NULL;
     usfs_vnode_release_locked(&vnode);
-    tap_ok(&tap, node.opens == NULL && node.mapping_count == 2,
+    tap_ok(&tap, node.opens == NULL && node.mappings.total == 2,
            "closed descriptions are gone while mappings remain");
 
     tap_ok(&tap, usfs_retain_mapping_state(&vnode, SHM_RDONLY) == 0 &&
                  usfs_retain_mapping_state(&vnode, 0) == 0 &&
-                 node.mapping_count == 4 && vnode.v_count == 5,
+                 node.mappings.total == 4 && vnode.v_count == 5,
            "forked mappings need no open description");
     tap_ok(&tap, usfs_release_mapping_state(&vnode, SHM_RDONLY) == 0 &&
-                 usfs_release_mapping_state(&vnode, 0) == 0 && node.mapping_count == 2,
+                 usfs_release_mapping_state(&vnode, 0) == 0 && node.mappings.total == 2,
            "first inherited unmaps keep the original mappings alive");
     usfs_vnode_release_locked(&vnode);
     usfs_vnode_release_locked(&vnode);
 
     tap_ok(&tap, usfs_release_mapping_state(&vnode, SHM_RDONLY) == 0 &&
-                 node.read_mapping_count == 0,
+                 node.mappings.read == 0,
            "last read unmap drops only the vnode's read count");
     usfs_vnode_release_locked(&vnode);
     tap_ok(&tap, usfs_release_mapping_state(&vnode, 0) == 0 &&
-                 node.write_mapping_count == 0,
+                 node.mappings.write == 0,
            "last write unmap drops only the vnode's write count");
     usfs_vnode_release_locked(&vnode);
-    tap_ok(&tap, node.opens == NULL && node.mapping_count == 0 &&
+    tap_ok(&tap, node.opens == NULL && node.mappings.total == 0 &&
                  vnode.v_count == 1,
            "all description and mapping references balance");
 
-    node.mapping_count = UINT32_MAX;
+    node.mappings.total = UINT32_MAX;
     tap_ok (&tap, usfs_retain_mapping_state (&vnode, SHM_RDONLY) == EOVERFLOW &&
                     vnode.v_count == 1 && gnode.gn_mrdcnt == 0,
             "total mapping count overflow changes neither vnode nor AIX gnode state");
-    node.mapping_count = 0;
+    node.mappings.total = 0;
 
-    node.read_mapping_count = UINT32_MAX;
+    node.mappings.read = UINT32_MAX;
     tap_ok (&tap, usfs_retain_mapping_state (&vnode, SHM_RDONLY) == EOVERFLOW &&
-                    node.mapping_count == 0 && vnode.v_count == 1,
+                    node.mappings.total == 0 && vnode.v_count == 1,
             "read mapping count overflow leaves total ownership unchanged");
-    node.read_mapping_count = 0;
+    node.mappings.read = 0;
 
-    node.write_mapping_count = UINT32_MAX;
+    node.mappings.write = UINT32_MAX;
     tap_ok (&tap, usfs_retain_mapping_state (&vnode, 0) == EOVERFLOW &&
-                    node.mapping_count == 0 && vnode.v_count == 1 && gnode.gn_mwrcnt == 0,
+                    node.mappings.total == 0 && vnode.v_count == 1 && gnode.gn_mwrcnt == 0,
             "write mapping count overflow leaves VMM and vnode ownership unchanged");
-    node.write_mapping_count = 0;
+    node.mappings.write = 0;
 
     tap_ok(&tap, usfs_fake_kernel_clean(),
            "open-state helpers leave fake kernel ownership balanced");

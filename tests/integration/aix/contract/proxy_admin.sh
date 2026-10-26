@@ -51,7 +51,7 @@ usfs_coverage_checkpoint proxy-admin-pre-term || exit 1
 usfs_coverage_expect_export proxy-admin-term || exit 1
 USFS_COVERAGE_EVENT=proxy-admin-term rmdev -l usfs0 >"$base/unload" 2>&1
 result=$?
-if [ "$result" -eq 0 ]; then
+if [[ "$result" -eq 0 ]]; then
     /usr/sbin/usfsctl kexts >"$base/detached" 2>&1 || result=1
     grep -q '^proxy: loaded=yes' "$base/detached" || result=1
     grep -q '^implementation: loaded=no' "$base/detached" || result=1

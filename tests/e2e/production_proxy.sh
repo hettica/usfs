@@ -21,7 +21,7 @@ mount_gone()
 }
 stop_backend()
 {
-    if [ "$backend" -ne 0 ]; then
+    if [[ "$backend" -ne 0 ]]; then
         kill -TERM "$backend" 2>/dev/null || true
         usfs_wait_until 'backend unmount' 30 mount_gone || return 1
         wait "$backend" 2>/dev/null || true
@@ -60,8 +60,8 @@ verified_io; tap_ok "$?" 'production filesystem I/O is verified'
 if rmdev -l usfs0 >"$base/busy.log" 2>&1; then result=1; else result=0; fi
 tap_ok "$result" 'live mount rejects implementation unload'
 stop_backend; result=$?
-if [ "$result" -eq 0 ]; then rmdev -l usfs0 >"$base/unload.log" 2>&1 || result=1; fi
-if [ "$result" -eq 0 ]; then
+if [[ "$result" -eq 0 ]]; then rmdev -l usfs0 >"$base/unload.log" 2>&1 || result=1; fi
+if [[ "$result" -eq 0 ]]; then
     status=$(/usr/sbin/usfsctl kexts) || result=1
     printf '%s\n' "$status" | grep -q '^implementation: loaded=no' || result=1
 fi
@@ -69,12 +69,12 @@ tap_ok "$result" 'complete teardown unloads implementation'
 mkdev -l usfs0 >"$base/reload.log" 2>&1; result=$?
 status=$(/usr/sbin/usfsctl kexts) || result=1
 new_proxy_id=$(printf '%s\n' "$status" | sed -n 's/^proxy: .*module=\([^ ]*\).*/\1/p')
-[ "$proxy_id" = "$new_proxy_id" ] || result=1
+[[ "$proxy_id" = "$new_proxy_id" ]] || result=1
 tap_ok "$result" 'implementation reload retains resident proxy module identity'
 start_backend; result=$?
-if [ "$result" -eq 0 ]; then verified_io || result=1; fi
+if [[ "$result" -eq 0 ]]; then verified_io || result=1; fi
 tap_ok "$result" 'remounted production filesystem passes I/O'
 stop_backend; result=$?
-[ "$result" -eq 0 ] && /usr/sbin/usfsctl status >"$base/final-status.log" 2>&1 || result=1
+[[ "$result" -eq 0 ]] && /usr/sbin/usfsctl status >"$base/final-status.log" 2>&1 || result=1
 tap_ok "$result" 'workers stop and production service remains healthy'
 tap_finish

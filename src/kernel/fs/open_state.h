@@ -54,7 +54,7 @@ static int reserve_shared_open (struct usfs_node * node, const int32long64_t ope
 
     write_synchronized_with (global_lock)
     {
-        if (node->write_mapping_count != 0)
+        if (node->mappings.write != 0)
             return ETXTBSY;
 
         if (node->pending_shared_opens == UINT32_MAX)
@@ -250,13 +250,13 @@ static int usfs_mapping_is_write (const uint64_t mapping_flags)
 
 static int can_retain_mapping_state (const struct usfs_node * node, const int is_write_mapping)
 {
-    if (node->mapping_count == UINT32_MAX)
+    if (node->mappings.total == UINT32_MAX)
         return false;
 
     if (is_write_mapping)
-        return node->write_mapping_count != UINT32_MAX;
+        return node->mappings.write != UINT32_MAX;
 
-    return node->read_mapping_count != UINT32_MAX;
+    return node->mappings.read != UINT32_MAX;
 }
 
 static int gnode_mapping_count_is_positive (const struct vnode * file_vnode, const int32long64_t mapping_flags)
@@ -284,11 +284,11 @@ static int usfs_retain_mapping_state (struct vnode * file_vnode, const uint64_t 
             return EOVERFLOW;
 
         if (is_write_mapping)
-            node->write_mapping_count += 1;
+            node->mappings.write += 1;
         else
-            node->read_mapping_count += 1;
+            node->mappings.read += 1;
 
-        node->mapping_count += 1;
+        node->mappings.total += 1;
 
         usfs_vnode_hold_locked (node->vn, USFS_INSTRUMENT_NODE_REUSE_NONE);
         gn_mapcnt (file_vnode->v_gnode, (long)mapping_flags);
@@ -307,18 +307,18 @@ static int usfs_release_mapping_state (struct vnode * file_vnode, const int32lon
 
     write_synchronized_with (global_lock)
     {
-        const uint32_t kind_count = is_write_mapping ? node->write_mapping_count : node->read_mapping_count;
-        if (node->mapping_count == 0 || kind_count == 0 || !gnode_mapping_count_is_positive (file_vnode, mapping_flags))
+        const uint32_t kind_count = is_write_mapping ? node->mappings.write : node->mappings.read;
+        if (node->mappings.total == 0 || kind_count == 0 || !gnode_mapping_count_is_positive (file_vnode, mapping_flags))
             return EINVAL;
 
         gn_unmapcnt (file_vnode->v_gnode, (long)mapping_flags);
 
         if (is_write_mapping)
-            node->write_mapping_count -= 1;
+            node->mappings.write -= 1;
         else
-            node->read_mapping_count -= 1;
+            node->mappings.read -= 1;
 
-        node->mapping_count -= 1;
+        node->mappings.total -= 1;
     }
 
     return 0;
